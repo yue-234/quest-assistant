@@ -1,0 +1,532 @@
+// 独立任务助手的状态推算。只读 stat_data 与聊天记录，不修改任何数据。
+// 与「任务助手-世界书.ejs」采用同一套区域识别、去后缀匹配与三合一完结判定算法。
+
+import { DATA, DATA_VERSION } from './data.js';
+
+const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+const text = (v) => String(v ?? '');
+const int = (v) => {
+  const m = text(v).replace(/[,，]/g, '').match(/-?\d+/);
+  return m ? Number(m[0]) : 0;
+};
+
+/** 独立任务情报板在 stat_data.事件 下的键名（/事件/任务情报板）。 */
+export const BOARD_KEY = '任务情报板';
+
+/** 独立标识（不依赖任何命定核心）。 */
+export const CORE_NAME = '任务助手';
+export const SPEAKER = '任务助手';
+
+// ---------------------------------------------------------------------------
+// 基础读取
+// ---------------------------------------------------------------------------
+
+/** 命定点数（沿用命定之诗通用路径 stat_data.命运点数）。 */
+export function fpOf(stat) {
+  return int(obj(stat)['命运点数']);
+}
+
+/** 将各类世界时间格式归一为稳定的「世界日」键。 */
+export function normalizeDay(raw) {
+  const s = text(raw).trim();
+  if (!s) return '';
+
+  const ymd = s.match(/^(.*?)(\d+)\s*年.*?(\d{1,2})\s*月.*?(\d{1,2})\s*日/);
+  if (ymd) {
+    const era = (ymd[1] || '').replace(/[\s-]+$/g, '');
+    return `${era}${Number(ymd[2])}年-${Number(ymd[3])}月-${Number(ymd[4])}日`;
+  }
+
+  const md = s.match(/^(.*?)(\d{1,2})\s*月.*?(\d{1,2})\s*日/);
+  if (md) {
+    const prefix = (md[1] || '').replace(/[\s-]+$/g, '');
+    return `${prefix}${Number(md[2])}月-${Number(md[3])}日`;
+  }
+
+  const iso = s.match(/^(.*?)(\d{1,6})[-/.](\d{1,2})[-/.](\d{1,2})(?=$|[\sT\-–—,，(（])/);
+  if (iso) {
+    const prefix = (iso[1] || '').replace(/[\s-]+$/g, '');
+    const m = String(Number(iso[3])).padStart(2, '0');
+    const d = String(Number(iso[4])).padStart(2, '0');
+    return `${prefix}${iso[2]}-${m}-${d}`;
+  }
+
+  const stripped = s
+    .replace(/[\sT\-–—,，]+(?:星期|周|礼拜)[一二三四五六日天].*$/, '')
+    .replace(/[\sT\-–—,，]+\d{1,2}:\d{2}(?::\d{2})?.*$/, '')
+    .replace(/[\s\-–—,，]+(?:凌晨|拂晓|黎明|清晨|早晨|早上|上午|正午|中午|午后|下午|傍晚|黄昏|晚上|夜晚|深夜|午夜).*$/, '')
+    .trim();
+  const base = stripped || s.split(/\s+/)[0].split('T')[0];
+  return base.length > 32 ? base.slice(0, 32) : base;
+}
+
+export function worldDay(stat) {
+  return normalizeDay(obj(obj(stat)['世界'])['时间']);
+}
+
+/** 读取独立任务情报板节点（/事件/任务情报板）。 */
+export function boardNode(stat) {
+  return obj(obj(obj(stat)['事件'])[BOARD_KEY]);
+}
+
+// ---------------------------------------------------------------------------
+// 区域识别与任务情报板解析
+// ---------------------------------------------------------------------------
+
+const QUEST_CATEGORY_ORDER = { 剧情任务: 0, 本地主线: 1, 支线任务: 2 };
+const SUB_PLACE_SUFFIX =
+  /(?:区|街|巷|道|路|广场|市场|集市|酒馆|旅馆|客栈|大厅|大殿|宫殿|房|室|店|铺|阁|楼|层|号|码头|站台|营地|入口|门口|走廊|甲板|房间|内部|露台|塔顶|地下|外廊|庭院|花园|港口区)$/;
+
+function normGeo(v) {
+  return text(v).trim().toLowerCase().replace(/\s+/g, '');
+}
+
+function splitLoc(v) {
+  return text(v)
+    .split(/[-－—>＞/／,，、;；·•・\n]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * 从地点字符串与地理图谱中解析出稳定的「区域级」标识。
+ * 同城内部街道/酒馆/房间移动命中同一区域，不误判换区。
+ */
+export function resolveRegionText(rawText, geoData = null) {
+  const raw = text(rawText).trim();
+  if (!raw) return { key: '', name: '', raw: '' };
+
+  const places = Array.isArray(geoData && geoData.places) ? geoData.places : [];
+  if (places.length) {
+    const byId = Object.create(null);
+    for (const p of places) {
+      if (p && p.id) byId[p.id] = p;
+    }
+    const depthOf = (p) => {
+      let d = 0;
+      let cur = p;
+      const seen = new Set();
+      while (cur && cur.parent && !seen.has(cur.parent) && byId[cur.parent]) {
+        seen.add(cur.parent);
+        cur = byId[cur.parent];
+        d += 1;
+      }
+      return d;
+    };
+    const cmp = (a, b) => {
+      for (let i = 0; i < a.length; i += 1) {
+        if (a[i] !== b[i]) return a[i] - b[i];
+      }
+      return 0;
+    };
+
+    const nQuery = normGeo(raw);
+    const segs = splitLoc(raw).map(normGeo).filter(Boolean);
+    let bestPlace = null;
+    let bestScore = null;
+
+    for (const place of places) {
+      if (!place || place.is_geographic === false) continue;
+      const tokens = [place.id, place.name, ...(Array.isArray(place.keywords) ? place.keywords : [])]
+        .map(normGeo)
+        .filter(Boolean);
+      const d = depthOf(place);
+      const imp = Number(place.importance || 0);
+      for (const tk of tokens) {
+        let sc = null;
+        if (nQuery === tk) sc = [2, d, 4, segs.length, imp, tk.length];
+        for (let i = 0; i < segs.length; i += 1) {
+          let cur = null;
+          if (segs[i] === tk) cur = [2, d, 3, i, imp, tk.length];
+          else if (segs[i].includes(tk)) cur = [2, d, 2, i, imp, tk.length];
+          if (cur && (!sc || cmp(cur, sc) > 0)) sc = cur;
+        }
+        if (!sc && nQuery.includes(tk)) sc = [1, d, 1, 0, imp, tk.length];
+        if (sc && (!bestScore || cmp(sc, bestScore) > 0)) {
+          bestScore = sc;
+          bestPlace = place;
+        }
+      }
+    }
+
+    if (bestPlace) {
+      const name = text(bestPlace.name).trim() || text(bestPlace.id).trim();
+      return { key: text(bestPlace.id).trim() || normGeo(name), name, raw };
+    }
+  }
+
+  const parts = splitLoc(raw);
+  if (!parts.length) return { key: normGeo(raw), name: raw, raw };
+  let trimmed = parts.slice(0, Math.min(parts.length, 4));
+  while (trimmed.length > 1 && SUB_PLACE_SUFFIX.test(trimmed[trimmed.length - 1])) {
+    trimmed = trimmed.slice(0, -1);
+  }
+  const name = trimmed[trimmed.length - 1];
+  return { key: normGeo(name), name, raw };
+}
+
+/** 从 stat_data.世界.地点 提取区域级标识。 */
+export function resolveRegion(stat, geoData = null) {
+  return resolveRegionText(obj(obj(stat)['世界'])['地点'], geoData);
+}
+
+function sameRegion(region, boardKeyRaw, boardNameRaw, geoData = null) {
+  if (!region.key && !region.name) return true;
+  if (!boardKeyRaw && !boardNameRaw) return true;
+  const rk = normGeo(region.key);
+  const rn = normGeo(region.name);
+  const bk = normGeo(boardKeyRaw);
+  const bn = normGeo(boardNameRaw);
+  if ((rk && (bk === rk || bn === rk)) || (rn && (bk === rn || bn === rn))) return true;
+  const parsedBoard = resolveRegionText(boardNameRaw || boardKeyRaw, geoData);
+  const pbk = normGeo(parsedBoard.key);
+  const pbn = normGeo(parsedBoard.name);
+  if ((rk && pbk && pbk === rk) || (rn && pbn && pbn === rn)) return true;
+  if (rn && ((bn && bn.endsWith(rn)) || (bk && bk.endsWith(rn)))) return true;
+  return false;
+}
+
+function normalizeQuestCategory(raw) {
+  const s = text(raw).trim();
+  if (s.includes('剧情')) return '剧情任务';
+  if (s.includes('主线')) return '本地主线';
+  return '支线任务';
+}
+
+const QUEST_WAY_RULES = [
+  { re: /悬赏|讨伐|通缉|清剿|狩猎/, way: '悬赏讨伐', wayKind: 'contact', guideLabel: '悬赏指引' },
+  { re: /危机|救援|救助|救人|突围|解围|逃亡|追杀|护送/, way: '危机介入', wayKind: 'crisis', guideLabel: '切入指引' },
+  { re: /调查|追查|查案|侦查|暗访|追踪|寻人/, way: '调查追踪', wayKind: 'clue', guideLabel: '调查线索' },
+  { re: /探索|寻宝|遗迹|秘境|迷宫|勘探/, way: '探索寻宝', wayKind: 'clue', guideLabel: '探索线索' },
+  { re: /周旋|交涉|谈判|博弈|潜入|刺探|斡旋|调停/, way: '势力周旋', wayKind: 'clue', guideLabel: '切入指引' },
+  { re: /异象|灾厄|异变|异动|失控|污染|异常/, way: '异象处置', wayKind: 'crisis', guideLabel: '现场线索' },
+  { re: /委托|雇佣|征召|代办|跑腿|采集|押运/, way: '委托接取', wayKind: 'contact', guideLabel: '接取指引' },
+];
+
+function normalizeQuestWay(raw) {
+  const s = text(raw).trim();
+  if (!s) return { way: '委托接取', wayKind: 'contact', guideLabel: '接取指引' };
+  for (const rule of QUEST_WAY_RULES) {
+    if (rule.re.test(s)) return { way: rule.way, wayKind: rule.wayKind, guideLabel: rule.guideLabel };
+  }
+  if (s.length >= 2 && s.length <= 6) {
+    return { way: s, wayKind: 'clue', guideLabel: '切入指引' };
+  }
+  return { way: '委托接取', wayKind: 'contact', guideLabel: '接取指引' };
+}
+
+const CLAIMED_MARK_RE = /(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)]|\[\d+\s*[✓✔☑]\])/;
+
+function cleanRewardText(raw) {
+  return text(raw)
+    .replace(/^\s*\[\s*\d+\s*[✓✔☑□☐]?\s*\]\s*/g, '')
+    .replace(/\s*(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)])+\s*$/g, '')
+    .replace(/^\s*(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)])+\s*/g, '')
+    .trim();
+}
+
+function parseClaimedSet(raw) {
+  const slots = new Set();
+  const texts = new Set();
+  const arr = Array.isArray(raw)
+    ? raw
+    : (typeof raw === 'string' && raw.trim() ? raw.split(/[、，,;\n；|｜]+/) : []);
+  for (const item of arr) {
+    if (typeof item === 'number' && Number.isFinite(item) && item >= 1) {
+      slots.add(Math.floor(item));
+      continue;
+    }
+    const s = text(item).trim();
+    if (!s) continue;
+    if (/^\d+$/.test(s)) {
+      const n = Number(s);
+      if (n >= 1) slots.add(n);
+    } else {
+      const cleaned = cleanRewardText(s);
+      if (cleaned) texts.add(cleaned.replace(/\s+/g, ''));
+    }
+  }
+  return { slots, texts };
+}
+
+function normalizeQuestRewards(raw) {
+  if (Array.isArray(raw)) {
+    return raw.map((x) => text(x).trim()).filter(Boolean);
+  }
+  const s = text(raw).trim();
+  if (!s) return [];
+  return s
+    .split(/[、，,;\n；|｜]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+/** 一次重扫请求是否仍然新鲜（尚未经过下一回合消费）。 */
+export function rescanFresh(pending, current = {}) {
+  if (!pending || !Object.keys(pending).length) return false;
+  const num = (v) => {
+    if (v === undefined || v === null || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const atCount = num(pending['消息数']);
+  const nowCount = num(current.chatCount);
+  if (atCount !== null && nowCount !== null) return nowCount <= atCount + 1;
+  const atFloor = num(pending['楼层']);
+  const nowFloor = num(current.floor);
+  if (atFloor !== null && nowFloor !== null) return nowFloor <= atFloor + 2;
+  return false;
+}
+
+const CLOSED_TASK_RE = /(?:已完成|完成|已失败|失败|已结束|已取消|放弃)/;
+
+export function stripTaskTitle(s) {
+  return text(s)
+    .replace(/^\s*(?:[\[【][^\]】]*[\]】])\s*/g, '')
+    .replace(/(?:\s*(?:[（(][^）)]*[）)]|[\[【][^\]】]*[\]】]))+\s*$/g, '')
+    .replace(/[\s·•・:：—\-－,，、。!！?？「」『』《》“”‘’"']+/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+export function matchFormalTask(formalList, title) {
+  if (!title || !formalList.length) return null;
+  const exact = formalList.find((t) => t.key === title);
+  if (exact) return exact;
+  const norm = stripTaskTitle(title);
+  if (norm) {
+    const normExact = formalList.find((t) => stripTaskTitle(t.key) === norm);
+    if (normExact) return normExact;
+    if (norm.length >= 2) {
+      const normSub = formalList.find((t) => {
+        const tk = stripTaskTitle(t.key);
+        return tk.length >= 2 && (tk.includes(norm) || norm.includes(tk));
+      });
+      if (normSub) return normSub;
+    }
+  }
+  return formalList.find((t) => t.key.includes(title) || title.includes(t.key)) || null;
+}
+
+/**
+ * 从酒馆聊天数组（chat[i].variables[swipe_id].stat_data）或消息列表（{ stat }）中提取最近历史楼层的 stat_data。
+ * 只读不写，用于反查某条任务是否曾进入过正式「任务列表」。
+ */
+export function extractHistoryStats(chatOrMessages, limit = 50) {
+  if (!Array.isArray(chatOrMessages) || !chatOrMessages.length) return [];
+  const out = [];
+  for (let i = chatOrMessages.length - 1; i >= 0 && out.length < limit; i -= 1) {
+    const m = chatOrMessages[i];
+    if (!m || typeof m !== 'object') continue;
+    let hs = null;
+    if (Array.isArray(m.variables)) {
+      const v = m.variables[m.swipe_id ?? 0];
+      if (v && typeof v === 'object' && v.stat_data && typeof v.stat_data === 'object') hs = v.stat_data;
+    } else if (m.stat && typeof m.stat === 'object') {
+      hs = m.stat;
+    } else if (m.stat_data && typeof m.stat_data === 'object') {
+      hs = m.stat_data;
+    } else if ('任务列表' in m || '事件' in m) {
+      hs = m;
+    }
+    if (hs) out.push(hs);
+  }
+  return out;
+}
+
+/** 检查某条任务是否在历史楼层的正式「任务列表」中出现过（且若该层有任务板列表，需与板上该条同框）。 */
+export function wasInHistoryFormalTasks(historyStats, id, title) {
+  if (!Array.isArray(historyStats) || !historyStats.length || !title) return false;
+  const norm = stripTaskTitle(title);
+  for (const hStat of historyStats) {
+    const hFormalMap = obj(obj(hStat)['任务列表']);
+    const hKeys = Object.keys(hFormalMap);
+    if (!hKeys.length) continue;
+    const hFormalList = hKeys
+      .map((k) => ({ key: text(k).trim(), status: text(obj(hFormalMap[k])['状态']).trim() }))
+      .filter((t) => !!t.key);
+    if (!matchFormalTask(hFormalList, title)) continue;
+
+    const hBoard = obj(obj(obj(hStat)['事件'])[BOARD_KEY]);
+    const hBoardList = Array.isArray(hBoard['列表'])
+      ? hBoard['列表']
+      : Object.entries(obj(hBoard['列表'])).map(([k, v]) => ({ id: k, ...obj(v) }));
+    if (hBoardList.length > 0) {
+      const onBoard = hBoardList.some((item, idx) => {
+        const r = obj(item);
+        const itemId = text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
+        const itemTitle = text(r['标题']).trim();
+        if (id && itemId === id && (!itemTitle || itemTitle === title || (norm && stripTaskTitle(itemTitle) === norm))) {
+          return true;
+        }
+        if (itemTitle && (itemTitle === title || (norm && stripTaskTitle(itemTitle) === norm))) return true;
+        return false;
+      });
+      if (!onBoard) continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+/** 读取当前任务情报板状态。 */
+export function questBoardState(stat, current = {}) {
+  const board = boardNode(stat);
+  const region = resolveRegion(stat, current.geoData || null);
+  const boardRegionKey = text(board['区域键'] || board['区域']).trim();
+  const boardRegionName = text(board['区域'] || board['区域名']).trim();
+  const intents = Array.isArray(board['意向'])
+    ? board['意向'].map((x) => text(x).trim()).filter(Boolean)
+    : [];
+  const intentSet = new Set(intents);
+  const ignored = Array.isArray(board['忽略'])
+    ? board['忽略'].map((x) => text(x).trim()).filter(Boolean)
+    : [];
+  const everAcceptedList = Array.isArray(board['曾接取'])
+    ? board['曾接取'].map((x) => text(x).trim()).filter(Boolean)
+    : [];
+  const everAcceptedSet = new Set(everAcceptedList);
+  const everAcceptedNormSet = new Set(everAcceptedList.map(stripTaskTitle).filter(Boolean));
+  const historyStats = Array.isArray(current.historyStats)
+    ? current.historyStats
+    : extractHistoryStats(current.chat || current.messages);
+  const claimedMap = obj(board['已兑现']);
+
+  const formalList = Object.entries(obj(obj(stat)['任务列表']))
+    .map(([k, v]) => {
+      const f = obj(v);
+      return {
+        key: text(k).trim(),
+        status: text(f['状态']).trim(),
+        progress: text(f['进展']).trim(),
+      };
+    })
+    .filter((t) => !!t.key);
+
+  const rawList = Array.isArray(board['列表'])
+    ? board['列表']
+    : Object.entries(obj(board['列表'])).map(([k, v]) => ({ id: k, ...obj(v) }));
+
+  const regionChanged = !sameRegion(region, boardRegionKey, boardRegionName, current.geoData || null);
+
+  const items = rawList
+    .map((entry, idx) => {
+      const r = obj(entry);
+      const title = text(r['标题']).trim();
+      if (!title) return null;
+      const formal = matchFormalTask(formalList, title);
+      if (formal && CLOSED_TASK_RE.test(formal.status)) return null;
+      const accepted = !!formal;
+      const id = text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
+      const category = normalizeQuestCategory(r['类别']);
+      const rankRaw = text(r['等级']).trim().toUpperCase().match(/[SABCD]/);
+      const rank = rankRaw ? rankRaw[0] : 'C';
+      const wayInfo = normalizeQuestWay(r['方式']);
+      const location = text(r['地点'] || boardRegionName || region.name).trim();
+      const guide = text(r['引导'] || r['切入'] || r['接取方式']).trim();
+      const deadline = text(r['时限']).trim();
+      const summary = text(r['摘要']).trim();
+      const boardProgress = text(r['进展'] || r['动态'] || r['最新进展']).trim();
+      const progress = accepted ? (formal.progress || boardProgress) : boardProgress;
+      const itemUpdatedDay = normalizeDay(r['更新日']);
+      const rawRewards = normalizeQuestRewards(r['预期收益']);
+      const claimedInfo = parseClaimedSet(claimedMap[id] ?? claimedMap[title]);
+      const rewardItems = rawRewards.map((rawRw, rwIdx) => {
+        const slot = rwIdx + 1;
+        const cleanText = cleanRewardText(rawRw) || rawRw;
+        const compact = cleanText.replace(/\s+/g, '');
+        const claimed = CLAIMED_MARK_RE.test(rawRw)
+          || claimedInfo.slots.has(slot)
+          || claimedInfo.texts.has(compact);
+        return { slot, text: cleanText, claimed };
+      });
+      const rewards = rewardItems.map((x) => x.text);
+      const claimedCount = rewardItems.filter((x) => x.claimed).length;
+      const normTitle = stripTaskTitle(title);
+      const everAccepted = everAcceptedSet.has(id)
+        || everAcceptedSet.has(title)
+        || (!!normTitle && everAcceptedNormSet.has(normTitle));
+      // 三合一完结判定：不在正式任务列表，且曾有兑现 / 曾接取 / 历史楼层曾在正式任务列表出现 → 已完结隐藏
+      if (!accepted && (claimedCount > 0 || everAccepted || wasInHistoryFormalTasks(historyStats, id, title))) {
+        return null;
+      }
+      const cfg = DATA.questBoard.categories[category] || DATA.questBoard.categories['支线任务'];
+      const intent = intentSet.has(id) || intentSet.has(title);
+      const staleRegion = !accepted && !cfg.crossRegion && regionChanged;
+      return {
+        id,
+        category,
+        rank,
+        title,
+        way: wayInfo.way,
+        wayKind: wayInfo.wayKind,
+        guideLabel: wayInfo.guideLabel,
+        guide,
+        location,
+        deadline,
+        summary,
+        progress,
+        updatedDay: itemUpdatedDay,
+        accepted,
+        formalTaskName: formal ? formal.key : '',
+        formalStatus: formal ? (formal.status || '进行中') : '',
+        rewards,
+        rewardItems,
+        claimedCount,
+        expectedSlots: cfg.rewardSlots,
+        intent,
+        staleRegion,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      const ca = QUEST_CATEGORY_ORDER[a.category] ?? 9;
+      const cb = QUEST_CATEGORY_ORDER[b.category] ?? 9;
+      if (ca !== cb) return ca - cb;
+      if (a.accepted !== b.accepted) return a.accepted ? -1 : 1;
+      if (a.intent !== b.intent) return a.intent ? -1 : 1;
+      return 0;
+    });
+
+  const progressSignature = items
+    .filter((x) => x.progress)
+    .map((x) => `${x.id}|${x.accepted ? 'formal' : x.updatedDay}|${x.progress}`)
+    .join(';;');
+
+  const counts = {
+    total: items.length,
+    story: items.filter((x) => x.category === '剧情任务').length,
+    local: items.filter((x) => x.category === '本地主线').length,
+    side: items.filter((x) => x.category === '支线任务').length,
+    accepted: items.filter((x) => x.accepted).length,
+    intent: items.filter((x) => x.intent && !x.accepted).length,
+    progressed: items.filter((x) => x.progress).length,
+  };
+
+  return {
+    regionKey: region.key,
+    regionName: region.name,
+    rawLocation: region.raw,
+    boardRegionKey,
+    boardRegionName,
+    regionChanged,
+    updatedDay: normalizeDay(board['更新日']),
+    rescanPending: rescanFresh(obj(board['待重扫']), current),
+    rescanFp: DATA.questBoard.rescanFp,
+    progressSignature,
+    intents,
+    ignored,
+    items,
+    counts,
+  };
+}
+
+/** 汇总任务助手面板所需全部状态。 */
+export function readState(stat, current = {}) {
+  return {
+    version: DATA_VERSION,
+    fp: fpOf(stat),
+    day: worldDay(stat),
+    questBoard: questBoardState(stat, current),
+  };
+}

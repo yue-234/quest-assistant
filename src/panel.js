@@ -1,0 +1,776 @@
+// 独立任务助手单页界面。运行在同源 iframe 中，通过 host.js 读写酒馆数据，
+// 点击操作经 commit.js 写回最新楼层 /事件/任务情报板。
+
+import { DATA } from './data.js';
+import { readState, CORE_NAME, SPEAKER } from './state.js';
+import {
+  toggleQuestIntent,
+  toggleQuestRewardClaimed,
+  ignoreQuest,
+  requestQuestRescan,
+  questRescanDone,
+  clearQuestRescan,
+  hasClosedQuestLeftovers,
+  sweepClosedQuests,
+  needsQuestAcceptedRecord,
+  recordAcceptedQuests,
+} from './actions.js';
+import { commit, generating } from './commit.js';
+import * as host from './host.js';
+
+const QUEST_SEEN_KEY = 'quest_helper_seen_progress_v1';
+
+const ui = {
+  questCategory: '全部',
+  questEditRewards: false,
+};
+
+let root = null;
+let app = null;
+let busy = false;
+let busySince = 0;
+let sweeping = false;
+let closeTimer = null;
+let closeCleanup = null;
+
+// ---------------------------------------------------------------------------
+// 宿主读取
+// ---------------------------------------------------------------------------
+
+function chatArray() {
+  try {
+    for (const win of [window.parent, window]) {
+      const st = win?.SillyTavern;
+      if (!st) continue;
+      const fromContext = typeof st.getContext === 'function' ? st.getContext()?.chat : null;
+      if (Array.isArray(fromContext)) return fromContext;
+      if (Array.isArray(st.chat)) return st.chat;
+    }
+  } catch {
+    /* 忽略 */
+  }
+  return null;
+}
+
+function lastFloor() {
+  try {
+    for (const win of [window.parent, window]) {
+      const id = win?.TavernHelper?.getLastMessageId?.();
+      if (typeof id === 'number' && id >= 0) return id;
+    }
+  } catch {
+    /* 退回 chat.length */
+  }
+  const chat = chatArray();
+  return chat && chat.length > 0 ? chat.length - 1 : null;
+}
+
+function chatCount() {
+  const chat = chatArray();
+  return chat ? chat.length : null;
+}
+
+function currentStat() {
+  try {
+    return host.readStat() || {};
+  } catch {
+    return {};
+  }
+}
+
+function currentGeoData() {
+  try {
+    for (const win of [window.parent, window]) {
+      const getVars = win?.TavernHelper?.getVariables || win?.getVariables;
+      if (typeof getVars !== 'function') continue;
+      const vars = getVars({ type: 'chat' });
+      if (vars && vars.runtime_geo_compact_data && typeof vars.runtime_geo_compact_data === 'object') {
+        return vars.runtime_geo_compact_data;
+      }
+    }
+  } catch {
+    /* 退回路径兜底 */
+  }
+  return null;
+}
+
+function readSeenProgress() {
+  try {
+    return window.localStorage.getItem(QUEST_SEEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function markSeenProgress(sig) {
+  if (!sig) return;
+  try {
+    window.localStorage.setItem(QUEST_SEEN_KEY, sig);
+  } catch {
+    /* 忽略 */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DOM 工具与 Toast
+// ---------------------------------------------------------------------------
+
+function el(tag, className, children, attrs, events) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (attrs) {
+    for (const key in attrs) {
+      if (attrs[key] !== undefined && attrs[key] !== null) {
+        if (key === 'disabled') {
+          if (attrs[key]) {
+            node.disabled = true;
+            node.setAttribute('disabled', '');
+          }
+        } else if (key === 'value') {
+          node.value = attrs[key];
+        } else {
+          node.setAttribute(key, attrs[key]);
+        }
+      }
+    }
+  }
+  if (events) {
+    for (const evt in events) {
+      if (events[evt]) node.addEventListener(evt, events[evt]);
+    }
+  }
+  if (children !== undefined && children !== null) {
+    if (Array.isArray(children)) {
+      for (const c of children) {
+        if (c !== null && c !== undefined) {
+          node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+        }
+      }
+    } else {
+      node.appendChild(typeof children === 'string' ? document.createTextNode(children) : children);
+    }
+  }
+  return node;
+}
+
+function toast(message, kind = '') {
+  if (!root) return;
+  const node = root.querySelector('.qh-toast');
+  if (!node) return;
+  node.textContent = message;
+  node.className = `qh-toast show ${kind}`;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => {
+    node.className = 'qh-toast';
+  }, 2600);
+}
+
+// ---------------------------------------------------------------------------
+// 写操作
+// ---------------------------------------------------------------------------
+
+async function run(label, action, { redraw = true, after } = {}) {
+  if (busy) {
+    if (Date.now() - busySince < 8000) {
+      toast('上一次操作还在处理，稍等一下', 'err');
+      return;
+    }
+    busy = false;
+  }
+  if (generating()) {
+    toast('正在生成回复，等这一轮结束再操作', 'err');
+    return;
+  }
+  busy = true;
+  busySince = Date.now();
+  try {
+    const result = await commit(action, { core: CORE_NAME, speaker: SPEAKER, redraw });
+    if (result && result.error) {
+      toast(result.error, 'err');
+    } else {
+      if (typeof after === 'function') after();
+      toast((result && result.done) || label, 'ok');
+      render();
+    }
+  } catch (error) {
+    toast(`操作失败：${error && error.message ? error.message : error}`, 'err');
+  } finally {
+    busy = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 业务组装与渲染
+// ---------------------------------------------------------------------------
+
+function buildQuestDraft(item) {
+  const place = item.guide || item.location || '情报指明的地点';
+  if (item.wayKind === 'crisis') {
+    return `根据手头的地区情报，我立刻赶往现场介入「${item.title}」（切入：${place}）。`;
+  }
+  if (item.wayKind === 'clue') {
+    return `根据手头的地区情报，我顺着线索动身前往「${item.title}」（线索：${place}）。`;
+  }
+  const guide = item.guide ? `（指引：${item.guide}）` : '';
+  return `根据手头的地区情报，我前往打听并接取「${item.title}」${guide}。`;
+}
+
+function questCatClass(category) {
+  if (category === '剧情任务') return 'is-story';
+  if (category === '本地主线') return 'is-local';
+  return 'is-side';
+}
+
+function renderNoteCallout(textStr, tone = '') {
+  const cls = tone === 'warn' ? ' is-warn' : tone === 'dim' ? ' is-dim' : '';
+  return el('div', 'qh-note' + cls, [
+    el('span', 'qh-note-icon', tone === 'warn' ? '⚠' : 'ℹ'),
+    el('span', 'qh-note-text', textStr),
+  ]);
+}
+
+function renderContent(state) {
+  const wrap = el('div', 'qh-page');
+  const qb = state.questBoard || {
+    regionName: '',
+    boardRegionName: '',
+    regionChanged: false,
+    updatedDay: '',
+    rescanPending: false,
+    rescanFp: DATA.questBoard.rescanFp,
+    items: [],
+    counts: { total: 0, story: 0, local: 0, side: 0, accepted: 0, intent: 0, progressed: 0 },
+  };
+
+  const regionDisplay = qb.regionName || qb.boardRegionName || '未识别区域';
+  const activeCategory = ['全部', '剧情任务', '本地主线', '支线任务'].includes(ui.questCategory)
+    ? ui.questCategory
+    : '全部';
+  const filtered = activeCategory === '全部'
+    ? qb.items
+    : qb.items.filter((it) => it.category === activeCategory);
+
+  // 第一层：当前区域与重扫控制带
+  const band = el('section', 'qh-band');
+  const bandMain = el('div', 'qh-band-main');
+  const eyebrow = qb.updatedDay ? `当前覆盖区域 · 更新于 ${qb.updatedDay}` : '当前覆盖区域 · 地区任务情报';
+  bandMain.append(el('div', 'qh-eyebrow', eyebrow));
+  bandMain.append(
+    el('div', 'qh-band-value', [
+      el('span', 'qh-quest-region', regionDisplay),
+    ]),
+  );
+  const acceptedBit = qb.counts.accepted > 0 ? ` · 已接取 ${qb.counts.accepted} 条` : '';
+  const footText = qb.counts.total > 0
+    ? `共 ${qb.counts.total} 条情报（剧情 ${qb.counts.story} · 本地主线 ${qb.counts.local} · 支线 ${qb.counts.side}）· 已锁定 ${qb.counts.intent} 条${acceptedBit}`
+    : '随剧情与跨区移动静默同步；同城内部走动不会误刷任务';
+  bandMain.append(el('div', qb.rescanPending ? 'qh-stat-foot is-gold' : 'qh-stat-foot', footText));
+  band.append(bandMain);
+
+  const actBox = el('div', 'qh-quest-rescan');
+  if (qb.rescanPending) {
+    actBox.append(el('button', 'qh-btn qh-btn--primary', '已预约重扫，等待下一回合', { type: 'button', disabled: true }));
+  } else if (state.fp < qb.rescanFp) {
+    actBox.append(el('button', 'qh-btn qh-btn--primary', `命运点数不足（需 ${qb.rescanFp} FP）`, { type: 'button', disabled: true }));
+  } else {
+    actBox.append(
+      el(
+        'button',
+        'qh-btn qh-btn--primary',
+        `重扫本地情报 · ${qb.rescanFp} FP`,
+        { type: 'button' },
+        {
+          click: () => run('已预约重扫', (s) => requestQuestRescan(s, lastFloor(), chatCount()), { redraw: true }),
+        },
+      ),
+    );
+  }
+  band.append(actBox);
+  wrap.append(band);
+
+  // 状态提示
+  if (qb.rescanPending) {
+    wrap.append(
+      renderNoteCallout('地区情报重扫已预约：下一回合只重扫未锁定的本地主线与支线任务，剧情任务及已锁定任务将原样保留。'),
+    );
+  } else if (qb.regionChanged) {
+    wrap.append(
+      renderNoteCallout(
+        `已进入新区域「${qb.regionName}」（板上为「${qb.boardRegionName}」旧情报），下一回合将自动同步本地区任务。`,
+        'warn',
+      ),
+    );
+  }
+
+  // 第二层：分类筛选胶囊 + 修改模式开关
+  const filterBar = el('div', 'qh-quest-filter');
+  const catOptions = [
+    { value: '全部', text: `全部 (${qb.counts.total})` },
+    { value: '剧情任务', text: `剧情任务 (${qb.counts.story})` },
+    { value: '本地主线', text: `本地主线 (${qb.counts.local})` },
+    { value: '支线任务', text: `支线任务 (${qb.counts.side})` },
+  ];
+  catOptions.forEach((opt) => {
+    filterBar.append(
+      el(
+        'button',
+        'qh-quest-pill' + (activeCategory === opt.value ? ' is-active' : ''),
+        opt.text,
+        { type: 'button' },
+        {
+          click: () => {
+            ui.questCategory = opt.value;
+            render();
+          },
+        },
+      ),
+    );
+  });
+  if (qb.counts.total > 0) {
+    filterBar.append(
+      el(
+        'button',
+        'qh-quest-edit-toggle' + (ui.questEditRewards ? ' is-on' : ''),
+        ui.questEditRewards ? '✓ 完成修改' : '✎ 修改模式',
+        {
+          type: 'button',
+          title: ui.questEditRewards ? '退出收益勾选修改模式' : '开启后可手动勾选或取消已兑现的预期收益',
+        },
+        {
+          click: () => {
+            ui.questEditRewards = !ui.questEditRewards;
+            render();
+          },
+        },
+      ),
+    );
+  }
+  wrap.append(filterBar);
+
+  // 第三层：情报卡片列表
+  if (filtered.length === 0) {
+    const emptyCard = el('section', 'qh-card', [
+      el('div', 'qh-card-head', [
+        el('h3', 'qh-card-title', '暂无任务情报'),
+        el('span', 'qh-card-sub', '下一回合自动静默同步'),
+      ]),
+      el(
+        'div',
+        'qh-empty',
+        qb.counts.total > 0
+          ? '当前分类下暂时没有任务情报，可以切回「全部」查看。'
+          : '任务情报板已就绪。推进下一回合后，系统会根据当前所在区域与剧情自动同步剧情任务、本地主线与支线委托；也可以点击上方按钮消耗 100 FP 主动重扫。',
+      ),
+    ]);
+    wrap.append(emptyCard);
+    return wrap;
+  }
+
+  const grid = el('div', 'qh-quest-list');
+  filtered.forEach((item) => {
+    const catCls = questCatClass(item.category);
+    const card = el(
+      'article',
+      `qh-card qh-quest-card ${catCls}${item.accepted ? ' is-accepted' : ''}${item.intent && !item.accepted ? ' is-intent' : ''}${item.staleRegion ? ' is-stale' : ''}`,
+    );
+
+    // 卡片顶栏
+    const head = el('div', 'qh-quest-head');
+    const badges = el('div', 'qh-quest-badges', [
+      el('span', `qh-qbadge qh-qbadge--cat ${catCls}`, item.category),
+      el('span', 'qh-qbadge qh-qbadge--rank', `${item.rank} 级`),
+      el('span', 'qh-qbadge qh-qbadge--way', item.way || '委托接取'),
+    ]);
+    if (item.accepted) badges.append(el('span', 'qh-qbadge qh-qbadge--accepted', '进行中'));
+    if (item.progress) badges.append(el('span', 'qh-qbadge qh-qbadge--progress', '局势变动'));
+    if (item.intent && !item.accepted) badges.append(el('span', 'qh-qbadge qh-qbadge--intent', '★ 已锁定'));
+    if (item.staleRegion) badges.append(el('span', 'qh-qbadge qh-qbadge--stale', '异地旧档'));
+    head.append(badges);
+
+    const metaParts = [];
+    if (item.location) metaParts.push(item.location);
+    if (item.deadline) metaParts.push(`时限 ${item.deadline}`);
+    if (metaParts.length) head.append(el('span', 'qh-quest-meta', metaParts.join(' · ')));
+    card.append(head);
+
+    // 标题与摘要
+    card.append(el('h3', 'qh-quest-title', item.title));
+    if (item.summary) card.append(el('p', 'qh-quest-summary', item.summary));
+
+    // 最新进展条
+    if (item.progress) {
+      const progMeta = item.accepted ? '同步自任务面板' : item.updatedDay;
+      card.append(
+        el('div', 'qh-quest-progress', [
+          el('div', 'qh-quest-progress-head', [
+            el('span', 'qh-quest-progress-label', '最新进展'),
+            progMeta ? el('span', 'qh-quest-progress-day', progMeta) : null,
+          ]),
+          el('div', 'qh-quest-progress-text', item.progress),
+        ]),
+      );
+    }
+
+    // 切入指引
+    if (item.guide) {
+      card.append(
+        el('div', 'qh-quest-guide', [
+          el('span', 'qh-quest-guide-label', item.guideLabel || '切入指引'),
+          el('span', 'qh-quest-guide-text', item.guide),
+        ]),
+      );
+    }
+
+    // 预期收益栏
+    const rewardItems = Array.isArray(item.rewardItems) && item.rewardItems.length > 0
+      ? item.rewardItems
+      : (item.rewards || []).map((rw, idx) => ({ slot: idx + 1, text: rw, claimed: false }));
+    const totalSlots = rewardItems.length || item.expectedSlots;
+    const claimedCount = typeof item.claimedCount === 'number'
+      ? item.claimedCount
+      : rewardItems.filter((r) => r.claimed).length;
+    const rewardTitle = claimedCount > 0
+      ? `预期收益 · 已兑现 ${claimedCount} / ${totalSlots} 栏`
+      : `预期收益 · ${totalSlots} 栏`;
+    const canEditRewards = !!(ui.questEditRewards && item.accepted);
+    const rewardNote = canEditRewards
+      ? '修改模式：点击下方收益可手动切换 ✓'
+      : (ui.questEditRewards ? '接取后可在修改模式中手动切换 ✓' : '模糊预告，发放后自动打 ✓');
+
+    const rewardBox = el('div', 'qh-quest-rewards' + (canEditRewards ? ' is-editing' : ''));
+    rewardBox.append(
+      el('div', 'qh-quest-rewards-head', [
+        el('span', 'qh-quest-rewards-title', rewardTitle),
+        el('span', 'qh-quest-rewards-note', rewardNote),
+      ]),
+    );
+    if (rewardItems.length > 0) {
+      const chips = el('div', 'qh-quest-reward-grid');
+      rewardItems.forEach((rw) => {
+        const children = [
+          el('span', 'qh-quest-reward-idx', String(rw.slot).padStart(2, '0')),
+          el('span', 'qh-quest-reward-text', rw.text),
+          rw.claimed ? el('span', 'qh-quest-reward-check', '✓') : null,
+        ];
+        if (canEditRewards) {
+          chips.append(
+            el(
+              'button',
+              'qh-quest-reward-chip is-editable' + (rw.claimed ? ' is-claimed' : ''),
+              children,
+              { type: 'button', title: rw.claimed ? '点击取消已兑现勾选' : '点击手动标记为已兑现' },
+              {
+                click: () => run(
+                  '已更新收益状态',
+                  (s) => toggleQuestRewardClaimed(s, item.id, rw.slot, item.title),
+                  { redraw: false },
+                ),
+              },
+            ),
+          );
+        } else {
+          chips.append(el('div', 'qh-quest-reward-chip' + (rw.claimed ? ' is-claimed' : ''), children));
+        }
+      });
+      rewardBox.append(chips);
+    } else {
+      rewardBox.append(el('div', 'qh-quest-reward-empty', '待情报核实'));
+    }
+    card.append(rewardBox);
+
+    // 底部操作
+    if (item.accepted) {
+      card.append(
+        el('div', 'qh-quest-accepted-bar', '✓ 已接取并追踪中 · 进展同步自任务面板，上方预期收益将随推进分批兑现'),
+      );
+    } else {
+      const draftHint = item.wayKind === 'crisis'
+        ? '将现场介入草稿填入输入框'
+        : (item.wayKind === 'clue' ? '将线索行动草稿填入输入框' : '将寻人接取草稿填入输入框');
+      card.append(
+        el('div', 'qh-quest-foot', [
+          el(
+            'button',
+            'qh-btn qh-btn--sm qh-btn--quest-accept',
+            '接取任务',
+            { type: 'button', title: draftHint },
+            {
+              click: () => {
+                const draftText = buildQuestDraft(item);
+                if (host.writeInput(draftText)) {
+                  toast('行动草稿已填入输入框，可微调后发送', 'ok');
+                  app.close();
+                } else {
+                  toast('未能写入输入框，请在聊天框手动输入行动', 'err');
+                }
+              },
+            },
+          ),
+          el(
+            'button',
+            'qh-btn qh-btn--sm qh-btn--quest-sub' + (item.intent ? ' is-intent-on' : ''),
+            item.intent ? '★ 取消锁定' : '☆ 锁定任务',
+            { type: 'button', title: '锁定后不会被换区或重扫刷掉，只会因时限到期自动清除' },
+            {
+              click: () => run(
+                item.intent ? '已取消锁定' : '已锁定任务',
+                (s) => toggleQuestIntent(s, item.id, item.title),
+                { redraw: false },
+              ),
+            },
+          ),
+          el(
+            'button',
+            'qh-btn qh-btn--sm qh-btn--ghost',
+            '✕ 忽略',
+            { type: 'button' },
+            {
+              click: () => run('已忽略', (s) => ignoreQuest(s, item.id, item.title), { redraw: false }),
+            },
+          ),
+        ]),
+      );
+    }
+
+    grid.append(card);
+  });
+
+  wrap.append(grid);
+  return wrap;
+}
+
+// ---------------------------------------------------------------------------
+// 渲染与静默清理
+// ---------------------------------------------------------------------------
+
+function render() {
+  if (!root) return;
+  const stat = currentStat();
+
+  if (!sweeping && questRescanDone(stat, lastFloor(), chatCount())) {
+    sweeping = true;
+    commit((statNow) => clearQuestRescan(statNow), { core: CORE_NAME, speaker: SPEAKER, redraw: false })
+      .then((result) => {
+        sweeping = false;
+        if (result && !result.error) render();
+      })
+      .catch(() => {
+        sweeping = false;
+      });
+  } else if (!sweeping && hasClosedQuestLeftovers(stat, { chat: chatArray() })) {
+    sweeping = true;
+    const chatSnapshot = chatArray();
+    commit((statNow) => sweepClosedQuests(statNow, { chat: chatSnapshot }), { core: CORE_NAME, speaker: SPEAKER, redraw: false })
+      .then((result) => {
+        sweeping = false;
+        if (result && !result.error) render();
+      })
+      .catch(() => {
+        sweeping = false;
+      });
+  } else if (!sweeping && needsQuestAcceptedRecord(stat)) {
+    sweeping = true;
+    commit((statNow) => recordAcceptedQuests(statNow), { core: CORE_NAME, speaker: SPEAKER, redraw: false })
+      .then((result) => {
+        sweeping = false;
+        if (result && !result.error) render();
+      })
+      .catch(() => {
+        sweeping = false;
+      });
+  }
+
+  const body = root.querySelector('.qh-body');
+  const scroll = body.scrollTop;
+  body.innerHTML = '';
+
+  let stateNow = null;
+  let view;
+  try {
+    stateNow = readState(stat, {
+      floor: lastFloor(),
+      chatCount: chatCount(),
+      geoData: currentGeoData(),
+      chat: chatArray(),
+    });
+    view = renderContent(stateNow);
+  } catch (error) {
+    console.error('[任务助手] 页面渲染失败：', error);
+    view = el('div', 'qh-page', [
+      renderNoteCallout(error && error.message ? error.message : String(error), 'warn'),
+    ]);
+  }
+
+  body.append(view);
+  body.scrollTop = scroll;
+
+  // 更新顶栏 FP 与日期显示
+  const fpEl = root.querySelector('.qh-top-fp-val');
+  if (fpEl && stateNow) fpEl.textContent = `${stateNow.fp} FP`;
+  const subEl = root.querySelector('.qh-top-sub');
+  if (subEl && stateNow) {
+    subEl.textContent = stateNow.day ? `世界日 · ${stateNow.day}` : '独立地区情报面板';
+  }
+
+  // 打开面板即自动标记已读
+  const sig = stateNow && stateNow.questBoard ? stateNow.questBoard.progressSignature : '';
+  if (sig && root.classList.contains('qh-open')) {
+    markSeenProgress(sig);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 单页外壳与动画控制
+// ---------------------------------------------------------------------------
+
+function buildShell() {
+  const shell = el('div', 'qh');
+  const backdrop = el('div', 'qh-backdrop', null, null, { click: () => app.close() });
+
+  const room = el('div', 'qh-room');
+  const topbar = el('header', 'qh-topbar', [
+    el('div', 'qh-top-left', [
+      el('span', 'qh-top-badge', '◈'),
+      el('div', 'qh-top-titles', [
+        el('h1', 'qh-top-title', '任务情报'),
+        el('span', 'qh-top-sub', '独立地区情报面板'),
+      ]),
+    ]),
+    el('div', 'qh-top-right', [
+      el('div', 'qh-top-fp', [
+        el('span', 'qh-top-fp-label', '命运点数'),
+        el('span', 'qh-top-fp-val', '0 FP'),
+      ]),
+      el(
+        'button',
+        'qh-top-close',
+        [
+          el('span', 'qh-top-close-icon', '✕'),
+          el('span', 'qh-top-close-text', '关闭'),
+        ],
+        { type: 'button', title: '关闭任务情报板', 'aria-label': '关闭任务情报板' },
+        { click: () => app.close() },
+      ),
+    ]),
+  ]);
+
+  const body = el('main', 'qh-body');
+  const holoCorners = el('div', 'qh-holo-corners', null, { 'aria-hidden': 'true' });
+  const holoVeil = el('div', 'qh-holo-veil', null, { 'aria-hidden': 'true' });
+
+  room.append(topbar, body, holoCorners, holoVeil);
+
+  const toastNode = el('div', 'qh-toast');
+  toastNode.style.position = 'absolute';
+  toastNode.style.pointerEvents = 'none';
+
+  shell.append(backdrop, room, toastNode);
+  return shell;
+}
+
+function cancelClose() {
+  if (closeTimer) {
+    clearTimeout(closeTimer);
+    closeTimer = null;
+  }
+  if (closeCleanup) {
+    closeCleanup();
+    closeCleanup = null;
+  }
+  if (root) {
+    root.classList.remove('qh-closing');
+    const room = root.querySelector('.qh-room');
+    if (room) room.classList.remove('leave');
+  }
+}
+
+function shouldAnimateClose() {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  return (
+    window.matchMedia('(min-width: 769px)').matches &&
+    !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
+app = {
+  open() {
+    if (!root) {
+      try {
+        mount();
+      } catch (error) {
+        console.error('[任务助手] 界面挂载失败', error);
+        return;
+      }
+    }
+    cancelClose();
+    ui.questEditRewards = false;
+    root.classList.add('qh-open');
+    const room = root.querySelector('.qh-room');
+    room.classList.remove('enter', 'leave');
+    void room.offsetWidth;
+    room.classList.add('enter');
+    render();
+    const closeBtn = root.querySelector('.qh-top-close');
+    if (closeBtn && closeBtn.focus) closeBtn.focus();
+  },
+
+  close() {
+    if (!root || !root.classList.contains('qh-open') || root.classList.contains('qh-closing')) return;
+    const finish = () => {
+      cancelClose();
+      root.classList.remove('qh-open');
+      if (typeof app.onClose === 'function') app.onClose();
+    };
+    if (!shouldAnimateClose()) {
+      finish();
+      return;
+    }
+    const room = root.querySelector('.qh-room');
+    if (!room) {
+      finish();
+      return;
+    }
+    root.classList.add('qh-closing');
+    room.classList.remove('enter');
+    void room.offsetWidth;
+    room.classList.add('leave');
+
+    const onEnd = (event) => {
+      if (event.target !== room || event.animationName !== 'qh-holo-close') return;
+      finish();
+    };
+    room.addEventListener('animationend', onEnd);
+    closeCleanup = () => room.removeEventListener('animationend', onEnd);
+    closeTimer = setTimeout(finish, 340);
+  },
+
+  hide() {
+    if (!root) return;
+    cancelClose();
+    root.classList.remove('qh-open');
+  },
+};
+
+window.questHelperPanel = app;
+
+export function mount(options = {}) {
+  const container = options.container || document.body;
+  root = buildShell();
+  container.append(root);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && root && root.classList.contains('qh-open')) {
+      app.close();
+    }
+  });
+  render();
+  if (options.autoOpen) app.open();
+  return app;
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => mount(), { once: true });
+} else {
+  mount();
+}
+
+export default app;
