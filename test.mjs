@@ -101,14 +101,14 @@ test('EJS init 模式：首次初始化任务情报板 + 通用事件链承接�
   assert.match(out, /"op": "insert", "path": "\/事件\/任务情报板"/);
   assert.match(out, /事件承接/);
   assert.match(out, /创意工坊自制事件链/);
-  assert.match(out, /未在上下文激活的事件链不得凭空捏造/);
+  assert.match(out, /未在上下文中激活的事件链不得凭空捏造/);
   assert.doesNotMatch(out, /本区事件钩子|艾波丽斯|莉莉娅丝|素瓷密室|斯芬克斯/);
   assert.match(out, /生成规格/);
   assert.match(out, /B~S 级/);
   assert.match(out, /收益 10 栏/);
-  assert.match(out, /途经数个城市\/区域/);
-  assert.match(out, /严禁用 `→` 串联多站路线/);
-  assert.match(out, /长期放任将导致局势失控并波及多地乃至世界/);
+  assert.match(out, /串联多个城市或区域/);
+  assert.match(out, /禁止用 `→` 串联多站路线/);
+  assert.match(out, /长期放任会导致局势失控并波及多个区域与世界/);
 });
 
 test('EJS maintain 模式：常规停留 + 已接取透传打勾Patch与结案移出', () => {
@@ -285,8 +285,8 @@ test('EJS advance 模式：已接取剧情任务搁置满 5 日自动演进', ()
   const out = renderEjs(stat);
   assertCleanOutput(out, 'advance');
   assert.match(out, /剧情任务搁置演进/);
-  assert.match(out, /待演进:已搁置 6 日/);
-  assert.match(out, /静默同步至正式任务列表（不双写任务情报板），必要时在正文中通过当地传闻或情报渠道自然带出一句/);
+  assert.match(out, /待演进:已搁置 6 天/);
+  assert.match(out, /静默同步至 `\/任务列表`（不双写任务情报板），需要时在正文中通过当地传闻或情报渠道自然带出一句/);
   assert.doesNotMatch(out, /商队失联/);
 });
 
@@ -555,12 +555,12 @@ test('EJS 日期解析：支持无年份/无连字符中文日期，拒绝版本
   // 无年份中文月日：[3月-10日] 距 3月-20日 搁置 10 日 -> 触发演进
   const outNoYear = renderEjs(makeStat('[3月-10日] 取得初步线索'));
   assertCleanOutput(outNoYear, 'date-no-year');
-  assert.match(outNoYear, /待演进:已搁置 10 日/);
+  assert.match(outNoYear, /待演进:已搁置 10 天/);
 
   // 无连字符中文年月日：[488年3月12日] 距 3月-20日 搁置 8 日 -> 触发演进
   const outNoDash = renderEjs(makeStat('[488年3月12日] 追踪到码头'));
   assertCleanOutput(outNoDash, 'date-no-dash');
-  assert.match(outNoDash, /待演进:已搁置 8 日/);
+  assert.match(outNoDash, /待演进:已搁置 8 天/);
 
   // 版本号 v1.2.3 与无效月日 488-13-40 不应被误判为旧日期（回退到更新日 3月-19日，仅 1 日不演进）
   const outVer = renderEjs(makeStat('检查了装置 v1.2.3 与编号 488-13-40'));
@@ -686,7 +686,7 @@ test('跨年无年份日期借用上年，正确触发搁置演进', () => {
   const out = renderEjs(crossYearStat);
   assertCleanOutput(out, 'cross-year-md');
   assert.match(out, /剧情任务搁置演进/);
-  assert.match(out, /待演进:已搁置 6 日/);
+  assert.match(out, /待演进:已搁置 6 天/);
 });
 
 test('地区/世界余波持久化：按当前区域精准注入、异区 0 注入、世界常驻与反功德碑规则', () => {
@@ -709,11 +709,11 @@ test('地区/世界余波持久化：按当前区域精准注入、异区 0 注�
   };
   const outNone = renderEjs(noAftermathStat);
   assertCleanOutput(outNone, 'aftermath-none');
-  assert.doesNotMatch(outNone, /当前余波（持续生效的客观现状）/);
-  assert.match(outNone, /余波记录/);
+  assert.doesNotMatch(outNone, /当前影响（持续生效的客观现状）/);
+  assert.match(outNone, /后续影响/);
   assert.match(outNone, /每条 30~50 字/);
-  assert.match(outNone, /严禁以主角\/冒险者为主语写功德碑战报/);
-  assert.match(outNone, /支线任务一律不写余波/);
+  assert.match(outNone, /禁止以 `<user>` 或冒险者为主语写战绩播报/);
+  assert.match(outNone, /支线任务不写/);
   assert.match(outNone, /保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」/);
   assert.match(outNone, /"op": "insert", "path": "\/事件\/任务情报板\/余波"/);
 
@@ -733,7 +733,7 @@ test('地区/世界余波持久化：按当前区域精准注入、异区 0 注�
   };
   const outOther = renderEjs(otherRegionStat);
   assertCleanOutput(outOther, 'aftermath-other-region');
-  assert.doesNotMatch(outOther, /当前余波（持续生效的客观现状）/);
+  assert.doesNotMatch(outOther, /当前影响（持续生效的客观现状）/);
   assert.doesNotMatch(outOther, /旧铸造区坍塌封禁/);
   assert.match(outOther, /对已有区域键用 `replace`、新区域键用 `insert` 更新 `\/事件\/任务情报板\/余波\/<区域名或世界>`/);
   const stOther = questBoardState(otherRegionStat);
@@ -755,7 +755,7 @@ test('地区/世界余波持久化：按当前区域精准注入、异区 0 注�
   };
   const outLocal = renderEjs(localAndWorldStat);
   assertCleanOutput(outLocal, 'aftermath-local-world');
-  assert.match(outLocal, /当前余波（持续生效的客观现状）/);
+  assert.match(outLocal, /当前影响（持续生效的客观现状）/);
   assert.match(outLocal, /南门高炉重启后黑烟终日不散/);
   assert.match(outLocal, /北境商路因霜潮封冻中断/);
   assert.doesNotMatch(outLocal, /旧条1/);
@@ -773,19 +773,19 @@ test('地区/世界余波持久化：按当前区域精准注入、异区 0 注�
   ]);
 });
 
-test('剧情上墙规则与参考配额非硬上限断言', () => {
+test('剧情追加规则与参考配额非硬上限断言', () => {
   const stat = {
     世界: { 地点: '白石镇', 时间: '复兴纪元488年-3月-10日-12:00' },
     事件: {},
   };
   const out = renderEjs(stat);
   assertCleanOutput(out, 'story-on-wall');
-  assert.match(out, /剧情上墙/);
-  assert.match(out, /不受默认数量限制/);
+  assert.match(out, /剧情追加/);
+  assert.match(out, /不受默认参考配额限制/);
   assert.match(out, /\/事件\/任务情报板\/列表\/-/);
   assert.match(out, /优先按体量定级为「剧情任务」/);
-  assert.match(out, /归入剧情任务或本地主线时必附后台隐藏 `真相`/);
-  assert.match(out, /以下各类条数为自动生成\/补缺的参考配额而非硬上限/);
+  assert.match(out, /剧情任务与本地主线附带后台隐藏 `真相`/);
+  assert.match(out, /下列条数为自动生成与补缺的参考配额，非硬上限/);
 });
 
 test('前端自动聚合未上墙的原版 /任务列表 进行中任务（去重、过滤已完结、只读标记）', () => {
