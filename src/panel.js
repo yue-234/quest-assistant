@@ -6,6 +6,7 @@ import { readState, CORE_NAME, SPEAKER } from './state.js';
 import {
   toggleQuestIntent,
   toggleQuestRewardClaimed,
+  deleteAftermathEntry,
   ignoreQuest,
   requestQuestRescan,
   questRescanDone,
@@ -21,6 +22,7 @@ const QUEST_SEEN_KEY = 'quest_helper_seen_progress_v1';
 const ui = {
   questCategory: '全部',
   questEditRewards: false,
+  confirmDeleteTrait: '',
 };
 
 let root = null;
@@ -234,7 +236,7 @@ function renderContent(state) {
     updatedDay: '',
     rescanPending: false,
     rescanFp: DATA.questBoard.rescanFp,
-    aftermath: { local: [], world: [] },
+    aftermath: { local: [], world: [], localEntries: [], worldEntries: [] },
     items: [],
     counts: { total: 0, story: 0, local: 0, side: 0, accepted: 0, editableAccepted: 0, intent: 0, progressed: 0 },
   };
@@ -278,11 +280,14 @@ function renderContent(state) {
           '重扫本地情报 · 每日 1 次',
           { type: 'button' },
           {
-            click: () => run(
-              '已预约重扫',
-              (s) => requestQuestRescan(s, lastFloor(), chatCount(), { nullCore: true }),
-              { redraw: true },
-            ),
+            click: () => {
+              ui.confirmDeleteTrait = '';
+              return run(
+                '已预约重扫',
+                (s) => requestQuestRescan(s, lastFloor(), chatCount(), { nullCore: true }),
+                { redraw: true },
+              );
+            },
           },
         ),
       );
@@ -297,11 +302,14 @@ function renderContent(state) {
         `重扫本地情报 · ${qb.rescanFp} FP`,
         { type: 'button' },
         {
-          click: () => run(
-            '已预约重扫',
-            (s) => requestQuestRescan(s, lastFloor(), chatCount(), { nullCore: false }),
-            { redraw: true },
-          ),
+          click: () => {
+            ui.confirmDeleteTrait = '';
+            return run(
+              '已预约重扫',
+              (s) => requestQuestRescan(s, lastFloor(), chatCount(), { nullCore: false }),
+              { redraw: true },
+            );
+          },
         },
       ),
     );
@@ -323,11 +331,128 @@ function renderContent(state) {
     );
   }
 
-  if (qb.aftermath && Array.isArray(qb.aftermath.local) && qb.aftermath.local.length > 0) {
-    wrap.append(renderNoteCallout(`当前地区余波：${qb.aftermath.local.join('；')}`));
+  const localEntries = qb.aftermath && Array.isArray(qb.aftermath.localEntries)
+    ? qb.aftermath.localEntries
+    : [];
+  const worldEntries = qb.aftermath && Array.isArray(qb.aftermath.worldEntries)
+    ? qb.aftermath.worldEntries
+    : [];
+  const editableAccepted = typeof qb.counts.editableAccepted === 'number'
+    ? qb.counts.editableAccepted
+    : qb.items.filter((x) => x.accepted && !x.fromFormalOnly).length;
+  const canEditMode = editableAccepted > 0 || localEntries.length > 0 || worldEntries.length > 0;
+  if (!canEditMode) {
+    ui.questEditRewards = false;
+    ui.confirmDeleteTrait = '';
   }
-  if (qb.aftermath && Array.isArray(qb.aftermath.world) && qb.aftermath.world.length > 0) {
-    wrap.append(renderNoteCallout(`世界局势余波：${qb.aftermath.world.join('；')}`));
+
+  // 独立词条双栏区块：当前区域词条 / 世界区域词条
+  if (localEntries.length > 0 || worldEntries.length > 0) {
+    const hasBothTraits = localEntries.length > 0 && worldEntries.length > 0;
+    const traitsGrid = el('section', 'qh-traits-grid' + (hasBothTraits ? '' : ' is-single'));
+
+    const renderTraitCard = (kind, titleText, badgeText, entries) => {
+      const card = el('div', `qh-trait-card is-${kind}`);
+      const head = el('div', 'qh-trait-head', [
+        el('div', 'qh-trait-title-wrap', [
+          el('span', 'qh-trait-title', titleText),
+          el('span', 'qh-trait-badge', badgeText),
+        ]),
+      ]);
+      if (ui.questEditRewards) {
+        head.append(el('span', 'qh-trait-edit-hint', '修改模式：可删除词条'));
+      }
+      card.append(head);
+
+      const list = el('div', 'qh-trait-list');
+      entries.forEach((entry) => {
+        const traitUid = `${kind}:${entry.key}:${entry.index}:${entry.text}`;
+        const confirming = ui.questEditRewards && ui.confirmDeleteTrait === traitUid;
+        const toneClass = entry.tone ? ` is-${entry.tone}` : '';
+        const item = el('div', 'qh-trait-item' + toneClass + (confirming ? ' is-confirming' : ''));
+        const main = el('div', 'qh-trait-main');
+        if (entry.tag) {
+          main.append(el('span', 'qh-trait-tag', entry.tag));
+        } else if (entry.tone) {
+          main.append(el('span', 'qh-trait-dot'));
+        }
+        const bodyText = entry.tag ? entry.body : (entry.body || entry.text);
+        if (bodyText) {
+          main.append(el('span', 'qh-trait-body', bodyText));
+        }
+        item.append(main);
+
+        if (ui.questEditRewards) {
+          const acts = el('div', 'qh-trait-actions');
+          if (confirming) {
+            acts.append(
+              el(
+                'button',
+                'qh-trait-btn is-confirm',
+                '确认删除',
+                { type: 'button' },
+                {
+                  click: () => run(
+                    '已删除词条',
+                    (s) => deleteAftermathEntry(s, entry.key, entry.index, entry.text),
+                    {
+                      redraw: true,
+                      after: () => {
+                        ui.confirmDeleteTrait = '';
+                      },
+                    },
+                  ),
+                },
+              ),
+              el(
+                'button',
+                'qh-trait-btn is-cancel',
+                '取消',
+                { type: 'button' },
+                {
+                  click: () => {
+                    ui.confirmDeleteTrait = '';
+                    render();
+                  },
+                },
+              ),
+            );
+          } else {
+            acts.append(
+              el(
+                'button',
+                'qh-trait-btn is-delete',
+                '删除',
+                { type: 'button' },
+                {
+                  click: () => {
+                    ui.confirmDeleteTrait = traitUid;
+                    render();
+                  },
+                },
+              ),
+            );
+          }
+          item.append(acts);
+        }
+
+        list.append(item);
+      });
+      card.append(list);
+      return card;
+    };
+
+    if (localEntries.length > 0) {
+      traitsGrid.append(
+        renderTraitCard('local', '当前区域词条', `${regionDisplay} · ${localEntries.length} 条`, localEntries),
+      );
+    }
+    if (worldEntries.length > 0) {
+      traitsGrid.append(
+        renderTraitCard('world', '世界区域词条', `全大陆 · ${worldEntries.length} 条`, worldEntries),
+      );
+    }
+    wrap.append(traitsGrid);
   }
 
   // 第二层：分类筛选胶囊 + 修改模式开关
@@ -348,17 +473,14 @@ function renderContent(state) {
         {
           click: () => {
             ui.questCategory = opt.value;
+            ui.confirmDeleteTrait = '';
             render();
           },
         },
       ),
     );
   });
-  const editableAccepted = typeof qb.counts.editableAccepted === 'number'
-    ? qb.counts.editableAccepted
-    : qb.items.filter((x) => x.accepted && !x.fromFormalOnly).length;
-  if (editableAccepted === 0) ui.questEditRewards = false;
-  if (editableAccepted > 0) {
+  if (canEditMode) {
     filterBar.append(
       el(
         'button',
@@ -366,11 +488,12 @@ function renderContent(state) {
         ui.questEditRewards ? '✓ 完成修改' : '✎ 修改模式',
         {
           type: 'button',
-          title: ui.questEditRewards ? '退出收益勾选修改模式' : '开启后可手动勾选或取消已兑现的预期收益',
+          title: ui.questEditRewards ? '退出修改模式' : '开启后可手动勾选已兑现收益或删除区域/世界词条',
         },
         {
           click: () => {
             ui.questEditRewards = !ui.questEditRewards;
+            if (!ui.questEditRewards) ui.confirmDeleteTrait = '';
             render();
           },
         },
@@ -737,6 +860,7 @@ app = {
     }
     cancelClose();
     ui.questEditRewards = false;
+    ui.confirmDeleteTrait = '';
     root.classList.add('qh-open');
     const room = root.querySelector('.qh-room');
     room.classList.remove('enter', 'leave');
@@ -749,8 +873,11 @@ app = {
 
   close() {
     if (!root || !root.classList.contains('qh-open') || root.classList.contains('qh-closing')) return;
+    ui.confirmDeleteTrait = '';
     const finish = () => {
       cancelClose();
+      ui.questEditRewards = false;
+      ui.confirmDeleteTrait = '';
       root.classList.remove('qh-open');
       if (typeof app.onClose === 'function') app.onClose();
     };
@@ -780,6 +907,8 @@ app = {
   hide() {
     if (!root) return;
     cancelClose();
+    ui.questEditRewards = false;
+    ui.confirmDeleteTrait = '';
     root.classList.remove('qh-open');
   },
 };

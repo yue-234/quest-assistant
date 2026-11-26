@@ -9,6 +9,7 @@ import { DATA } from './src/data.js';
 import {
   questBoardState,
   readState,
+  parseAftermathEntry,
   stripTaskTitle,
   matchFormalTask,
   extractHistoryStats,
@@ -18,6 +19,7 @@ import {
   toggleQuestIntent,
   ignoreQuest,
   toggleQuestRewardClaimed,
+  deleteAftermathEntry,
   requestQuestRescan,
   questRescanDone,
   clearQuestRescan,
@@ -686,10 +688,10 @@ test('跨年无年份日期借用上年，正确触发搁置演进', () => {
   const out = renderEjs(crossYearStat);
   assertCleanOutput(out, 'cross-year-md');
   assert.match(out, /剧情任务搁置演进/);
-  assert.match(out, /待演进:已搁置 6 天/);
+  assert.match(out, /待演进:已搁置 7 天/);
 });
 
-test('地区/世界余波持久化：按当前区域精准注入、异区 0 注入、世界常驻与反功德碑规则', () => {
+test('区域与世界词条持久化：按当前区域精准注入、异区 0 注入、新区域默认词条提示与格式规则', () => {
   const baseBoard = {
     区域键: '铁炉堡',
     区域: '铁炉堡',
@@ -702,23 +704,60 @@ test('地区/世界余波持久化：按当前区域精准注入、异区 0 注�
     ],
   };
 
-  // 1) 无余波节点：0 注入 当前余波，且提示首次写入用 insert /事件/任务情报板/余波
+  // 1) 无余波节点：0 注入 当前词条，且提示首次写入用 insert /事件/任务情报板/余波
   const noAftermathStat = {
     世界: { 地点: '铁炉堡-商业街', 时间: '复兴纪元488年-3月-11日-10:00' },
     事件: { 任务情报板: baseBoard },
   };
   const outNone = renderEjs(noAftermathStat);
   assertCleanOutput(outNone, 'aftermath-none');
-  assert.doesNotMatch(outNone, /当前影响（持续生效的客观现状）/);
-  assert.match(outNone, /后续影响/);
-  assert.match(outNone, /每条 30~50 字/);
-  assert.match(outNone, /禁止以 `<user>` 或冒险者为主语写战绩播报/);
-  assert.match(outNone, /支线任务不写/);
-  assert.match(outNone, /仅剧情任务引发的跨大区或全大陆级重大后果允许写入 `世界`/);
-  assert.match(outNone, /保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」/);
+  assert.doesNotMatch(outNone, /当前词条（持续生效的客观现状）/);
+  assert.match(outNone, /区域与世界词条:/);
+  assert.match(outNone, /\[绿\/黄\/红\]【2~6字短标签】30~50字客观现状/);
+  assert.match(outNone, /默认写入 3 条词条/);
+  assert.match(outNone, /禁止 3 绿、3 黄、3 红/);
+  assert.match(outNone, /不得每区机械套用 1 绿 1 黄 1 红/);
+  assert.match(outNone, /离开满 14 天/);
+  assert.match(outNone, /明确剧情变故、已到期的预告事件/);
+  assert.match(outNone, /禁止以 `<user>` 或冒险者为主语写战绩记录/);
+  assert.match(outNone, /支线任务不改写词条/);
+  assert.match(outNone, /`世界` 词条同样使用 `\[绿\/黄\/红\]` 色阶，不默认生成，仅剧情任务引发的跨大区或全大陆级重大后果允许写入或改写 `世界`/);
+  assert.match(outNone, /保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」「区域访问日」/);
   assert.match(outNone, /"op": "insert", "path": "\/事件\/任务情报板\/余波"/);
 
-  // 2) 有地区余波但处于异区且无世界余波：异区 0 token 注入
+  // 1.5) init 与 relocate 且当前区域无词条时，本轮指令提示写入 3 条差异化色阶初始区域词条并记录区域访问日
+  const outInit = renderEjs({
+    世界: { 地点: '霜语城-港口', 时间: '复兴纪元488年-3月-11日-10:00' },
+    事件: {},
+  });
+  assertCleanOutput(outInit, 'aftermath-init-hint');
+  assert.match(outInit, /为当前区域写入 3 条差异化色阶的初始区域词条（禁止纯色）并记录区域访问日/);
+  assert.match(outInit, /"区域访问日": \{ "港口": "复兴纪元488年-3月-11日" \}/);
+
+  const outRelocateNoTrait = renderEjs({
+    世界: { 地点: '瓦伦蒂亚-城门广场', 时间: '复兴纪元488年-3月-11日-10:00' },
+    事件: { 任务情报板: baseBoard },
+  });
+  assertCleanOutput(outRelocateNoTrait, 'aftermath-relocate-hint');
+  assert.match(outRelocateNoTrait, /为当前区域写入 3 条差异化色阶的初始区域词条（禁止纯色）并记录区域访问日/);
+  assert.match(outRelocateNoTrait, /"op": "insert", "path": "\/事件\/任务情报板\/区域访问日"/);
+
+  const outRelocateHasTrait = renderEjs({
+    世界: { 地点: '瓦伦蒂亚-城门广场', 时间: '复兴纪元488年-3月-11日-10:00' },
+    事件: {
+      任务情报板: {
+        ...baseBoard,
+        余波: {
+          瓦伦蒂亚: ['[黄]【商税上调】城邦议会提高外港关税，城内香料与布匹零售价普涨两成。'],
+        },
+      },
+    },
+  });
+  assertCleanOutput(outRelocateHasTrait, 'aftermath-relocate-has-trait');
+  assert.doesNotMatch(outRelocateHasTrait, /为当前区域写入 3 条差异化色阶的初始区域词条/);
+  assert.match(outRelocateHasTrait, /返回旧区域（首次记录访问日）：无明确剧情变故或到期预告事件时保持原词条不变，并记录区域访问日/);
+
+  // 2) 有地区词条但处于异区且无世界词条：异区 0 token 注入
   const otherRegionStat = {
     世界: { 地点: '瓦伦蒂亚-城门广场', 时间: '复兴纪元488年-3月-11日-10:00' },
     事件: {
@@ -727,36 +766,43 @@ test('地区/世界余波持久化：按当前区域精准注入、异区 0 注�
         区域键: '瓦伦蒂亚',
         区域: '瓦伦蒂亚',
         余波: {
-          铁炉堡: ['旧铸造区坍塌封禁，城内精铁与武器收购价上涨三成，卫兵在南门设卡盘查外乡人。'],
+          铁炉堡: ['【矿区封禁】旧铸造区坍塌封禁，城内精铁与武器收购价上涨三成，卫兵在南门设卡盘查外乡人。'],
         },
       },
     },
   };
   const outOther = renderEjs(otherRegionStat);
   assertCleanOutput(outOther, 'aftermath-other-region');
-  assert.doesNotMatch(outOther, /当前影响（持续生效的客观现状）/);
+  assert.doesNotMatch(outOther, /当前词条（持续生效的客观现状）/);
   assert.doesNotMatch(outOther, /旧铸造区坍塌封禁/);
   assert.match(outOther, /对已有区域键用 `replace`、新区域键用 `insert` 更新 `\/事件\/任务情报板\/余波\/<区域名或世界>`/);
   const stOther = questBoardState(otherRegionStat);
-  assert.deepEqual(stOther.aftermath, { local: [], world: [] });
+  assert.deepEqual(stOther.aftermath, { local: [], world: [], localEntries: [], worldEntries: [] });
 
-  // 3) 处于本区且含世界余波：精准注入本区 + 世界，且不混入其他城市，单类最多 3 条
+  // 3) 处于本区且含世界词条：精准注入本区 + 世界，且不混入其他城市，单类最多 3 条
   const localAndWorldStat = {
     世界: { 地点: '铁炉堡-铁砧酒馆', 时间: '复兴纪元488年-3月-11日-10:00' },
     事件: {
       任务情报板: {
         ...baseBoard,
         余波: {
-          铁炉堡: ['旧条1', '旧条2', '旧条3', '南门高炉重启后黑烟终日不散，城防军接管矿业税局，铁锭价格回落但走私案激增。'],
-          雾晶港: ['雾晶港灯塔损毁，夜航商船被迫改道北湾。'],
-          世界: ['北境商路因霜潮封冻中断，各大主城魔导燃料配给收紧，边境流民向南涌入。'],
+          铁炉堡: [
+            '旧条1',
+            '【税卡增设】旧条2',
+            '旧条3',
+            '【高炉重启】南门高炉重启后黑烟终日不散，城防军接管矿业税局，铁锭价格回落但走私案激增。',
+          ],
+          雾晶港: ['【灯塔损毁】雾晶港灯塔损毁，夜航商船被迫改道北湾。'],
+          世界: ['【霜潮封路】北境商路因霜潮封冻中断，各大主城魔导燃料配给收紧，边境流民向南涌入。'],
         },
       },
     },
   };
   const outLocal = renderEjs(localAndWorldStat);
   assertCleanOutput(outLocal, 'aftermath-local-world');
-  assert.match(outLocal, /当前影响（持续生效的客观现状）/);
+  assert.match(outLocal, /当前词条（持续生效的客观现状）:/);
+  assert.match(outLocal, /本区词条（铁炉堡）:/);
+  assert.match(outLocal, /世界词条:/);
   assert.match(outLocal, /南门高炉重启后黑烟终日不散/);
   assert.match(outLocal, /北境商路因霜潮封冻中断/);
   assert.doesNotMatch(outLocal, /旧条1/);
@@ -765,13 +811,294 @@ test('地区/世界余波持久化：按当前区域精准注入、异区 0 注�
   const stLocal = questBoardState(localAndWorldStat);
   assert.equal(stLocal.aftermath.local.length, 3);
   assert.deepEqual(stLocal.aftermath.local, [
-    '旧条2',
+    '【税卡增设】旧条2',
     '旧条3',
-    '南门高炉重启后黑烟终日不散，城防军接管矿业税局，铁锭价格回落但走私案激增。',
+    '【高炉重启】南门高炉重启后黑烟终日不散，城防军接管矿业税局，铁锭价格回落但走私案激增。',
   ]);
   assert.deepEqual(stLocal.aftermath.world, [
-    '北境商路因霜潮封冻中断，各大主城魔导燃料配给收紧，边境流民向南涌入。',
+    '【霜潮封路】北境商路因霜潮封冻中断，各大主城魔导燃料配给收紧，边境流民向南涌入。',
   ]);
+  assert.deepEqual(stLocal.aftermath.localEntries, [
+    { key: '铁炉堡', index: 1, text: '【税卡增设】旧条2', tone: '', tag: '税卡增设', body: '旧条2' },
+    { key: '铁炉堡', index: 2, text: '旧条3', tone: '', tag: '', body: '旧条3' },
+    {
+      key: '铁炉堡',
+      index: 3,
+      text: '【高炉重启】南门高炉重启后黑烟终日不散，城防军接管矿业税局，铁锭价格回落但走私案激增。',
+      tone: '',
+      tag: '高炉重启',
+      body: '南门高炉重启后黑烟终日不散，城防军接管矿业税局，铁锭价格回落但走私案激增。',
+    },
+  ]);
+  assert.deepEqual(stLocal.aftermath.worldEntries, [
+    {
+      key: '世界',
+      index: 0,
+      text: '【霜潮封路】北境商路因霜潮封冻中断，各大主城魔导燃料配给收紧，边境流民向南涌入。',
+      tone: '',
+      tag: '霜潮封路',
+      body: '北境商路因霜潮封冻中断，各大主城魔导燃料配给收紧，边境流民向南涌入。',
+    },
+  ]);
+});
+
+test('返回旧区域 14 天演变防抖：离开 < 14 天保持稳定（保留剧情变故例外），>= 14 天触发演进，且同步更新旧区离开日', () => {
+  const baseBoard = {
+    区域键: '铁炉堡',
+    区域: '铁炉堡',
+    更新日: '复兴纪元488年-3月-12日',
+    区域访问日: {
+      铁炉堡: '复兴纪元488年-3月-12日',
+      瓦伦蒂亚: '复兴纪元488年-3月-10日',
+    },
+    余波: {
+      瓦伦蒂亚: [
+        '[绿]【海贸兴旺】外港商船泊位满载，香料与织物交易量持续走高。',
+        '[黄]【税卡增设】城邦议会在南门增设稽查税卡，入城商队排队耗时拉长。',
+      ],
+    },
+    列表: [
+      { id: 'q1', 类别: '支线任务', 等级: 'D', 标题: '修补矿车', 方式: '委托', 预期收益: ['金币 ×50'] },
+    ],
+  };
+
+  // 1) 离开 3 天（< 14 天）：保持原词条不变，保留明确剧情变故例外，且同时 replace 更新旧区与新区区域访问日
+  const outShort = renderEjs({
+    世界: { 地点: '瓦伦蒂亚-城门广场', 时间: '复兴纪元488年-3月-13日-10:00' },
+    事件: { 任务情报板: baseBoard },
+  });
+  assertCleanOutput(outShort, 'revisit-short');
+  assert.match(outShort, /返回旧区域（离开不足 14 天）：无明确剧情变故或到期预告事件时保持原词条不变，并更新区域访问日/);
+  assert.match(outShort, /"op": "replace", "path": "\/事件\/任务情报板\/区域访问日\/铁炉堡", "value": "复兴纪元488年-3月-13日"/);
+  assert.match(outShort, /"op": "replace", "path": "\/事件\/任务情报板\/区域访问日\/瓦伦蒂亚", "value": "复兴纪元488年-3月-13日"/);
+
+  // 2) 离开 16 天（>= 14 天）：触发演进提示，且同时更新旧区与新区区域访问日
+  const outLong = renderEjs({
+    世界: { 地点: '瓦伦蒂亚-城门广场', 时间: '复兴纪元488年-3月-26日-10:00' },
+    事件: { 任务情报板: baseBoard },
+  });
+  assertCleanOutput(outLong, 'revisit-long');
+  assert.match(outLong, /返回旧区域（已离开 16 天）：按上方词条规则演进或改写本区最多 1 条词条（无明显变化则保持不变），并更新区域访问日/);
+  assert.match(outLong, /"op": "replace", "path": "\/事件\/任务情报板\/区域访问日\/铁炉堡", "value": "复兴纪元488年-3月-26日"/);
+  assert.match(outLong, /"op": "replace", "path": "\/事件\/任务情报板\/区域访问日\/瓦伦蒂亚", "value": "复兴纪元488年-3月-26日"/);
+
+  // 3) 已有区域访问日对象但迁入从未访问过的新城：旧区 replace、新区 insert
+  const outNewCity = renderEjs({
+    世界: { 地点: '雾晶港-北码头', 时间: '复兴纪元488年-3月-26日-10:00' },
+    事件: { 任务情报板: baseBoard },
+  });
+  assertCleanOutput(outNewCity, 'revisit-new-city');
+  assert.match(outNewCity, /为当前区域写入 3 条差异化色阶的初始区域词条（禁止纯色）并记录区域访问日/);
+  assert.match(outNewCity, /"op": "replace", "path": "\/事件\/任务情报板\/区域访问日\/铁炉堡", "value": "复兴纪元488年-3月-26日"/);
+  assert.match(outNewCity, /"op": "insert", "path": "\/事件\/任务情报板\/区域访问日\/雾晶港", "value": "复兴纪元488年-3月-26日"/);
+
+  // 4) 无区域访问日对象时换区：合并写入旧区与新区到同一个 insert 对象
+  const noVisitBoard = { ...baseBoard };
+  delete noVisitBoard['区域访问日'];
+  const outNoVisitRelocate = renderEjs({
+    世界: { 地点: '瓦伦蒂亚-城门广场', 时间: '复兴纪元488年-3月-20日-10:00' },
+    事件: { 任务情报板: noVisitBoard },
+  });
+  assertCleanOutput(outNoVisitRelocate, 'revisit-no-visit-map');
+  assert.match(outNoVisitRelocate, /返回旧区域（首次记录访问日）：无明确剧情变故或到期预告事件时保持原词条不变，并记录区域访问日/);
+  assert.match(
+    outNoVisitRelocate,
+    /"op": "insert", "path": "\/事件\/任务情报板\/区域访问日", "value": \{ "铁炉堡": "复兴纪元488年-3月-20日", "瓦伦蒂亚": "复兴纪元488年-3月-20日" \}/,
+  );
+});
+
+test('精确历法 31 日跨月差值、首次建板空日期与空壳板 rescan 补写区域访问日', () => {
+  // 1) 3 月有 31 天：3月18日 -> 4月1日 真实间隔 14 天（刚好触发 >= 14 天演进）
+  const board31 = {
+    区域键: '铁炉堡',
+    区域: '铁炉堡',
+    更新日: '复兴纪元488年-3月-31日',
+    区域访问日: {
+      铁炉堡: '复兴纪元488年-3月-31日',
+      瓦伦蒂亚: '复兴纪元488年-3月-18日',
+    },
+    余波: {
+      瓦伦蒂亚: ['[黄]【商税上调】城邦议会提高外港关税，布匹零售价普涨两成。'],
+    },
+    列表: [
+      { id: 'q1', 类别: '支线任务', 等级: 'D', 标题: '修补矿车', 方式: '委托', 预期收益: ['金币 ×50'] },
+    ],
+  };
+  const out14 = renderEjs({
+    世界: { 地点: '瓦伦蒂亚-广场', 时间: '复兴纪元488年-4月-1日-09:00' },
+    事件: { 任务情报板: board31 },
+  });
+  assertCleanOutput(out14, 'calendar-31-exact-14');
+  assert.match(out14, /返回旧区域（已离开 14 天）/);
+
+  // 3月31日 -> 4月1日 仅隔 1 天（旧 30 天近似会算成 0 或 2 天，现应准确为不足 14 天）
+  const board1 = {
+    ...board31,
+    区域访问日: { 铁炉堡: '复兴纪元488年-3月-31日', 瓦伦蒂亚: '复兴纪元488年-3月-31日' },
+  };
+  const out1 = renderEjs({
+    世界: { 地点: '瓦伦蒂亚-广场', 时间: '复兴纪元488年-4月-1日-09:00' },
+    事件: { 任务情报板: board1 },
+  });
+  assertCleanOutput(out1, 'calendar-31-exact-1');
+  assert.match(out1, /返回旧区域（离开不足 14 天）/);
+
+  // 2) 首次建板时若世界时间为空，省略 "区域访问日" 字段且 JSON 合法转义
+  const outEmptyDay = renderEjs({
+    世界: { 地点: '带"引号"之城', 时间: '' },
+    事件: {},
+  });
+  assertCleanOutput(outEmptyDay, 'init-empty-day-escape');
+  assert.doesNotMatch(outEmptyDay, /"区域访问日":/);
+  assert.match(outEmptyDay, /"区域": "带\\"引号\\"之城"/);
+
+  // 3) 空壳板 rescan 补齐基础键时同样输出区域访问日 Patch
+  const outShellRescan = renderEjs(
+    {
+      世界: { 地点: '白石镇', 时间: '复兴纪元488年-4月-2日-10:00' },
+      事件: { 任务情报板: { 待重扫: { 消息数: '5' } } },
+    },
+    { chat: Array.from({ length: 5 }, () => ({ mes: '' })) },
+  );
+  assertCleanOutput(outShellRescan, 'shell-rescan-visit-day');
+  assert.match(outShellRescan, /"op": "insert", "path": "\/事件\/任务情报板\/区域访问日", "value": \{ "白石镇": "复兴纪元488年-4月-2日" \}/);
+});
+
+test('parseAftermathEntry 与 deleteAftermathEntry：三色前缀与短标签兼容解析、精准删除与空节点清理', () => {
+  assert.deepEqual(
+    parseAftermathEntry('[绿]【商队云集】东门集市日夜不息，药材与魔导晶供应充裕。'),
+    {
+      text: '[绿]【商队云集】东门集市日夜不息，药材与魔导晶供应充裕。',
+      tone: 'green',
+      tag: '商队云集',
+      body: '东门集市日夜不息，药材与魔导晶供应充裕。',
+    },
+  );
+  assert.deepEqual(
+    parseAftermathEntry('[黄]【商税上调】城邦议会提高外港关税，布匹零售价普涨两成。'),
+    {
+      text: '[黄]【商税上调】城邦议会提高外港关税，布匹零售价普涨两成。',
+      tone: 'yellow',
+      tag: '商税上调',
+      body: '城邦议会提高外港关税，布匹零售价普涨两成。',
+    },
+  );
+  assert.deepEqual(
+    parseAftermathEntry('[红]【城门戒严】北境魔潮逼近，入城须逐车盘查并实行宵禁。'),
+    {
+      text: '[红]【城门戒严】北境魔潮逼近，入城须逐车盘查并实行宵禁。',
+      tone: 'red',
+      tag: '城门戒严',
+      body: '北境魔潮逼近，入城须逐车盘查并实行宵禁。',
+    },
+  );
+  assert.deepEqual(
+    parseAftermathEntry('【红】 城外突发异变，南门暂时关闭。'),
+    {
+      text: '【红】 城外突发异变，南门暂时关闭。',
+      tone: 'red',
+      tag: '',
+      body: '城外突发异变，南门暂时关闭。',
+    },
+  );
+  assert.deepEqual(
+    parseAftermathEntry('【港口戒严】 夜间禁止商船靠岸，入城货物须经海军检查。'),
+    {
+      text: '【港口戒严】 夜间禁止商船靠岸，入城货物须经海军检查。',
+      tone: '',
+      tag: '港口戒严',
+      body: '夜间禁止商船靠岸，入城货物须经海军检查。',
+    },
+  );
+  assert.deepEqual(
+    parseAftermathEntry('旧版纯文本余波词条无短标签。'),
+    {
+      text: '旧版纯文本余波词条无短标签。',
+      tone: '',
+      tag: '',
+      body: '旧版纯文本余波词条无短标签。',
+    },
+  );
+
+  const stat = {
+    世界: { 地点: '铁炉堡-商业街' },
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        余波: {
+          铁炉堡: ['【高炉重启】黑烟不散。', '【矿区封禁】精铁涨价三成。'],
+          世界: ['【霜潮封路】北境商路中断。'],
+        },
+      },
+    },
+  };
+
+  // 1) 精准删除数组第 0 项
+  const r1 = deleteAftermathEntry(stat, '铁炉堡', 0, '【高炉重启】黑烟不散。');
+  assert.equal(r1.done, '已删除词条');
+  assert.deepEqual(r1.stat.事件.任务情报板.余波.铁炉堡, ['【矿区封禁】精铁涨价三成。']);
+  assert.deepEqual(r1.stat.事件.任务情报板.余波.世界, ['【霜潮封路】北境商路中断。']);
+
+  // 2) 下标偏移时按 expectedText 兜底查找删除，数组删空时移除空键
+  const r2 = deleteAftermathEntry(r1.stat, '铁炉堡', 99, '【矿区封禁】精铁涨价三成。');
+  assert.equal(r2.done, '已删除词条');
+  assert.equal(Object.prototype.hasOwnProperty.call(r2.stat.事件.任务情报板.余波, '铁炉堡'), false);
+  assert.deepEqual(r2.stat.事件.任务情报板.余波.世界, ['【霜潮封路】北境商路中断。']);
+
+  // 3) 余波对象删空时移除整个 余波 字段
+  const r3 = deleteAftermathEntry(r2.stat, '世界', 0, '【霜潮封路】北境商路中断。');
+  assert.equal(r3.done, '已删除词条');
+  assert.equal(Object.prototype.hasOwnProperty.call(r3.stat.事件.任务情报板, '余波'), false);
+
+  // 4) 目标不存在返回错误
+  const r4 = deleteAftermathEntry(r3.stat, '世界', 0, '【霜潮封路】北境商路中断。');
+  assert.equal(r4.error, '未找到要删除的词条');
+  const r5 = deleteAftermathEntry(stat, '铁炉堡', 5, '不存在的词条');
+  assert.equal(r5.error, '未找到要删除的词条');
+
+  // 5) 多行正文与空正文不丢标签
+  assert.deepEqual(
+    parseAftermathEntry('[黄]【商路受阻】第一行现状。\n第二行补充说明。'),
+    {
+      text: '[黄]【商路受阻】第一行现状。\n第二行补充说明。',
+      tone: 'yellow',
+      tag: '商路受阻',
+      body: '第一行现状。\n第二行补充说明。',
+    },
+  );
+  assert.deepEqual(
+    parseAftermathEntry('[红]【全城戒严】'),
+    {
+      text: '[红]【全城戒严】',
+      tone: 'red',
+      tag: '全城戒严',
+      body: '',
+    },
+  );
+
+  // 6) 带前后空白的异常区域键：questBoardState 保留原始 key，deleteAftermathEntry 精确匹配与 trim 回退均可删除
+  const paddedKeyStat = {
+    世界: { 地点: '铁炉堡-商业街' },
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        余波: {
+          ' 铁炉堡 ': ['[绿]【矿脉丰收】新矿道产出稳定。'],
+        },
+      },
+    },
+  };
+  const qbPadded = questBoardState(paddedKeyStat);
+  assert.equal(qbPadded.aftermath.localEntries.length, 1);
+  assert.equal(qbPadded.aftermath.localEntries[0].key, ' 铁炉堡 ');
+  const delRaw = deleteAftermathEntry(paddedKeyStat, ' 铁炉堡 ', 0, '[绿]【矿脉丰收】新矿道产出稳定。');
+  assert.equal(delRaw.done, '已删除词条');
+  assert.equal(Object.prototype.hasOwnProperty.call(delRaw.stat.事件.任务情报板, '余波'), false);
+  const delTrimFallback = deleteAftermathEntry(paddedKeyStat, '铁炉堡', 0, '[绿]【矿脉丰收】新矿道产出稳定。');
+  assert.equal(delTrimFallback.done, '已删除词条');
+  assert.equal(Object.prototype.hasOwnProperty.call(delTrimFallback.stat.事件.任务情报板, '余波'), false);
 });
 
 test('剧情追加规则与参考配额非硬上限断言', () => {
@@ -886,6 +1213,19 @@ test('前端自动聚合未上墙的原版 /任务列表 进行中任务（去�
   const rec = recordAcceptedQuests(stat).stat;
   assert.deepEqual(rec['事件']['任务情报板']['曾接取'], ['白石暗潮']);
   assert.equal(hasClosedQuestLeftovers(stat), false);
+
+  // 原版任务等级推断左边界：Boss级魔物 / NPC级 不误判为 S级 / C级
+  const boundaryStat = {
+    世界: { 地点: '白石镇' },
+    任务列表: {
+      '讨伐洞穴首领': { 状态: '进行中', 详情: '击败洞穴深处的Boss级魔物，保障商路安全。' },
+      '护送重要学者': { 状态: '进行中', 详情: '护送NPC级关键人物抵达城门。' },
+    },
+    事件: { 任务情报板: { 区域键: '白石镇', 区域: '白石镇', 列表: [] } },
+  };
+  const qbBoundary = questBoardState(boundaryStat);
+  assert.equal(qbBoundary.items.find((x) => x.title === '讨伐洞穴首领').rank, '原版');
+  assert.equal(qbBoundary.items.find((x) => x.title === '护送重要学者').rank, '原版');
 });
 
 // ---------------------------------------------------------------------------

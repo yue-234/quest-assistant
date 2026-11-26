@@ -3,7 +3,7 @@
 // 项目地址：https://github.com/yue-234/quest-assistant
 // 下面 @data 一段与 src/data.js 的 DATA 保持同一份口径。
 // @data-begin
-const _data = {"questBoard":{"rescanFp":100,"storyAdvanceDays":5,"categories":{"剧情任务":{"max":2,"rewardSlots":10,"qualityShift":1,"crossRegion":true},"本地主线":{"max":2,"rewardSlots":5,"qualityShift":1,"crossRegion":false},"支线任务":{"max":3,"rewardSlots":3,"qualityShift":0,"crossRegion":false}},"maxItems":7,"maxIgnored":12,"maxAftermathPerScope":3}};
+const _data = {"questBoard":{"rescanFp":100,"storyAdvanceDays":5,"categories":{"剧情任务":{"max":2,"rewardSlots":10,"qualityShift":1,"crossRegion":true},"本地主线":{"max":2,"rewardSlots":5,"qualityShift":1,"crossRegion":false},"支线任务":{"max":3,"rewardSlots":3,"qualityShift":0,"crossRegion":false}},"maxItems":7,"maxIgnored":12,"maxAftermathPerScope":3,"regionRevisitDays":14}};
 // @data-end
 
 const _int = (v) => { const m = String(v ?? '').replace(/[,，]/g, '').match(/-?\d+/); return m ? Number(m[0]) : 0; };
@@ -165,6 +165,15 @@ const _hasClaimed = !!(
 );
 const _claimedMap = _hasClaimed ? _qb['已兑现'] : {};
 const _maxAftermath = (_data.questBoard && Number(_data.questBoard.maxAftermathPerScope)) || 3;
+const _regionRevisitDays = (_data.questBoard && Number(_data.questBoard.regionRevisitDays)) || 14;
+const _hasVisitMap = !!(
+  _hasQb &&
+  Object.prototype.hasOwnProperty.call(_qb, '区域访问日') &&
+  _qb['区域访问日'] &&
+  typeof _qb['区域访问日'] === 'object' &&
+  !Array.isArray(_qb['区域访问日'])
+);
+const _visitMap = _hasVisitMap ? _qb['区域访问日'] : {};
 const _hasAftermath = !!(
   _hasQb &&
   Object.prototype.hasOwnProperty.call(_qb, '余波') &&
@@ -211,18 +220,20 @@ const _parseClaimed = (raw) => {
   return { slots, texts };
 };
 const _validMD = (m, d) => m >= 1 && m <= 12 && d >= 1 && d <= 31;
+const _monthPrefix = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+const _ymdOrd = (y, mo, d) => y * 365 + _monthPrefix[mo - 1] + d;
 const _curYmd = (() => {
   const m = _day.match(/(\d+)\s*年?-(\d{1,2})\s*月?-(\d{1,2})\s*日?/);
   if (!m) return null;
   const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
-  return _validMD(mo, d) ? { y, mo, d, ord: y * 360 + mo * 30 + d } : null;
+  return _validMD(mo, d) ? { y, mo, d, ord: _ymdOrd(y, mo, d) } : null;
 })();
 const _curYear = _curYmd ? _curYmd.y : null;
 const _curDayOrd = _curYmd ? _curYmd.ord : null;
 const _borrowYearOrd = (mo, d) => {
   if (_curYear === null || !_validMD(mo, d)) return null;
-  const ord = _curYear * 360 + mo * 30 + d;
-  if (_curDayOrd !== null && ord > _curDayOrd) return (_curYear - 1) * 360 + mo * 30 + d;
+  const ord = _ymdOrd(_curYear, mo, d);
+  if (_curDayOrd !== null && ord > _curDayOrd) return _ymdOrd(_curYear - 1, mo, d);
   return ord;
 };
 const _dayOrdinal = (s) => {
@@ -232,7 +243,7 @@ const _dayOrdinal = (s) => {
   const ymd = norm.match(/(\d+)年?-(\d{1,2})月?-(\d{1,2})日?/);
   if (ymd) {
     const y = Number(ymd[1]), m = Number(ymd[2]), d = Number(ymd[3]);
-    return _validMD(m, d) ? y * 360 + m * 30 + d : null;
+    return _validMD(m, d) ? _ymdOrd(y, m, d) : null;
   }
   const md = norm.match(/(?:^|[^\d])(\d{1,2})月-(\d{1,2})日/);
   if (md && _curYear !== null) {
@@ -240,18 +251,40 @@ const _dayOrdinal = (s) => {
   }
   return null;
 };
+let _lastVisitDay = '';
+let _lastVisitOrd = null;
+let _lastVisitKey = '';
+if (_region.key || _region.name) {
+  for (const [k, v] of Object.entries(_visitMap)) {
+    const kk = _txt(k).trim();
+    if (!kk) continue;
+    if (_sameRegion(_region, kk, kk)) {
+      if (!_lastVisitKey) _lastVisitKey = kk;
+      const ord = _dayOrdinal(v);
+      if (ord !== null && (_lastVisitOrd === null || ord > _lastVisitOrd)) {
+        _lastVisitOrd = ord;
+        _lastVisitDay = _normalizeDay(v);
+        _lastVisitKey = kk;
+      }
+    }
+  }
+}
+const _awayDays = _curDayOrd !== null && _lastVisitOrd !== null
+  ? Math.max(0, _curDayOrd - _lastVisitOrd)
+  : null;
+const _visitRegionKey = _lastVisitKey || _region.name || _region.key || '当前区域';
 const _lastDayOrdInText = (s) => {
   const str = _txt(s);
   if (!str) return null;
   const hits = [];
   for (const m of str.matchAll(/(\d{1,6})\s*年\s*-?\s*(\d{1,2})\s*月\s*-?\s*(\d{1,2})\s*日/g)) {
     const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
-    if (_validMD(mo, d)) hits.push({ idx: m.index, end: m.index + m[0].length, ord: y * 360 + mo * 30 + d });
+    if (_validMD(mo, d)) hits.push({ idx: m.index, end: m.index + m[0].length, ord: _ymdOrd(y, mo, d) });
   }
   for (const m of str.matchAll(/(?<![a-zA-Z0-9_.])(\d{1,6})([-/.])(\d{1,2})\2(\d{1,2})(?![a-zA-Z0-9_.])/g)) {
     if (m[2] === '.' && m[1].length < 3) continue;
     const y = Number(m[1]), mo = Number(m[3]), d = Number(m[4]);
-    if (_validMD(mo, d)) hits.push({ idx: m.index, end: m.index + m[0].length, ord: y * 360 + mo * 30 + d });
+    if (_validMD(mo, d)) hits.push({ idx: m.index, end: m.index + m[0].length, ord: _ymdOrd(y, mo, d) });
   }
   if (_curYear !== null) {
     for (const m of str.matchAll(/(\d{1,2})\s*月\s*-?\s*(\d{1,2})\s*日/g)) {
@@ -452,6 +485,49 @@ const _qbMode = _qbRescanDue
         ? 'refill'
         : (_storyDue.length > 0 ? 'advance' : 'maintain'))));
 
+const _revisitDue = _qbMode === 'relocate'
+  && _localAftermathShown.length > 0
+  && _awayDays !== null
+  && _awayDays >= _regionRevisitDays;
+const _visitPatchHint = (() => {
+  if (!_day || !_hasQb) return '';
+  const needVisitPatch = _qbMode === 'init'
+    || _qbMode === 'relocate'
+    || _qbExistKeys.length === 0
+    || (!_hasVisitMap && _qbMode === 'rescan');
+  if (!needVisitPatch) return '';
+  let oldVisitKeyMatched = '';
+  let oldVisitKey = '';
+  if (_qbMode === 'relocate' && (_qbRegionName || _qbRegionKey) && !_sameRegion(_region, _qbRegionKey, _qbRegionName)) {
+    const oldRegion = _resolveRegionText(_qbRegionName || _qbRegionKey);
+    for (const k of Object.keys(_visitMap)) {
+      const kk = _txt(k).trim();
+      if (!kk) continue;
+      if (_sameRegion(oldRegion, kk, kk)) {
+        oldVisitKeyMatched = kk;
+        break;
+      }
+    }
+    const candidate = oldVisitKeyMatched || _qbRegionName || _qbRegionKey;
+    if (candidate && candidate !== _visitRegionKey) {
+      oldVisitKey = candidate;
+    }
+  }
+  if (!_hasVisitMap) {
+    const entries = oldVisitKey
+      ? `${JSON.stringify(oldVisitKey)}: ${JSON.stringify(_day)}, ${JSON.stringify(_visitRegionKey)}: ${JSON.stringify(_day)}`
+      : `${JSON.stringify(_visitRegionKey)}: ${JSON.stringify(_day)}`;
+    return `\`{ "op": "insert", "path": "/事件/任务情报板/区域访问日", "value": { ${entries} } }\``;
+  }
+  const curOp = _lastVisitKey ? 'replace' : 'insert';
+  const curPatch = `\`{ "op": "${curOp}", "path": "/事件/任务情报板/区域访问日/${_escPtr(_visitRegionKey)}", "value": ${JSON.stringify(_day)} }\``;
+  if (oldVisitKey) {
+    const oldOp = oldVisitKeyMatched ? 'replace' : 'insert';
+    const oldPatch = `\`{ "op": "${oldOp}", "path": "/事件/任务情报板/区域访问日/${_escPtr(oldVisitKey)}", "value": ${JSON.stringify(_day)} }\``;
+    return `${oldPatch} 与 ${curPatch}`;
+  }
+  return curPatch;
+})();
 const _qbNeedGen = _qbMode === 'init' || _qbMode === 'relocate' || _qbMode === 'refill' || _qbMode === 'rescan';
 const _qbNeedAdv = _storyDue.length > 0;
 const _qbTouchBoard = _qbNeedGen;
@@ -488,14 +564,14 @@ _%>
     更新: 未接取任务状态冻结（不演进、不产生世界后果），仅在任务情报板维护；已接取后进展、状态与目标只更新 `/任务列表/<任务名>`（不双写任务情报板），原条目保留在板上追踪 `预期收益`
     完结移出: 任务完结（含单环支线或一次性结算任务）发奖并移出 `/任务列表` 同轮，执行该条 `完结移出` Patch 从任务情报板删除（无需再写 `兑现Patch`）；未接取支线单回合接取并完结同样移出；同轮移除多条数组项时按索引从大到小倒序 `remove`（或整表 `replace` `/事件/任务情报板/列表`）
     锁定与换区: `★已锁定` 与 `已接取` 跨区及重扫保留（`★已锁定` 仅在时限到期后清除，过期项同步时移除）；仅跨城或跨大区触发换区，同城地点变更不换区
-    剧情追加: 剧情中 NPC 给出新委托、悬赏或线索，或触发 `/任务列表` 新任务时，不受默认参考配额限制，用 `insert` 追加至 `/事件/任务情报板/列表/-`（对象型列表用 `insert` 新键）；优先按体量定级为「剧情任务」（B~S 级｜10 栏收益｜品质+1 档）或「本地主线」（5 栏收益｜品质+1 档），仅简单委托或短途事务归「支线任务」（3 栏）；<% if (_qbNeedGen) { %>按下方字段补全<% } else { %>补全 `id`/`类别`/`等级`/`标题`/`方式`/`引导`（联络人或起始线索）/`地点`（仅当前阶段单个去处）/`时限`/`摘要`/`预期收益`<% } %>，剧情任务与本地主线附带后台隐藏 `真相`（剧情任务另附 `更新日`）；已当场写入 `/任务列表` 的按相同原 `标题` 同步追加以追踪收益
-    后续影响: 仅剧情任务与本地主线在完结、失败或搁置恶化造成实质后果时写入 `/事件/任务情报板/余波`（本地主线一律按具体城市或区域名归档；仅剧情任务引发的跨大区或全大陆级重大后果允许写入 `世界`，其余按具体区域名归档；每类最多 <%- _maxAftermath %> 条，超出替换最旧项；支线任务不写）。每条 30~50 字，只写当前仍可见的实体变化（控制权变更、区域封锁或开放、物价波动、环境改变、新法令、难民或商路变动等）；禁止以 `<user>` 或冒险者为主语写战绩播报，禁止写“恢复平静”“居民感激”等空泛描述。<% if (!_hasAftermath) { %>首次写入用 `{ "op": "insert", "path": "/事件/任务情报板/余波", "value": { "<区域名或世界>": ["..."] } }`（同轮多键合并写入同一对象）<% } else { %>对已有区域键用 `replace`、新区域键用 `insert` 更新 `/事件/任务情报板/余波/<区域名或世界>`<% } %>
-    路径: <% if (!_hasQb) { %>`/事件/任务情报板` 未创建，用 `{ "op": "insert", "path": "/事件/任务情报板", "value": { "区域键": "<%- _region.key || 'unknown' %>", "区域": "<%- _region.name || '当前区域' %>", "更新日": "<%- _day %>", "列表": [ ... ] } }`；**严禁对 `/事件` 执行 insert 或 replace**<% } else if (_qbMissKeys.length === 0) { %>分别用 `replace` 更新 `/事件/任务情报板` 下的 `区域键`<% if (_qbRegionChanged && _region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」；**严禁整块覆写 `/事件`**）<% } else if (_qbExistKeys.length === 0) { %>`/事件/任务情报板` 仅含控制字段，分别用 `insert` 写入 `/事件/任务情报板` 下的 `区域键`<% if (_region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」；**严禁整块覆写 `/事件`**）<% } else { %>对已存在键（<%- _qbExistKeys.map((k) => '`' + k + '`').join('、') %>）用 `replace`、对缺失键（<%- _qbMissKeys.map((k) => '`' + k + '`').join('、') %>）用 `insert` 更新 `/事件/任务情报板` 下对应字段<% if (_qbRegionChanged && _region.key) { %>（`区域键` 写 `<%- _region.key %>`）<% } %>（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」；**严禁整块覆写 `/事件`**）<% } %>
+    剧情追加: 剧情中 NPC 给出新委托、悬赏或线索，或触发 `/任务列表` 新任务时，不受默认参考配额限制，用 `insert` 追加至 `/事件/任务情报板/列表/-`（对象型列表用 `insert` 新键）；优先按体量定级为「剧情任务」（B~S 级｜10 栏收益｜品质+1 档）或「本地主线」（5 栏收益｜品质+1 档），仅简单委托或短途事务归「支线任务」（3 栏）；<% if (_qbNeedGen) { %>按下方字段补全<% } else { %>补全 `id`/`类别`/`等级`/`标题`/`方式`/`引导`（联络人或起始线索）/`地点`（仅当前阶段单个去处）/`时限`/`摘要`/`预期收益`<% } %>，剧情任务与本地主线附带后台隐藏 `真相`（剧情任务另含 `更新日`）；已当场写入 `/任务列表` 的按相同原 `标题` 同步追加以追踪收益
+    区域与世界词条: 存储在 `/事件/任务情报板/余波`，每条格式为 `[绿/黄/红]【2~6字短标签】30~50字客观现状`（`[绿]` 表示利好、稳定或优势；`[黄]` 表示隐患、摩擦或波动；`[红]` 表示危机、恶化或封锁）；只写当前仍可见的实体变化（如控制权变更、区域封锁或开放、物价波动、环境改变、新法令、难民或商路变动等），禁止以 `<user>` 或冒险者为主语写战绩记录，禁止写“恢复平静”“居民感激”等空泛描述。首次进入尚未记录词条的区域（初始化或跨区迁入且当前区域无词条）时，按当前世界书设定与近期剧情为当前区域默认写入 3 条词条；禁止 3 绿、3 黄、3 红（每区至少包含 2 种色阶），也不得每区机械套用 1 绿 1 黄 1 红，按各地实际繁荣度、秩序与局势做差异化组合（如安定商都偏 2 绿 1 黄或 2 绿 1 红，隐患较多的城镇偏 1 绿 2 黄或 2 黄 1 红，动荡前线偏 1 黄 2 红或 1 绿 2 红）。`世界` 词条同样使用 `[绿/黄/红]` 色阶，不默认生成，仅剧情任务引发的跨大区或全大陆级重大后果允许写入或改写 `世界`（单区与 `世界` 各自最多保留 <%- _maxAftermath %> 条，超出替换最旧项）。任务推进中仅剧情任务与本地主线在完结、失败或搁置恶化造成实质后果时，可对对应区域词条执行新增、改写替换或移除（本地主线一律按具体城市或区域名归档；支线任务不改写词条）。返回已有词条的旧区域时：离开满 <%- _regionRevisitDays %> 天时，可根据期间剧情与局势演进或改写 1 条词条（无明显变化则保持不变）；离开不足 <%- _regionRevisitDays %> 天时不得无故改动词条，但如果期间已有明确剧情变故、已到期的预告事件（如预告的袭击、灾害、政变等）或任务后果实际波及该区域，仍按剧情改写对应词条。<% if (!_hasAftermath) { %>首次写入用 `{ "op": "insert", "path": "/事件/任务情报板/余波", "value": { "<区域名或世界>": ["[绿/黄/红]【短标签】..."] } }`（同轮多键合并写入同一对象）<% } else { %>对已有区域键用 `replace`、新区域键用 `insert` 更新 `/事件/任务情报板/余波/<区域名或世界>`<% } %>
+    路径: <% if (!_hasQb) { %>`/事件/任务情报板` 未创建，用 `{ "op": "insert", "path": "/事件/任务情报板", "value": { "区域键": <%- JSON.stringify(_region.key || 'unknown') %>, "区域": <%- JSON.stringify(_region.name || '当前区域') %>, "更新日": <%- JSON.stringify(_day) %>,<% if (_day) { %> "区域访问日": { <%- JSON.stringify(_visitRegionKey) %>: <%- JSON.stringify(_day) %> },<% } %> "列表": [ ... ] } }`；**严禁对 `/事件` 执行 insert 或 replace**<% } else if (_qbMissKeys.length === 0) { %>分别用 `replace` 更新 `/事件/任务情报板` 下的 `区域键`<% if (_qbRegionChanged && _region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」「区域访问日」；**严禁整块覆写 `/事件`**）<% } else if (_qbExistKeys.length === 0) { %>`/事件/任务情报板` 仅含控制字段，分别用 `insert` 写入 `/事件/任务情报板` 下的 `区域键`<% if (_region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」「区域访问日」；**严禁整块覆写 `/事件`**）<% } else { %>对已存在键（<%- _qbExistKeys.map((k) => '`' + k + '`').join('、') %>）用 `replace`、对缺失键（<%- _qbMissKeys.map((k) => '`' + k + '`').join('、') %>）用 `insert` 更新 `/事件/任务情报板` 下对应字段<% if (_qbRegionChanged && _region.key) { %>（`区域键` 写 `<%- _region.key %>`）<% } %>（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」「区域访问日」；**严禁整块覆写 `/事件`**）<% } %><% if (_visitPatchHint) { %>；同步区域访问日用 <%- _visitPatchHint %><% } %>
 <% if (_qbNeedGen) { _%>
   生成规格（品质与禁项沿用<任务与委托规则>，+1 档对应 D优良/C稀有/B史诗/A传说/S神话；下列条数为自动生成与补缺的参考配额，非硬上限，剧情追加不受此限）:
     字段:
       基础: `id`、`类别`（剧情任务/本地主线/支线任务）、`等级`（D~S）、`标题`（纯任务名，不带 `（个人/团队）` 后缀）、`方式`（委托/悬赏/调查/探索/危机/周旋/异象）、`引导`（委托/悬赏写联络人与去处；其余写地点与起始线索）、`地点`（仅写当前阶段已知的单个起始地点或首个外部去处，禁止用 `→` 串联多站路线或提前透露后续与最终目的地）、`时限`（对照当前世界时间匹配紧迫度与路程，紧急事件不写数天，跨区长线留足路程）、`摘要`（只写表面异常与疑点，不泄露幕后真相）、`预期收益`（字符串数组）
-      附加: 剧情任务与本地主线附加 `真相`（1~2 句客观幕后局势：真实起因、幕后势力意图与未解隐患，剧情任务说明涉及的多地脉络及接取后长期放任对大区或世界的严重后果，不写线性步骤；仅后台保存，不展示给 `<user>`）；剧情任务另含 `更新日`（`<%- _day %>`）与 `进展`（接取后演进填写）
+      附加: 剧情任务与本地主线附加 `真相`（1~2 句客观幕后局势：真实起因、幕后势力意图与未解隐患，剧情任务说明涉及的多地脉络及长期放任的后果，不写线性步骤；仅后台保存，不展示给 `<user>`）；剧情任务另含 `更新日`（`<%- _day %>`）与 `进展`（接取后演进填写）
     剧情任务（1~2 条，B~S 级，跨区保留｜数周~数月或无固定时限｜品质+1 档｜收益 10 栏）: 高危、大范围的跨城或跨大区连环长线（如重大灾害、封印松动、跨国阴谋、势力冲突等），不得写成局限于当前城镇的局部事务。`引导`可由本地传闻或线索引入，引导 <user> 前往别处并串联多个城市或区域的完整脉络只写在后台 `真相` 中；随阶段推进再引出新局势、远方目的地或深层线索，不在单次遭遇内完结。接取后具备明确紧迫性，跨区或搁置满 <%- _storyAdvanceDays %> 天时自行演进 1 步，长期放任会导致局势失控并波及多个区域与世界
     本地主线（1~2 条，限本区｜3~15 天或绑定当地事件节点｜品质+1 档｜收益 5 栏）: 区域级多阶段事件（含表象、幕后势力博弈与抉择），完结后留当地可见影响；不在击败敌方或处理表象后草率完结，也不将多条主线合并为一战收尾
     支线任务（2~3 条，限本区｜数小时~7 天｜品质按原规则｜收益 3 栏）: 单点闭环的一次性委托或短途探索
@@ -512,7 +588,7 @@ _%>
     演进: 对下方标注 `待演进` 的已接取剧情任务推进 1 步（局势实质恶化、危机向其他城市或大区蔓延、关键筹码或主导权转移；多次搁置后呈现对大区或世界的可见冲击，不原地踏步），静默同步至 `/任务列表`（不双写任务情报板），需要时在正文中通过当地传闻或情报渠道自然带出一句
     写回: 确认近期未随当前剧情推进后，只更新 `/任务列表/<任务名>/进展`（开头附 `[<%- _day %>]`）及必要的 `目标`/`关注度`
 <% } _%>
-  本轮指令（<%- _region.name || '未记录' %><% if (_worldTime) { %>｜<%- _worldTime %><% } %>）: <% if (_qbMode === 'rescan') { %><% if (_isNullCore) { %><user> 已启动今日免费地区情报重扫（每日 1 次）：仅重扫未锁定且未接取的本地主线与支线任务<% } else { %><user> 已支付 <%- _data.questBoard.rescanFp %> FP 启动地区情报重扫：仅重扫未锁定且未接取的本地主线与支线任务<% } %><% } else if (_qbMode === 'init') { %>首次初始化任务情报板：生成 1 条剧情任务 + 1~2 条本地主线 + 2~3 条支线任务<% } else if (_qbMode === 'relocate') { %>已跨区域迁入「<%- _region.name %>」（原「<%- _qbRegionName %>」）：保留下方现有项<% if (_qbNeedAdv) { %>并推进标注 `待演进` 的剧情任务<% } %>，按新区生成 1~2 条本地主线 + 2~3 条支线任务（无剧情任务则补 1 条）<% } else if (_qbMode === 'refill') { %>补足空缺：按当前区域补足未接取的剧情任务、本地主线或支线空缺<% if (_qbNeedAdv) { %>，并推进标注 `待演进` 的剧情任务<% } %><% } else if (_qbMode === 'advance') { %>剧情任务搁置演进：按上方「剧情演进」推进标注 `待演进` 的条目<% } else { %>同区域常规停留：<% if (_qbHasTracked && _hasQb) { %>发放板上收益时按 `兑现Patch` 写入，其余<% } %>仅移除过期或已完结项；无变动（含本轮刚跨城）则跳过写板<% } %><% if (_qbMode !== 'maintain' && _qbHasTracked && _hasQb) { %>；本轮发放了板上某栏预期收益时，一并写入对应 `兑现Patch`<% } %><% if (_qbClosedTitles.length) { %>（已完结任务一并移出任务情报板：<%- _qbClosedTitles.join('、') %>）<% } %>
+  本轮指令（<%- _region.name || '未记录' %><% if (_worldTime) { %>｜<%- _worldTime %><% } %>）: <% if (_qbMode === 'rescan') { %><% if (_isNullCore) { %><user> 已启动今日免费地区情报重扫（每日 1 次）：仅重扫未锁定且未接取的本地主线与支线任务<% } else { %><user> 已支付 <%- _data.questBoard.rescanFp %> FP 启动地区情报重扫：仅重扫未锁定且未接取的本地主线与支线任务<% } %><% } else if (_qbMode === 'init') { %>首次初始化任务情报板：生成 1 条剧情任务 + 1~2 条本地主线 + 2~3 条支线任务<% if (_localAftermathShown.length === 0) { %>，并为当前区域写入 3 条差异化色阶的初始区域词条（禁止纯色）并记录区域访问日<% } else { %>，并记录区域访问日<% } %><% } else if (_qbMode === 'relocate') { %>已跨区域迁入「<%- _region.name %>」（原「<%- _qbRegionName %>」）：保留下方现有项<% if (_qbNeedAdv) { %>并推进标注 `待演进` 的剧情任务<% } %>，按新区生成 1~2 条本地主线 + 2~3 条支线任务（无剧情任务则补 1 条）<% if (_localAftermathShown.length === 0) { %>，并为当前区域写入 3 条差异化色阶的初始区域词条（禁止纯色）并记录区域访问日<% } else if (_awayDays === null) { %>；返回旧区域（首次记录访问日）：无明确剧情变故或到期预告事件时保持原词条不变，并记录区域访问日<% } else if (_revisitDue) { %>；返回旧区域（已离开 <%- _awayDays %> 天）：按上方词条规则演进或改写本区最多 1 条词条（无明显变化则保持不变），并更新区域访问日<% } else { %>；返回旧区域（离开不足 <%- _regionRevisitDays %> 天）：无明确剧情变故或到期预告事件时保持原词条不变，并更新区域访问日<% } %><% } else if (_qbMode === 'refill') { %>补足空缺：按当前区域补足未接取的剧情任务、本地主线或支线空缺<% if (_qbNeedAdv) { %>，并推进标注 `待演进` 的剧情任务<% } %><% } else if (_qbMode === 'advance') { %>剧情任务搁置演进：按上方「剧情演进」推进标注 `待演进` 的条目<% } else { %>同区域常规停留：<% if (_qbHasTracked && _hasQb) { %>发放板上收益时按 `兑现Patch` 写入，其余<% } %>仅移除过期或已完结项；无变动（含本轮刚跨城）则跳过写板<% } %><% if (_qbClosedTitles.length) { %>（已完结任务一并移出任务情报板：<%- _qbClosedTitles.join('、') %>）<% } %>
 <% if (_qbShownItems.length) { _%>
   板上任务:
 <% _qbShownItems.forEach((it) => {
@@ -536,15 +612,15 @@ _%>
   已忽略（不重复生成同类任务）: <%- _qbIgnored.join('、') %>
 <% } _%>
 <% if (_localAftermathShown.length || _worldAftermathShown.length) { _%>
-  当前影响（持续生效的客观现状）:
+  当前词条（持续生效的客观现状）:
 <% if (_localAftermathShown.length) { _%>
-    本区影响（<%- _region.name || _localAftermathKey %>）:
+    本区词条（<%- _region.name || _localAftermathKey %>）:
 <% _localAftermathShown.forEach((af) => { _%>
       - <%- af %>
 <% }) _%>
 <% } _%>
 <% if (_worldAftermathShown.length) { _%>
-    世界影响:
+    世界词条:
 <% _worldAftermathShown.forEach((af) => { _%>
       - <%- af %>
 <% }) _%>

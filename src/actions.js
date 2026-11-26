@@ -195,6 +195,59 @@ export function toggleQuestRewardClaimed(stat, questId, slotNo, questTitle = '')
   return { stat: next, done: `已将第 ${slot} 栏收益标记为已兑现 ✓` };
 }
 
+/** 删除 `/事件/任务情报板/余波/<scopeKey>` 中的指定词条，数组删空时移除空键，余波对象删空时移除余波字段。 */
+export function deleteAftermathEntry(stat, scopeKey, index, expectedText = '') {
+  const rawKey = text(scopeKey);
+  const trimmedKey = rawKey.trim();
+  const expected = text(expectedText).trim();
+  const idx = Math.floor(Number(index));
+  if (!trimmedKey) return { error: '未找到要删除的词条' };
+
+  const next = draft(stat);
+  const board = ensureBoard(next);
+  const root = board['余波'];
+  if (!root || typeof root !== 'object' || Array.isArray(root)) {
+    return { error: '未找到要删除的词条' };
+  }
+  const key = Object.prototype.hasOwnProperty.call(root, rawKey)
+    ? rawKey
+    : Object.keys(root).find((k) => text(k).trim() === trimmedKey);
+  if (key === undefined) {
+    return { error: '未找到要删除的词条' };
+  }
+
+  const rawVal = root[key];
+  if (Array.isArray(rawVal)) {
+    let targetIdx = -1;
+    if (Number.isFinite(idx) && idx >= 0 && idx < rawVal.length) {
+      if (!expected || text(rawVal[idx]).trim() === expected) {
+        targetIdx = idx;
+      }
+    }
+    if (targetIdx === -1 && expected) {
+      targetIdx = rawVal.findIndex((x) => text(x).trim() === expected);
+    }
+    if (targetIdx === -1) return { error: '未找到要删除的词条' };
+    rawVal.splice(targetIdx, 1);
+    if (rawVal.length === 0) {
+      delete root[key];
+    }
+  } else if (typeof rawVal === 'string') {
+    const cur = rawVal.trim();
+    if (!cur || (expected && cur !== expected) || (Number.isFinite(idx) && idx !== 0)) {
+      return { error: '未找到要删除的词条' };
+    }
+    delete root[key];
+  } else {
+    return { error: '未找到要删除的词条' };
+  }
+
+  if (Object.keys(root).length === 0) {
+    delete board['余波'];
+  }
+  return { stat: next, done: '已删除词条' };
+}
+
 /** 预约下一回合重扫当前区域的本地任务情报（保留已锁定与跨区剧情任务）。 */
 export function requestQuestRescan(stat, floor, chatCount, { nullCore = false } = {}) {
   const boardNow = boardNode(stat);

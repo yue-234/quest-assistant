@@ -370,6 +370,26 @@ export function wasInHistoryFormalTasks(historyStats, id, title) {
   return false;
 }
 
+const AFTERMATH_TONE_MAP = { 绿: 'green', 黄: 'yellow', 红: 'red' };
+
+/** 解析单条区域/世界词条，支持「[绿/黄/红]【短标签】正文」、无色阶与旧纯文本兼容格式。 */
+export function parseAftermathEntry(raw) {
+  const str = text(raw).trim();
+  if (!str) return { text: '', tone: '', tag: '', body: '' };
+  let rest = str;
+  let tone = '';
+  const toneMatch = rest.match(/^(?:\[([绿黄红])\]|【([绿黄红])】)\s*/);
+  if (toneMatch) {
+    tone = AFTERMATH_TONE_MAP[toneMatch[1] || toneMatch[2]] || '';
+    rest = rest.slice(toneMatch[0].length);
+  }
+  const tagMatch = rest.match(/^【([^】]{1,12})】\s*([\s\S]*)$/);
+  if (tagMatch) {
+    return { text: str, tone, tag: tagMatch[1].trim(), body: tagMatch[2].trim() };
+  }
+  return { text: str, tone, tag: '', body: rest.trim() || str };
+}
+
 /** 读取当前任务情报板状态。 */
 export function questBoardState(stat, current = {}) {
   const board = boardNode(stat);
@@ -417,28 +437,39 @@ export function questBoardState(stat, current = {}) {
 
   const regionChanged = !sameRegion(region, boardRegionKey, boardRegionName, current.geoData || null);
 
-  // 读取地区余波与世界余波（仅命中当前区域，不跨区混入）
+  // 读取当前区域词条与世界词条（仅命中当前区域，不跨区混入）
   const maxAftermath = DATA.questBoard.maxAftermathPerScope || 3;
   const aftermathRoot = obj(board['余波']);
-  const parseAftermathList = (raw) => {
-    if (Array.isArray(raw)) return raw.map((x) => text(x).trim()).filter(Boolean);
-    const s = text(raw).trim();
-    return s ? [s] : [];
+  const collectAftermathEntries = (scopeKey, raw) => {
+    const out = [];
+    if (Array.isArray(raw)) {
+      for (let idx = 0; idx < raw.length; idx += 1) {
+        const parsed = parseAftermathEntry(raw[idx]);
+        if (parsed.text) out.push({ key: scopeKey, index: idx, ...parsed });
+      }
+      return out;
+    }
+    const parsed = parseAftermathEntry(raw);
+    if (parsed.text) out.push({ key: scopeKey, index: 0, ...parsed });
+    return out;
   };
-  const localAftermath = [];
+  const localRawEntries = [];
   if (region.key || region.name) {
     for (const [k, v] of Object.entries(aftermathRoot)) {
       const kk = text(k).trim();
       if (!kk || kk === '世界') continue;
       if (sameRegion(region, kk, kk, current.geoData || null)) {
-        for (const entry of parseAftermathList(v)) localAftermath.push(entry);
+        for (const entry of collectAftermathEntries(k, v)) localRawEntries.push(entry);
       }
     }
   }
-  const worldAftermath = parseAftermathList(aftermathRoot['世界']).slice(-maxAftermath);
+  const localEntries = localRawEntries.slice(-maxAftermath);
+  const worldEntries = collectAftermathEntries('世界', aftermathRoot['世界']).slice(-maxAftermath);
   const aftermath = {
-    local: localAftermath.slice(-maxAftermath),
-    world: worldAftermath,
+    local: localEntries.map((e) => e.text),
+    world: worldEntries.map((e) => e.text),
+    localEntries,
+    worldEntries,
   };
 
   const matchedFormalKeys = new Set();
@@ -524,7 +555,7 @@ export function questBoardState(stat, current = {}) {
       const category = hintText.includes('剧情')
         ? '剧情任务'
         : (hintText.includes('主线') ? '本地主线' : '支线任务');
-      const rankMatch = f.detail.match(/([SABCD])\s*级/i);
+      const rankMatch = f.detail.match(/(?<![A-Za-z0-9])([SABCD])\s*级/i);
       const rank = rankMatch ? rankMatch[1].toUpperCase() : '原版';
       const rawRewards = normalizeQuestRewards(f.reward);
       const rewardItems = rawRewards.map((rawRw, rwIdx) => {

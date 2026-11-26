@@ -21,5 +21,7 @@ export const DATA = {
     maxIgnored: 12,
     /** 每个区域及「世界」各自最多保留的持久化余波条数。 */
     maxAftermathPerScope: 3,
+    /** 返回已有词条的旧区域时，离开满该世界日数才允许演进 1 条词条（有明确剧情变故时除外）。 */
+    regionRevisitDays: 14,
   },
 };
