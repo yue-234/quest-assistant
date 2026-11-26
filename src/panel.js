@@ -23,6 +23,10 @@ const ui = {
   questCategory: '全部',
   questEditRewards: false,
   confirmDeleteTrait: '',
+  traitsExpanded: {
+    local: false,
+    world: false,
+  },
 };
 
 let root = null;
@@ -352,17 +356,58 @@ function renderContent(state) {
     const traitsGrid = el('section', 'qh-traits-grid' + (hasBothTraits ? '' : ' is-single'));
 
     const renderTraitCard = (kind, titleText, badgeText, entries) => {
-      const card = el('div', `qh-trait-card is-${kind}`);
-      const head = el('div', 'qh-trait-head', [
-        el('div', 'qh-trait-title-wrap', [
-          el('span', 'qh-trait-title', titleText),
-          el('span', 'qh-trait-badge', badgeText),
-        ]),
+      const expanded = !!ui.traitsExpanded[kind];
+      const card = el('div', `qh-trait-card is-${kind}${expanded ? '' : ' is-collapsed'}`);
+      const titleWrap = el('div', 'qh-trait-title-wrap', [
+        el('span', 'qh-trait-title', titleText),
       ]);
-      if (ui.questEditRewards) {
-        head.append(el('span', 'qh-trait-edit-hint', '修改模式：可删除词条'));
+      if (expanded) {
+        titleWrap.append(el('span', 'qh-trait-badge', badgeText));
+      } else {
+        const tagStrip = el('div', 'qh-trait-summary-tags');
+        entries.forEach((entry) => {
+          const fallback = (entry.body || entry.text || '').trim();
+          const label = entry.tag || (fallback.length > 6 ? `${fallback.slice(0, 6)}…` : fallback);
+          const toneClass = entry.tone ? ` is-${entry.tone}` : '';
+          tagStrip.append(
+            el('span', `qh-trait-tag qh-trait-summary-tag${toneClass}`, label, {
+              title: entry.body || entry.text || label,
+            }),
+          );
+        });
+        titleWrap.append(tagStrip);
       }
+
+      const headRight = el('div', 'qh-trait-head-right');
+      if (expanded && ui.questEditRewards) {
+        headRight.append(el('span', 'qh-trait-edit-hint', '修改模式：可删除词条'));
+      }
+      headRight.append(el('span', 'qh-trait-toggle', expanded ? '收起 ▴' : '展开 ▾'));
+
+      const head = el(
+        'div',
+        'qh-trait-head',
+        [titleWrap, headRight],
+        { role: 'button', tabindex: '0', 'aria-expanded': expanded ? 'true' : 'false' },
+        {
+          click: () => {
+            ui.traitsExpanded[kind] = !ui.traitsExpanded[kind];
+            if (!ui.traitsExpanded[kind]) ui.confirmDeleteTrait = '';
+            render();
+          },
+          keydown: (ev) => {
+            if (ev.key === 'Enter' || ev.key === ' ') {
+              ev.preventDefault();
+              ui.traitsExpanded[kind] = !ui.traitsExpanded[kind];
+              if (!ui.traitsExpanded[kind]) ui.confirmDeleteTrait = '';
+              render();
+            }
+          },
+        },
+      );
       card.append(head);
+
+      if (!expanded) return card;
 
       const list = el('div', 'qh-trait-list');
       entries.forEach((entry) => {
@@ -493,7 +538,12 @@ function renderContent(state) {
         {
           click: () => {
             ui.questEditRewards = !ui.questEditRewards;
-            if (!ui.questEditRewards) ui.confirmDeleteTrait = '';
+            if (ui.questEditRewards) {
+              if (localEntries.length > 0) ui.traitsExpanded.local = true;
+              if (worldEntries.length > 0) ui.traitsExpanded.world = true;
+            } else {
+              ui.confirmDeleteTrait = '';
+            }
             render();
           },
         },

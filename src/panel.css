@@ -504,6 +504,12 @@
   background: var(--qh-surface);
   border: 1px solid var(--qh-line);
   min-width: 0;
+  transition: padding 0.15s ease, border-color 0.15s ease;
+}
+
+.qh-trait-card.is-collapsed {
+  gap: 0;
+  padding: 10px 15px;
 }
 
 .qh-trait-card.is-local {
@@ -520,8 +526,16 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.qh-trait-head:focus-visible {
+  outline: 1px solid rgba(140, 196, 255, 0.6);
+  outline-offset: 3px;
+  border-radius: 4px;
 }
 
 .qh-trait-title-wrap {
@@ -529,7 +543,40 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex: 1;
   flex-wrap: wrap;
+}
+
+.qh-trait-summary-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.qh-trait-summary-tag {
+  margin-right: 0;
+}
+
+.qh-trait-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.qh-trait-toggle {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--qh-faint);
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.qh-trait-head:hover .qh-trait-toggle {
+  color: var(--qh-text);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .qh-trait-title {
@@ -667,19 +714,22 @@
   color: #ffe09e;
 }
 
-.qh-trait-card .qh-trait-item.is-green .qh-trait-tag {
+.qh-trait-card .qh-trait-item.is-green .qh-trait-tag,
+.qh-trait-card .qh-trait-tag.is-green {
   background: rgba(63, 189, 138, 0.2);
   border: 1px solid rgba(63, 189, 138, 0.52);
   color: #9bf0cb;
 }
 
-.qh-trait-card .qh-trait-item.is-yellow .qh-trait-tag {
+.qh-trait-card .qh-trait-item.is-yellow .qh-trait-tag,
+.qh-trait-card .qh-trait-tag.is-yellow {
   background: rgba(240, 169, 44, 0.2);
   border: 1px solid rgba(240, 169, 44, 0.52);
   color: #ffe09e;
 }
 
-.qh-trait-card .qh-trait-item.is-red .qh-trait-tag {
+.qh-trait-card .qh-trait-item.is-red .qh-trait-tag,
+.qh-trait-card .qh-trait-tag.is-red {
   background: rgba(232, 84, 74, 0.2);
   border: 1px solid rgba(232, 84, 74, 0.52);
   color: #ffb8b2;
