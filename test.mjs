@@ -714,6 +714,7 @@ test('地区/世界余波持久化：按当前区域精准注入、异区 0 注�
   assert.match(outNone, /每条 30~50 字/);
   assert.match(outNone, /禁止以 `<user>` 或冒险者为主语写战绩播报/);
   assert.match(outNone, /支线任务不写/);
+  assert.match(outNone, /仅剧情任务引发的跨大区或全大陆级重大后果允许写入 `世界`/);
   assert.match(outNone, /保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」/);
   assert.match(outNone, /"op": "insert", "path": "\/事件\/任务情报板\/余波"/);
 
