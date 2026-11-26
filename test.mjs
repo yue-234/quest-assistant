@@ -720,8 +720,11 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
   assert.match(outNone, /离开满 14 天/);
   assert.match(outNone, /明确剧情变故、已到期的预告事件/);
   assert.match(outNone, /禁止以 `<user>` 或冒险者为主语写战绩记录/);
-  assert.match(outNone, /支线任务不改写词条/);
-  assert.match(outNone, /`世界` 词条同样使用 `\[绿\/黄\/红\]` 色阶，不默认生成，仅剧情任务引发的跨大区或全大陆级重大后果允许写入或改写 `世界`/);
+  assert.match(outNone, /支线任务与日常琐事不改写词条/);
+  assert.match(outNone, /非任务的重大剧情与事件链变故（如敌对势力袭击城镇/);
+  assert.match(outNone, /并随局势同步升降色阶（恶化转黄或升红，好转降黄或转绿/);
+  assert.match(outNone, /发生重大剧情或事件链变故时按规则更新区域或世界词条/);
+  assert.match(outNone, /`世界` 词条同样使用 `\[绿\/黄\/红\]` 色阶，不默认生成，仅剧情任务或重大剧情与事件链引发的跨大区或全大陆级重大后果允许写入或改写 `世界`/);
   assert.match(outNone, /保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」「区域访问日」/);
   assert.match(outNone, /"op": "insert", "path": "\/事件\/任务情报板\/余波"/);
 
