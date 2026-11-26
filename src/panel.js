@@ -234,8 +234,9 @@ function renderContent(state) {
     updatedDay: '',
     rescanPending: false,
     rescanFp: DATA.questBoard.rescanFp,
+    aftermath: { local: [], world: [] },
     items: [],
-    counts: { total: 0, story: 0, local: 0, side: 0, accepted: 0, intent: 0, progressed: 0 },
+    counts: { total: 0, story: 0, local: 0, side: 0, accepted: 0, editableAccepted: 0, intent: 0, progressed: 0 },
   };
 
   const regionDisplay = qb.regionName || qb.boardRegionName || '未识别区域';
@@ -322,6 +323,13 @@ function renderContent(state) {
     );
   }
 
+  if (qb.aftermath && Array.isArray(qb.aftermath.local) && qb.aftermath.local.length > 0) {
+    wrap.append(renderNoteCallout(`当前地区余波：${qb.aftermath.local.join('；')}`));
+  }
+  if (qb.aftermath && Array.isArray(qb.aftermath.world) && qb.aftermath.world.length > 0) {
+    wrap.append(renderNoteCallout(`世界局势余波：${qb.aftermath.world.join('；')}`));
+  }
+
   // 第二层：分类筛选胶囊 + 修改模式开关
   const filterBar = el('div', 'qh-quest-filter');
   const catOptions = [
@@ -346,8 +354,11 @@ function renderContent(state) {
       ),
     );
   });
-  if (qb.counts.accepted === 0) ui.questEditRewards = false;
-  if (qb.counts.accepted > 0) {
+  const editableAccepted = typeof qb.counts.editableAccepted === 'number'
+    ? qb.counts.editableAccepted
+    : qb.items.filter((x) => x.accepted && !x.fromFormalOnly).length;
+  if (editableAccepted === 0) ui.questEditRewards = false;
+  if (editableAccepted > 0) {
     filterBar.append(
       el(
         'button',
@@ -402,9 +413,10 @@ function renderContent(state) {
     const head = el('div', 'qh-quest-head');
     const badges = el('div', 'qh-quest-badges', [
       el('span', `qh-qbadge qh-qbadge--cat ${catCls}`, item.category),
-      el('span', 'qh-qbadge qh-qbadge--rank', `${item.rank} 级`),
+      el('span', 'qh-qbadge qh-qbadge--rank', item.rank === '原版' ? '原版' : `${item.rank} 级`),
       el('span', 'qh-qbadge qh-qbadge--way', item.way || '委托接取'),
     ]);
+    if (item.fromFormalOnly) badges.append(el('span', 'qh-qbadge qh-qbadge--sync', '剧情同步'));
     if (item.accepted) badges.append(el('span', 'qh-qbadge qh-qbadge--accepted', '进行中'));
     if (item.progress) badges.append(el('span', 'qh-qbadge qh-qbadge--progress', '局势变动'));
     if (item.intent && !item.accepted) badges.append(el('span', 'qh-qbadge qh-qbadge--intent', '★ 已锁定'));
@@ -456,10 +468,12 @@ function renderContent(state) {
     const rewardTitle = claimedCount > 0
       ? `预期收益 · 已兑现 ${claimedCount} / ${totalSlots} 栏`
       : `预期收益 · ${totalSlots} 栏`;
-    const canEditRewards = !!(ui.questEditRewards && item.accepted);
-    const rewardNote = canEditRewards
-      ? '修改模式：点击下方收益可手动切换 ✓'
-      : (ui.questEditRewards ? '接取后可在修改模式中手动切换 ✓' : '模糊预告，发放后自动打 ✓');
+    const canEditRewards = !!(ui.questEditRewards && item.accepted && !item.fromFormalOnly);
+    const rewardNote = item.fromFormalOnly
+      ? '来自原版任务列表，只读展示'
+      : (canEditRewards
+        ? '修改模式：点击下方收益可手动切换 ✓'
+        : (ui.questEditRewards ? '接取后可在修改模式中手动切换 ✓' : '模糊预告，发放后自动打 ✓'));
 
     const rewardBox = el('div', 'qh-quest-rewards' + (canEditRewards ? ' is-editing' : ''));
     rewardBox.append(
@@ -503,7 +517,11 @@ function renderContent(state) {
     card.append(rewardBox);
 
     // 底部操作
-    if (item.accepted) {
+    if (item.fromFormalOnly) {
+      card.append(
+        el('div', 'qh-quest-accepted-bar', '✓ 来自原版任务列表，进度自动同步'),
+      );
+    } else if (item.accepted) {
       card.append(
         el('div', 'qh-quest-accepted-bar', '✓ 已接取并追踪中 · 进展同步自任务面板，上方预期收益将随推进分批兑现'),
       );

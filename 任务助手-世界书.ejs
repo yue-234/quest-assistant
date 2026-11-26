@@ -3,7 +3,7 @@
 // 项目地址：https://github.com/yue-234/quest-assistant
 // 下面 @data 一段与 src/data.js 的 DATA 保持同一份口径。
 // @data-begin
-const _data = {"questBoard":{"rescanFp":100,"storyAdvanceDays":5,"categories":{"剧情任务":{"max":2,"rewardSlots":10,"qualityShift":1,"crossRegion":true},"本地主线":{"max":2,"rewardSlots":5,"qualityShift":1,"crossRegion":false},"支线任务":{"max":3,"rewardSlots":3,"qualityShift":0,"crossRegion":false}},"maxItems":7,"maxIgnored":12}};
+const _data = {"questBoard":{"rescanFp":100,"storyAdvanceDays":5,"categories":{"剧情任务":{"max":2,"rewardSlots":10,"qualityShift":1,"crossRegion":true},"本地主线":{"max":2,"rewardSlots":5,"qualityShift":1,"crossRegion":false},"支线任务":{"max":3,"rewardSlots":3,"qualityShift":0,"crossRegion":false}},"maxItems":7,"maxIgnored":12,"maxAftermathPerScope":3}};
 // @data-end
 
 const _int = (v) => { const m = String(v ?? '').replace(/[,，]/g, '').match(/-?\d+/); return m ? Number(m[0]) : 0; };
@@ -164,6 +164,32 @@ const _hasClaimed = !!(
   !Array.isArray(_qb['已兑现'])
 );
 const _claimedMap = _hasClaimed ? _qb['已兑现'] : {};
+const _maxAftermath = (_data.questBoard && Number(_data.questBoard.maxAftermathPerScope)) || 3;
+const _hasAftermath = !!(
+  _hasQb &&
+  Object.prototype.hasOwnProperty.call(_qb, '余波') &&
+  _qb['余波'] &&
+  typeof _qb['余波'] === 'object' &&
+  !Array.isArray(_qb['余波'])
+);
+const _aftermathRoot = _hasAftermath ? _qb['余波'] : {};
+const _aftermathArr = (raw) => (Array.isArray(raw)
+  ? raw.map((x) => _txt(x).trim()).filter(Boolean)
+  : (typeof raw === 'string' && raw.trim() ? [raw.trim()] : []));
+const _localAftermath = [];
+let _localAftermathKey = '';
+if (_region.key || _region.name) {
+  for (const [k, v] of Object.entries(_aftermathRoot)) {
+    const kk = _txt(k).trim();
+    if (!kk || kk === '世界') continue;
+    if (_sameRegion(_region, kk, kk)) {
+      if (!_localAftermathKey) _localAftermathKey = kk;
+      for (const item of _aftermathArr(v)) _localAftermath.push(item);
+    }
+  }
+}
+const _localAftermathShown = _localAftermath.slice(-_maxAftermath);
+const _worldAftermathShown = _aftermathArr(_aftermathRoot['世界']).slice(-_maxAftermath);
 const _claimedMarkRe = /(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)]|\[\d+\s*[✓✔☑]\])/;
 const _cleanRw = (s) => _txt(s)
   .replace(/^\s*\[\s*\d+\s*[✓✔☑□☐]?\s*\]\s*/g, '')
@@ -462,9 +488,11 @@ _%>
     更新: 未接取只写任务情报板；已接取后进展、状态与目标只更新 `/任务列表/<任务名>`（不双写任务情报板），原条目保留在板上透传 `预期收益`
     结案移出: 完结（含单环支线或最后一次性结算的任务）发奖并从 `任务列表` 移除同轮，直接写该条 `结案移出` Patch 从任务情报板删除（无需再写 `打勾Patch`）；未接取支线单回合接取并完结同样移出；同轮移出多条数组项时须按索引从大到小倒序 `remove`（或整表 `replace` `/事件/任务情报板/列表`）
     锁定与换区: `★已锁定` 与 `已接取` 跨区及重扫保留（已锁定仅因时限到期自动清除，过期项同步时移除）；仅跨城或跨大区触发换区，同城小场所不换区
-    路径: <% if (!_hasQb) { %>`/事件/任务情报板` 未创建，用 `{ "op": "insert", "path": "/事件/任务情报板", "value": { "区域键": "<%- _region.key || 'unknown' %>", "区域": "<%- _region.name || '当前区域' %>", "更新日": "<%- _day %>", "列表": [ ... ] } }`；**严禁对 `/事件` 执行 insert 或 replace**<% } else if (_qbMissKeys.length === 0) { %>分别用 `replace` 更新 `/事件/任务情报板` 下的 `区域键`<% if (_qbRegionChanged && _region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」；**严禁整块覆写 `/事件`**）<% } else if (_qbExistKeys.length === 0) { %>`/事件/任务情报板` 仅含控制字段，分别用 `insert` 写入 `/事件/任务情报板` 下的 `区域键`<% if (_region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」；**严禁整块覆写 `/事件`**）<% } else { %>对已存在键（<%- _qbExistKeys.map((k) => '`' + k + '`').join('、') %>）用 `replace`、对缺失键（<%- _qbMissKeys.map((k) => '`' + k + '`').join('、') %>）用 `insert` 更新 `/事件/任务情报板` 下对应字段<% if (_qbRegionChanged && _region.key) { %>（`区域键` 写 `<%- _region.key %>`）<% } %>（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」；**严禁整块覆写 `/事件`**）<% } %>
+    剧情上墙: 剧情中路过 NPC 给出新委托、悬赏或线索，或自然触发原版 `/任务列表` 新任务时，不受默认数量限制，可直接用 `insert` 追加到 `/事件/任务情报板/列表/-`（对象型列表则 `insert` 新键）上墙；这类外部触发任务通常价值较高，优先按体量定级为「剧情任务」（B~S 级｜10 栏收益｜品质+1 档）或「本地主线」（5 栏收益｜品质+1 档），仅纯跑腿归「支线任务」（3 栏）；上墙须补全 `id`/`类别`/`等级`/`标题`/`方式`/`引导`（联络人或切入线索）/`地点`（仅首站，不剧透全路线）/`时限`/`摘要`/`预期收益`，归入剧情任务或本地主线时必附后台隐藏 `真相`（剧情任务另附 `更新日`）；暂未接取的正常挂板并保持冻结，已当场接下写入 `/任务列表` 的按相同原 `标题` 同步上墙以享受打勾追踪
+    余波记录: 仅剧情任务与本地主线结案、失败或搁置恶化造成实质冲击时写入 `/事件/任务情报板/余波`（按对应区域名或 `世界` 归档，每类最多 <%- _maxAftermath %> 条，超出替换最旧；支线任务一律不写余波）；每条 30~50 字，只写当前仍可见的实体变化（势力易主、封禁/新开区域、物价涨跌、地貌异变、新政令、难民/商路变化等），严禁以主角/冒险者为主语写功德碑战报，严禁写“恢复宁静/居民感激”等空泛氛围废话；<% if (!_hasAftermath) { %>首次写入用 `{ "op": "insert", "path": "/事件/任务情报板/余波", "value": { "<区域名或世界>": ["..."] } }`（同轮多键合并写入同一对象）<% } else { %>对已有区域键用 `replace`、新区域键用 `insert` 更新 `/事件/任务情报板/余波/<区域名或世界>`<% } %>
+    路径: <% if (!_hasQb) { %>`/事件/任务情报板` 未创建，用 `{ "op": "insert", "path": "/事件/任务情报板", "value": { "区域键": "<%- _region.key || 'unknown' %>", "区域": "<%- _region.name || '当前区域' %>", "更新日": "<%- _day %>", "列表": [ ... ] } }`；**严禁对 `/事件` 执行 insert 或 replace**<% } else if (_qbMissKeys.length === 0) { %>分别用 `replace` 更新 `/事件/任务情报板` 下的 `区域键`<% if (_qbRegionChanged && _region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」；**严禁整块覆写 `/事件`**）<% } else if (_qbExistKeys.length === 0) { %>`/事件/任务情报板` 仅含控制字段，分别用 `insert` 写入 `/事件/任务情报板` 下的 `区域键`<% if (_region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」；**严禁整块覆写 `/事件`**）<% } else { %>对已存在键（<%- _qbExistKeys.map((k) => '`' + k + '`').join('、') %>）用 `replace`、对缺失键（<%- _qbMissKeys.map((k) => '`' + k + '`').join('、') %>）用 `insert` 更新 `/事件/任务情报板` 下对应字段<% if (_qbRegionChanged && _region.key) { %>（`区域键` 写 `<%- _region.key %>`）<% } %>（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」；**严禁整块覆写 `/事件`**）<% } %>
 <% if (_qbNeedGen) { _%>
-  生成规格（品质与禁项沿用<任务与委托规则>，+1 档即 D优良/C稀有/B史诗/A传说/S神话）:
+  生成规格（品质与禁项沿用<任务与委托规则>，+1 档即 D优良/C稀有/B史诗/A传说/S神话；以下各类条数为自动生成/补缺的参考配额而非硬上限，剧情上墙不受此限）:
     字段:
       基础: `id`、`类别`（剧情任务/本地主线/支线任务）、`等级`（D~S）、`标题`（纯任务名，不带 `（个人/团队）` 后缀）、`方式`（委托/悬赏/调查/探索/危机/周旋/异象）、`引导`（委托/悬赏写联络人与去处；其余写地点与切入线索）、`地点`（仅写当前阶段已知的单个起查地或首个外部去处，严禁用 `→` 串联多站路线或剧透后续/最终目的地）、`时限`（对照当前世界时间匹配紧迫度与路程，濒死、追兵逼近等急事不写数天，跨区长线留足路程）、`摘要`（只写表面异状与疑点，不泄露幕后真相）、`预期收益`（字符串数组）
       附加: 剧情任务与本地主线附加 `真相`（1~2 句客观幕后局势：真实起因、暗中势力意图与未解隐患，剧情任务须点明涉及的多地脉络及接取后长期放任对大区/世界的严重后果，不写线性步骤；仅后台保存，不展示给 `<user>`）；剧情任务另含 `更新日`（`<%- _day %>`）与 `进展`（接取后演进填写）
@@ -506,6 +534,21 @@ _%>
 <% } _%>
 <% if (_qbNeedGen && _qbIgnored.length) { _%>
   已忽略（不重复生成同类任务）: <%- _qbIgnored.join('、') %>
+<% } _%>
+<% if (_localAftermathShown.length || _worldAftermathShown.length) { _%>
+  当前余波（持续生效的客观现状）:
+<% if (_localAftermathShown.length) { _%>
+    本区余波（<%- _region.name || _localAftermathKey %>）:
+<% _localAftermathShown.forEach((af) => { _%>
+      - <%- af %>
+<% }) _%>
+<% } _%>
+<% if (_worldAftermathShown.length) { _%>
+    世界余波:
+<% _worldAftermathShown.forEach((af) => { _%>
+      - <%- af %>
+<% }) _%>
+<% } _%>
 <% } _%>
 </任务情报板>
 <%_ } _%>

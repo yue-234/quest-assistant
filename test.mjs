@@ -689,6 +689,204 @@ test('跨年无年份日期借用上年，正确触发搁置演进', () => {
   assert.match(out, /待演进:已搁置 6 日/);
 });
 
+test('地区/世界余波持久化：按当前区域精准注入、异区 0 注入、世界常驻与反功德碑规则', () => {
+  const baseBoard = {
+    区域键: '铁炉堡',
+    区域: '铁炉堡',
+    更新日: '复兴纪元488年-3月-10日',
+    列表: [
+      { id: 'q1', 类别: '支线任务', 等级: 'D', 标题: '修补矿车', 方式: '委托', 预期收益: ['金币 ×50'] },
+      { id: 'q2', 类别: '支线任务', 等级: 'D', 标题: '运送炭火', 方式: '委托', 预期收益: ['金币 ×60'] },
+      { id: 'q3', 类别: '支线任务', 等级: 'D', 标题: '巡查矿道', 方式: '委托', 预期收益: ['金币 ×70'] },
+      { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '清点铁锭', 方式: '委托', 预期收益: ['金币 ×80'] },
+    ],
+  };
+
+  // 1) 无余波节点：0 注入 当前余波，且提示首次写入用 insert /事件/任务情报板/余波
+  const noAftermathStat = {
+    世界: { 地点: '铁炉堡-商业街', 时间: '复兴纪元488年-3月-11日-10:00' },
+    事件: { 任务情报板: baseBoard },
+  };
+  const outNone = renderEjs(noAftermathStat);
+  assertCleanOutput(outNone, 'aftermath-none');
+  assert.doesNotMatch(outNone, /当前余波（持续生效的客观现状）/);
+  assert.match(outNone, /余波记录/);
+  assert.match(outNone, /每条 30~50 字/);
+  assert.match(outNone, /严禁以主角\/冒险者为主语写功德碑战报/);
+  assert.match(outNone, /支线任务一律不写余波/);
+  assert.match(outNone, /保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」/);
+  assert.match(outNone, /"op": "insert", "path": "\/事件\/任务情报板\/余波"/);
+
+  // 2) 有地区余波但处于异区且无世界余波：异区 0 token 注入
+  const otherRegionStat = {
+    世界: { 地点: '瓦伦蒂亚-城门广场', 时间: '复兴纪元488年-3月-11日-10:00' },
+    事件: {
+      任务情报板: {
+        ...baseBoard,
+        区域键: '瓦伦蒂亚',
+        区域: '瓦伦蒂亚',
+        余波: {
+          铁炉堡: ['旧铸造区坍塌封禁，城内精铁与武器收购价上涨三成，卫兵在南门设卡盘查外乡人。'],
+        },
+      },
+    },
+  };
+  const outOther = renderEjs(otherRegionStat);
+  assertCleanOutput(outOther, 'aftermath-other-region');
+  assert.doesNotMatch(outOther, /当前余波（持续生效的客观现状）/);
+  assert.doesNotMatch(outOther, /旧铸造区坍塌封禁/);
+  assert.match(outOther, /对已有区域键用 `replace`、新区域键用 `insert` 更新 `\/事件\/任务情报板\/余波\/<区域名或世界>`/);
+  const stOther = questBoardState(otherRegionStat);
+  assert.deepEqual(stOther.aftermath, { local: [], world: [] });
+
+  // 3) 处于本区且含世界余波：精准注入本区 + 世界，且不混入其他城市，单类最多 3 条
+  const localAndWorldStat = {
+    世界: { 地点: '铁炉堡-铁砧酒馆', 时间: '复兴纪元488年-3月-11日-10:00' },
+    事件: {
+      任务情报板: {
+        ...baseBoard,
+        余波: {
+          铁炉堡: ['旧条1', '旧条2', '旧条3', '南门高炉重启后黑烟终日不散，城防军接管矿业税局，铁锭价格回落但走私案激增。'],
+          雾晶港: ['雾晶港灯塔损毁，夜航商船被迫改道北湾。'],
+          世界: ['北境商路因霜潮封冻中断，各大主城魔导燃料配给收紧，边境流民向南涌入。'],
+        },
+      },
+    },
+  };
+  const outLocal = renderEjs(localAndWorldStat);
+  assertCleanOutput(outLocal, 'aftermath-local-world');
+  assert.match(outLocal, /当前余波（持续生效的客观现状）/);
+  assert.match(outLocal, /南门高炉重启后黑烟终日不散/);
+  assert.match(outLocal, /北境商路因霜潮封冻中断/);
+  assert.doesNotMatch(outLocal, /旧条1/);
+  assert.doesNotMatch(outLocal, /雾晶港灯塔损毁/);
+
+  const stLocal = questBoardState(localAndWorldStat);
+  assert.equal(stLocal.aftermath.local.length, 3);
+  assert.deepEqual(stLocal.aftermath.local, [
+    '旧条2',
+    '旧条3',
+    '南门高炉重启后黑烟终日不散，城防军接管矿业税局，铁锭价格回落但走私案激增。',
+  ]);
+  assert.deepEqual(stLocal.aftermath.world, [
+    '北境商路因霜潮封冻中断，各大主城魔导燃料配给收紧，边境流民向南涌入。',
+  ]);
+});
+
+test('剧情上墙规则与参考配额非硬上限断言', () => {
+  const stat = {
+    世界: { 地点: '白石镇', 时间: '复兴纪元488年-3月-10日-12:00' },
+    事件: {},
+  };
+  const out = renderEjs(stat);
+  assertCleanOutput(out, 'story-on-wall');
+  assert.match(out, /剧情上墙/);
+  assert.match(out, /不受默认数量限制/);
+  assert.match(out, /\/事件\/任务情报板\/列表\/-/);
+  assert.match(out, /优先按体量定级为「剧情任务」/);
+  assert.match(out, /归入剧情任务或本地主线时必附后台隐藏 `真相`/);
+  assert.match(out, /以下各类条数为自动生成\/补缺的参考配额而非硬上限/);
+});
+
+test('前端自动聚合未上墙的原版 /任务列表 进行中任务（去重、过滤已完结、只读标记）', () => {
+  const stat = {
+    世界: { 地点: '白石镇', 时间: '复兴纪元488年-3月-12日-10:00' },
+    任务列表: {
+      '白石暗潮（个人）': {
+        状态: '进行中',
+        详情: '已在板上接取的任务',
+        目标: '潜入仓库',
+        进展: '拿到钥匙',
+        奖励: '金币 ×500',
+      },
+      '星辉遗迹的呼唤': {
+        状态: '进行中',
+        详情: '剧情向突发事件，A级高危遗迹调查。',
+        目标: '前往星辉谷入口会合',
+        进展: '已获得残破星图',
+        奖励: '传说级法杖 ×1、星辰结晶 ×3',
+      },
+      '镇长失踪之谜': {
+        状态: '进行中',
+        详情: '本地主线调查，B 级难度。',
+        目标: '盘问酒馆掌柜',
+        进展: '锁定嫌疑人',
+        奖励: '金币 ×800',
+      },
+      '帮铁匠送铁锤': {
+        状态: '进行中',
+        详情: '顺手帮铁匠铺送货到城门哨所。',
+        目标: '交给北门卫兵',
+        进展: '',
+        奖励: '银币 ×30',
+      },
+      '已完成的旧委托': {
+        状态: '已完成',
+        详情: '应该被过滤掉',
+        目标: '无',
+        进展: '已交差',
+        奖励: '金币 ×100',
+      },
+      '已失败的护送': {
+        状态: '已失败',
+        详情: '应该被过滤掉',
+      },
+    },
+    事件: {
+      任务情报板: {
+        区域键: '白石镇',
+        区域: '白石镇',
+        更新日: '复兴纪元488年-3月-10日',
+        列表: [
+          { id: 'q1', 类别: '剧情任务', 等级: 'B', 标题: '白石暗潮', 方式: '调查', 预期收益: ['史诗武器 ×1'] },
+          { id: 'q2', 类别: '支线任务', 等级: 'D', 标题: '草药采集', 方式: '委托', 预期收益: ['药剂 ×2'] },
+        ],
+      },
+    },
+  };
+
+  const qb = questBoardState(stat);
+  // 2 条板上任务 + 3 条未上墙进行中原版任务 = 5 条（2 条已完结不聚合，1 条已上墙不重复）
+  assert.equal(qb.items.length, 5);
+  assert.equal(qb.counts.total, 5);
+  assert.equal(qb.counts.accepted, 4);
+  assert.equal(qb.counts.editableAccepted, 1);
+
+  const boardAccepted = qb.items.find((x) => x.id === 'q1');
+  assert.equal(boardAccepted.accepted, true);
+  assert.equal(boardAccepted.fromFormalOnly, false);
+
+  const formalStory = qb.items.find((x) => x.id === 'formal:星辉遗迹的呼唤');
+  assert.ok(formalStory);
+  assert.equal(formalStory.fromFormalOnly, true);
+  assert.equal(formalStory.accepted, true);
+  assert.equal(formalStory.category, '剧情任务');
+  assert.equal(formalStory.rank, 'A');
+  assert.equal(formalStory.way, '剧情触发');
+  assert.equal(formalStory.guideLabel, '任务目标');
+  assert.equal(formalStory.guide, '前往星辉谷入口会合');
+  assert.equal(formalStory.progress, '已获得残破星图');
+  assert.deepEqual(formalStory.rewards, ['传说级法杖 ×1', '星辰结晶 ×3']);
+
+  const formalLocal = qb.items.find((x) => x.id === 'formal:镇长失踪之谜');
+  assert.ok(formalLocal);
+  assert.equal(formalLocal.category, '本地主线');
+  assert.equal(formalLocal.rank, 'B');
+
+  const formalSide = qb.items.find((x) => x.id === 'formal:帮铁匠送铁锤');
+  assert.ok(formalSide);
+  assert.equal(formalSide.category, '支线任务');
+  assert.equal(formalSide.rank, '原版');
+
+  assert.equal(qb.items.some((x) => x.title === '已完成的旧委托'), false);
+  assert.equal(qb.items.some((x) => x.title === '已失败的护送'), false);
+
+  // actions.recordAcceptedQuests / sweepClosedQuests 只处理板上真实条目，不被合成项污染
+  const rec = recordAcceptedQuests(stat).stat;
+  assert.deepEqual(rec['事件']['任务情报板']['曾接取'], ['白石暗潮']);
+  assert.equal(hasClosedQuestLeftovers(stat), false);
+});
+
 // ---------------------------------------------------------------------------
 // 4. 最终构建产物校验
 // ---------------------------------------------------------------------------

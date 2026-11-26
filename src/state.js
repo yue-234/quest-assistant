@@ -404,6 +404,9 @@ export function questBoardState(stat, current = {}) {
         key: text(k).trim(),
         status: text(f['状态']).trim(),
         progress: text(f['进展']).trim(),
+        detail: text(f['详情'] || f['描述'] || f['说明']).trim(),
+        goal: text(f['目标'] || f['当前目标']).trim(),
+        reward: f['奖励'] ?? f['报酬'] ?? f['预期收益'] ?? '',
       };
     })
     .filter((t) => !!t.key);
@@ -414,12 +417,39 @@ export function questBoardState(stat, current = {}) {
 
   const regionChanged = !sameRegion(region, boardRegionKey, boardRegionName, current.geoData || null);
 
-  const items = rawList
+  // 读取地区余波与世界余波（仅命中当前区域，不跨区混入）
+  const maxAftermath = DATA.questBoard.maxAftermathPerScope || 3;
+  const aftermathRoot = obj(board['余波']);
+  const parseAftermathList = (raw) => {
+    if (Array.isArray(raw)) return raw.map((x) => text(x).trim()).filter(Boolean);
+    const s = text(raw).trim();
+    return s ? [s] : [];
+  };
+  const localAftermath = [];
+  if (region.key || region.name) {
+    for (const [k, v] of Object.entries(aftermathRoot)) {
+      const kk = text(k).trim();
+      if (!kk || kk === '世界') continue;
+      if (sameRegion(region, kk, kk, current.geoData || null)) {
+        for (const entry of parseAftermathList(v)) localAftermath.push(entry);
+      }
+    }
+  }
+  const worldAftermath = parseAftermathList(aftermathRoot['世界']).slice(-maxAftermath);
+  const aftermath = {
+    local: localAftermath.slice(-maxAftermath),
+    world: worldAftermath,
+  };
+
+  const matchedFormalKeys = new Set();
+
+  const boardItems = rawList
     .map(({ entry, rawKey, idx }) => {
       const r = obj(entry);
       const title = text(r['标题']).trim();
       if (!title) return null;
       const formal = matchFormalTask(formalList, title);
+      if (formal) matchedFormalKeys.add(formal.key);
       if (formal && CLOSED_TASK_RE.test(formal.status)) return null;
       const accepted = !!formal;
       const id = rawKey || text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
@@ -473,6 +503,7 @@ export function questBoardState(stat, current = {}) {
         progress,
         updatedDay: itemUpdatedDay,
         accepted,
+        fromFormalOnly: false,
         formalTaskName: formal ? formal.key : '',
         formalStatus: formal ? (formal.status || '进行中') : '',
         rewards,
@@ -483,15 +514,61 @@ export function questBoardState(stat, current = {}) {
         staleRegion,
       };
     })
-    .filter(Boolean)
-    .sort((a, b) => {
-      const ca = QUEST_CATEGORY_ORDER[a.category] ?? 9;
-      const cb = QUEST_CATEGORY_ORDER[b.category] ?? 9;
-      if (ca !== cb) return ca - cb;
-      if (a.accepted !== b.accepted) return a.accepted ? -1 : 1;
-      if (a.intent !== b.intent) return a.intent ? -1 : 1;
-      return 0;
+    .filter(Boolean);
+
+  // 自动聚合未上墙的原版 /任务列表 进行中任务（只读展示）
+  const formalOnlyItems = formalList
+    .filter((f) => !matchedFormalKeys.has(f.key) && !CLOSED_TASK_RE.test(f.status))
+    .map((f) => {
+      const hintText = `${f.detail} ${f.key}`;
+      const category = hintText.includes('剧情')
+        ? '剧情任务'
+        : (hintText.includes('主线') ? '本地主线' : '支线任务');
+      const rankMatch = f.detail.match(/([SABCD])\s*级/i);
+      const rank = rankMatch ? rankMatch[1].toUpperCase() : '原版';
+      const rawRewards = normalizeQuestRewards(f.reward);
+      const rewardItems = rawRewards.map((rawRw, rwIdx) => {
+        const cleanText = cleanRewardText(rawRw) || rawRw;
+        return { slot: rwIdx + 1, text: cleanText, claimed: CLAIMED_MARK_RE.test(rawRw) };
+      });
+      const rewards = rewardItems.map((x) => x.text);
+      const claimedCount = rewardItems.filter((x) => x.claimed).length;
+      const cfg = DATA.questBoard.categories[category] || DATA.questBoard.categories['支线任务'];
+      return {
+        id: `formal:${f.key}`,
+        category,
+        rank,
+        title: f.key,
+        way: '剧情触发',
+        wayKind: 'clue',
+        guideLabel: '任务目标',
+        guide: f.goal,
+        location: '',
+        deadline: '',
+        summary: f.detail,
+        progress: f.progress,
+        updatedDay: '',
+        accepted: true,
+        fromFormalOnly: true,
+        formalTaskName: f.key,
+        formalStatus: f.status || '进行中',
+        rewards,
+        rewardItems,
+        claimedCount,
+        expectedSlots: rewardItems.length || cfg.rewardSlots,
+        intent: false,
+        staleRegion: false,
+      };
     });
+
+  const items = [...boardItems, ...formalOnlyItems].sort((a, b) => {
+    const ca = QUEST_CATEGORY_ORDER[a.category] ?? 9;
+    const cb = QUEST_CATEGORY_ORDER[b.category] ?? 9;
+    if (ca !== cb) return ca - cb;
+    if (a.accepted !== b.accepted) return a.accepted ? -1 : 1;
+    if (a.intent !== b.intent) return a.intent ? -1 : 1;
+    return 0;
+  });
 
   const progressSignature = items
     .filter((x) => x.progress)
@@ -504,6 +581,7 @@ export function questBoardState(stat, current = {}) {
     local: items.filter((x) => x.category === '本地主线').length,
     side: items.filter((x) => x.category === '支线任务').length,
     accepted: items.filter((x) => x.accepted).length,
+    editableAccepted: items.filter((x) => x.accepted && !x.fromFormalOnly).length,
     intent: items.filter((x) => x.intent && !x.accepted).length,
     progressed: items.filter((x) => x.progress).length,
   };
@@ -524,6 +602,7 @@ export function questBoardState(stat, current = {}) {
     progressSignature,
     intents,
     ignored,
+    aftermath,
     items,
     counts,
   };
