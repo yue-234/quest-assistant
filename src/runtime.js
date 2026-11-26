@@ -1,15 +1,14 @@
 // 独立任务助手主入口。挂载 iframe 面板、可拖动悬浮球与后台静默维护。
 // 全局暴露 window.QuestHelperApp（open / close / stop），与任何命定核心完全隔离。
+// 项目地址：https://github.com/yue-234/quest-assistant
 
 import { PANEL_CSS, PANEL_JS } from 'quest-helper:panel';
 import { BOARD_KEY, CORE_NAME, SPEAKER, readState } from './state.js';
 import {
   hasClosedQuestLeftovers,
-  sweepClosedQuests,
   needsQuestAcceptedRecord,
-  recordAcceptedQuests,
   questRescanDone,
-  clearQuestRescan,
+  maintainQuestBoard,
 } from './actions.js';
 import { commit, generating } from './commit.js';
 import * as host from './host.js';
@@ -57,6 +56,7 @@ export function start() {
   let frame = null;
   let ready = null;
   let lastFocus = null;
+  let stopped = false;
 
   const toast = (message, kind = 'error') => {
     const t = win.toastr;
@@ -170,6 +170,7 @@ export function start() {
         panel = null;
       }
       if (!panel) panel = await ready;
+      if (stopped) return;
       if (!panel) throw new Error('任务情报面板未初始化');
       panel.onClose = hide;
       panel.open();
@@ -182,6 +183,7 @@ export function start() {
         /* 忽略 */
       }
     } catch (error) {
+      if (stopped) return;
       el.remove();
       frame = null;
       ready = null;
@@ -193,6 +195,11 @@ export function start() {
   const close = () => hide();
 
   const fab = mountFab(doc, win, { onOpen: () => void open() });
+
+  const seenProgressKey = () => {
+    const cid = host.readChatId();
+    return cid ? `${QUEST_SEEN_KEY}:${cid}` : QUEST_SEEN_KEY;
+  };
 
   const syncFabUnread = (statOverride) => {
     try {
@@ -207,9 +214,10 @@ export function start() {
         chatCount: chat ? chat.length : null,
         geoData: readHostGeoData(),
         chat,
+        nullCore: host.isNullCore(),
       });
       const sig = st && st.questBoard ? st.questBoard.progressSignature : '';
-      const seen = (win.localStorage && win.localStorage.getItem(QUEST_SEEN_KEY)) || '';
+      const seen = host.readStorage(seenProgressKey());
       fab.setUnread(!!(sig && sig !== seen));
     } catch {
       fab.setUnread(false);
@@ -252,18 +260,14 @@ export function start() {
     const curFloor = readHostFloor();
     const curCount = chatSnapshot ? chatSnapshot.length : null;
     const needClearRescan = questRescanDone(stat, curFloor, curCount);
-    const needSweep = !needClearRescan && !!board['列表'] && hasClosedQuestLeftovers(stat, { chat: chatSnapshot });
-    const needRecord = !needClearRescan && !needSweep && !!board['列表'] && needsQuestAcceptedRecord(stat);
+    const needSweep = !!board['列表'] && hasClosedQuestLeftovers(stat, { chat: chatSnapshot });
+    const needRecord = !!board['列表'] && needsQuestAcceptedRecord(stat);
     if (!needClearRescan && !needSweep && !needRecord) return;
 
     bgSweeping = true;
     try {
       await commit(
-        (statNow) => {
-          if (needClearRescan) return clearQuestRescan(statNow);
-          if (needSweep) return sweepClosedQuests(statNow, { chat: chatSnapshot });
-          return recordAcceptedQuests(statNow);
-        },
+        (statNow) => maintainQuestBoard(statNow, { floor: curFloor, chatCount: curCount, chat: chatSnapshot }),
         { core: CORE_NAME, speaker: SPEAKER, redraw: false },
       );
       bgCooldownUntil = Date.now() + 1500;
@@ -293,6 +297,7 @@ export function start() {
   listen('mag_variable_update_ended', scheduleMaintenance);
 
   const stop = () => {
+    stopped = true;
     clearTimeout(bgTimer);
     fab.destroy();
     for (const off of stops) {

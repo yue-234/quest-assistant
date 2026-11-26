@@ -217,7 +217,7 @@ function normalizeQuestWay(raw) {
 
 const CLAIMED_MARK_RE = /(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)]|\[\d+\s*[✓✔☑]\])/;
 
-function cleanRewardText(raw) {
+export function cleanRewardText(raw) {
   return text(raw)
     .replace(/^\s*\[\s*\d+\s*[✓✔☑□☐]?\s*\]\s*/g, '')
     .replace(/\s*(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)])+\s*$/g, '')
@@ -225,7 +225,7 @@ function cleanRewardText(raw) {
     .trim();
 }
 
-function parseClaimedSet(raw) {
+export function parseClaimedSet(raw) {
   const slots = new Set();
   const texts = new Set();
   const arr = Array.isArray(raw)
@@ -249,7 +249,7 @@ function parseClaimedSet(raw) {
   return { slots, texts };
 }
 
-function normalizeQuestRewards(raw) {
+export function normalizeQuestRewards(raw) {
   if (Array.isArray(raw)) {
     return raw.map((x) => text(x).trim()).filter(Boolean);
   }
@@ -297,15 +297,17 @@ export function matchFormalTask(formalList, title) {
   if (norm) {
     const normExact = formalList.find((t) => stripTaskTitle(t.key) === norm);
     if (normExact) return normExact;
-    if (norm.length >= 2) {
+    if (norm.length >= 4) {
       const normSub = formalList.find((t) => {
         const tk = stripTaskTitle(t.key);
-        return tk.length >= 2 && (tk.includes(norm) || norm.includes(tk));
+        if (tk.length < 4) return false;
+        if (!tk.includes(norm) && !norm.includes(tk)) return false;
+        return Math.min(tk.length, norm.length) / Math.max(tk.length, norm.length) >= 0.75;
       });
       if (normSub) return normSub;
     }
   }
-  return formalList.find((t) => t.key.includes(title) || title.includes(t.key)) || null;
+  return null;
 }
 
 /**
@@ -334,7 +336,7 @@ export function extractHistoryStats(chatOrMessages, limit = 50) {
   return out;
 }
 
-/** 检查某条任务是否在历史楼层的正式「任务列表」中出现过（且若该层有任务板列表，需与板上该条同框）。 */
+/** 检查某条任务是否在历史楼层的正式「任务列表」中出现过（且必须与该层任务情报板上的该条同框）。 */
 export function wasInHistoryFormalTasks(historyStats, id, title) {
   if (!Array.isArray(historyStats) || !historyStats.length || !title) return false;
   const norm = stripTaskTitle(title);
@@ -349,21 +351,20 @@ export function wasInHistoryFormalTasks(historyStats, id, title) {
 
     const hBoard = obj(obj(obj(hStat)['事件'])[BOARD_KEY]);
     const hBoardList = Array.isArray(hBoard['列表'])
-      ? hBoard['列表']
-      : Object.entries(obj(hBoard['列表'])).map(([k, v]) => ({ id: k, ...obj(v) }));
-    if (hBoardList.length > 0) {
-      const onBoard = hBoardList.some((item, idx) => {
-        const r = obj(item);
-        const itemId = text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
-        const itemTitle = text(r['标题']).trim();
-        if (id && itemId === id && (!itemTitle || itemTitle === title || (norm && stripTaskTitle(itemTitle) === norm))) {
-          return true;
-        }
-        if (itemTitle && (itemTitle === title || (norm && stripTaskTitle(itemTitle) === norm))) return true;
-        return false;
-      });
-      if (!onBoard) continue;
-    }
+      ? hBoard['列表'].map((item, idx) => ({ item, rawKey: '', idx }))
+      : Object.entries(obj(hBoard['列表'])).map(([k, v], idx) => ({ item: v, rawKey: text(k).trim(), idx }));
+    if (hBoardList.length === 0) continue;
+    const onBoard = hBoardList.some(({ item, rawKey, idx }) => {
+      const r = obj(item);
+      const itemId = rawKey || text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
+      const itemTitle = text(r['标题']).trim();
+      if (id && itemId === id && (!itemTitle || itemTitle === title || (norm && stripTaskTitle(itemTitle) === norm))) {
+        return true;
+      }
+      if (itemTitle && (itemTitle === title || (norm && stripTaskTitle(itemTitle) === norm))) return true;
+      return false;
+    });
+    if (!onBoard) continue;
     return true;
   }
   return false;
@@ -373,6 +374,10 @@ export function wasInHistoryFormalTasks(historyStats, id, title) {
 export function questBoardState(stat, current = {}) {
   const board = boardNode(stat);
   const region = resolveRegion(stat, current.geoData || null);
+  const nullCore = Boolean(current.nullCore);
+  const currentDay = worldDay(stat);
+  const lastRescanDay = normalizeDay(board['上次重扫日']);
+  const rescanCooldownToday = Boolean(nullCore && currentDay && lastRescanDay && lastRescanDay === currentDay);
   const boardRegionKey = text(board['区域键'] || board['区域']).trim();
   const boardRegionName = text(board['区域'] || board['区域名']).trim();
   const intents = Array.isArray(board['意向'])
@@ -404,20 +409,20 @@ export function questBoardState(stat, current = {}) {
     .filter((t) => !!t.key);
 
   const rawList = Array.isArray(board['列表'])
-    ? board['列表']
-    : Object.entries(obj(board['列表'])).map(([k, v]) => ({ id: k, ...obj(v) }));
+    ? board['列表'].map((entry, idx) => ({ entry, rawKey: '', idx }))
+    : Object.entries(obj(board['列表'])).map(([k, v], idx) => ({ entry: v, rawKey: text(k).trim(), idx }));
 
   const regionChanged = !sameRegion(region, boardRegionKey, boardRegionName, current.geoData || null);
 
   const items = rawList
-    .map((entry, idx) => {
+    .map(({ entry, rawKey, idx }) => {
       const r = obj(entry);
       const title = text(r['标题']).trim();
       if (!title) return null;
       const formal = matchFormalTask(formalList, title);
       if (formal && CLOSED_TASK_RE.test(formal.status)) return null;
       const accepted = !!formal;
-      const id = text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
+      const id = rawKey || text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
       const category = normalizeQuestCategory(r['类别']);
       const rankRaw = text(r['等级']).trim().toUpperCase().match(/[SABCD]/);
       const rank = rankRaw ? rankRaw[0] : 'C';
@@ -511,6 +516,9 @@ export function questBoardState(stat, current = {}) {
     boardRegionName,
     regionChanged,
     updatedDay: normalizeDay(board['更新日']),
+    nullCore,
+    lastRescanDay,
+    rescanCooldownToday,
     rescanPending: rescanFresh(obj(board['待重扫']), current),
     rescanFp: DATA.questBoard.rescanFp,
     progressSignature,

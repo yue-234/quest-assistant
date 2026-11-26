@@ -116,4 +116,62 @@ export function toast(message, kind = 'info') {
   toastr?.[kind]?.(message);
 }
 
+/** 只读检测当前聊天是否启用了 null核心。 */
+export function isNullCore() {
+  try {
+    const getVariables = helper('getVariables');
+    if (getVariables) {
+      const vars = getVariables({ type: 'chat' });
+      if (vars && Object.prototype.hasOwnProperty.call(vars, '系统核心')) {
+        return String(vars['系统核心'] ?? '').trim() === 'null核心';
+      }
+    }
+  } catch {
+    /* 退回 chatMetadata */
+  }
+  try {
+    const val = stContext()?.chatMetadata?.variables?.['系统核心'];
+    return String(val ?? '').trim() === 'null核心';
+  } catch {
+    return false;
+  }
+}
+
+/** 读取当前聊天唯一标识，用于按聊天隔离本地状态。 */
+export function readChatId() {
+  try {
+    const ctx = stContext();
+    const id = ctx?.chatId ?? ctx?.chatMetadata?.chat_id ?? '';
+    return String(id ?? '').trim();
+  } catch {
+    return '';
+  }
+}
+
+/** 优先通过父窗口 localStorage 读取，跨源或受限时回退当前窗口。 */
+export function readStorage(key) {
+  for (const win of [parentWindow, globalThis]) {
+    try {
+      if (win?.localStorage) return win.localStorage.getItem(key) || '';
+    } catch {
+      /* 尝试下一个窗口 */
+    }
+  }
+  return '';
+}
+
+/** 优先通过父窗口 localStorage 写入，跨源或受限时回退当前窗口。 */
+export function writeStorage(key, value) {
+  for (const win of [parentWindow, globalThis]) {
+    try {
+      if (win?.localStorage) {
+        win.localStorage.setItem(key, value);
+        return;
+      }
+    } catch {
+      /* 尝试下一个窗口 */
+    }
+  }
+}
+
 export { parentWindow };

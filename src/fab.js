@@ -418,6 +418,7 @@ export function mountFab(doc, win, { onOpen } = {}) {
   btn.addEventListener('pointerdown', onPointerDown);
   btn.addEventListener('keydown', onKeyDown);
   win.addEventListener('resize', onResize);
+  win.visualViewport?.addEventListener('resize', onResize);
   doc.addEventListener('visibilitychange', onVisibility);
   onVisibility();
 
@@ -435,6 +436,7 @@ export function mountFab(doc, win, { onOpen } = {}) {
       win.removeEventListener('pointerup', onPointerUp);
       win.removeEventListener('pointercancel', onPointerCancel);
       win.removeEventListener('resize', onResize);
+      win.visualViewport?.removeEventListener('resize', onResize);
       doc.removeEventListener('visibilitychange', onVisibility);
       btn.remove();
       style.remove();

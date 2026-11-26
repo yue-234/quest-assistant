@@ -4,6 +4,7 @@
 import { DATA } from './data.js';
 import {
   BOARD_KEY, CORE_NAME, SPEAKER, fpOf, boardNode, rescanFresh,
+  normalizeDay, worldDay, cleanRewardText, parseClaimedSet, normalizeQuestRewards,
   stripTaskTitle, matchFormalTask, extractHistoryStats, wasInHistoryFormalTasks,
 } from './state.js';
 
@@ -11,6 +12,7 @@ export { CORE_NAME, SPEAKER };
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? JSON.parse(JSON.stringify(v)) : {});
 const text = (v) => String(v ?? '');
+const CLAIMED_MARK_RE = /(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)]|\[\d+\s*[✓✔☑]\])/;
 
 /** 深拷贝 stat_data 并确保 /事件/任务情报板 存在。 */
 function draft(stat) {
@@ -146,25 +148,20 @@ export function toggleQuestRewardClaimed(stat, questId, slotNo, questTitle = '')
     }
   }
 
-  const cleanRw = (s) => text(s)
-    .replace(/^\s*\[\s*\d+\s*[✓✔☑□☐]?\s*\]\s*/g, '')
-    .replace(/\s*(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)])+\s*$/g, '')
-    .replace(/^\s*(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)])+\s*/g, '')
-    .trim();
-
-  const rawList = targetEntry && Array.isArray(targetEntry['预期收益']) ? targetEntry['预期收益'] : null;
-  const rawSlotText = rawList && rawList[slot - 1] !== undefined ? text(rawList[slot - 1]) : '';
-  const cleanSlotText = cleanRw(rawSlotText).replace(/\s+/g, '');
-  const hadInlineMark = /(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)])/.test(rawSlotText);
+  const rawRewards = targetEntry ? normalizeQuestRewards(targetEntry['预期收益']) : [];
+  const rawSlotText = rawRewards[slot - 1] !== undefined ? text(rawRewards[slot - 1]) : '';
+  const cleanSlotText = cleanRewardText(rawSlotText).replace(/\s+/g, '');
+  const hadInlineMark = CLAIMED_MARK_RE.test(rawSlotText);
 
   const curRaw = board['已兑现'][key] ?? (title && board['已兑现'][title]) ?? [];
-  const curArr = Array.isArray(curRaw) ? curRaw : [];
-  const existsInMap = curArr.some((x) => {
-    if (typeof x === 'number' && Math.floor(x) === slot) return true;
-    const s = text(x).trim();
-    if (/^\d+$/.test(s) && Number(s) === slot) return true;
-    return cleanSlotText && cleanRw(s).replace(/\s+/g, '') === cleanSlotText;
-  });
+  const curArr = Array.isArray(curRaw)
+    ? [...curRaw]
+    : (typeof curRaw === 'string' && curRaw.trim()
+      ? curRaw.split(/[、，,;\n；|｜]+/).map((x) => x.trim()).filter(Boolean)
+      : []);
+  const claimedInfo = parseClaimedSet(curRaw);
+  const existsInMap = claimedInfo.slots.has(slot)
+    || (!!cleanSlotText && claimedInfo.texts.has(cleanSlotText));
 
   const wasClaimed = existsInMap || hadInlineMark;
   if (wasClaimed) {
@@ -172,13 +169,20 @@ export function toggleQuestRewardClaimed(stat, questId, slotNo, questTitle = '')
       if (typeof x === 'number' && Math.floor(x) === slot) return false;
       const s = text(x).trim();
       if (/^\d+$/.test(s) && Number(s) === slot) return false;
-      if (cleanSlotText && cleanRw(s).replace(/\s+/g, '') === cleanSlotText) return false;
+      if (cleanSlotText && cleanRewardText(s).replace(/\s+/g, '') === cleanSlotText) return false;
       return true;
     });
     if (filtered.length > 0) board['已兑现'][key] = filtered;
     else delete board['已兑现'][key];
     if (title && title !== key) delete board['已兑现'][title];
-    if (hadInlineMark && rawList) rawList[slot - 1] = cleanRw(rawSlotText);
+    if (hadInlineMark && targetEntry) {
+      if (Array.isArray(targetEntry['预期收益'])) {
+        targetEntry['预期收益'][slot - 1] = cleanRewardText(rawSlotText);
+      } else {
+        const cleanedList = rawRewards.map((rw, idx) => (idx === slot - 1 ? cleanRewardText(rw) : rw));
+        targetEntry['预期收益'] = cleanedList;
+      }
+    }
     return { stat: next, done: `已取消第 ${slot} 栏收益的兑现标记` };
   }
 
@@ -191,18 +195,34 @@ export function toggleQuestRewardClaimed(stat, questId, slotNo, questTitle = '')
   return { stat: next, done: `已将第 ${slot} 栏收益标记为已兑现 ✓` };
 }
 
-/** 消耗 100 FP 预约下一回合重扫当前区域的本地任务情报（保留已锁定与跨区剧情任务）。 */
-export function requestQuestRescan(stat, floor, chatCount) {
-  const cost = DATA.questBoard.rescanFp;
+/** 预约下一回合重扫当前区域的本地任务情报（保留已锁定与跨区剧情任务）。 */
+export function requestQuestRescan(stat, floor, chatCount, { nullCore = false } = {}) {
   const boardNow = boardNode(stat);
   if (rescanFresh(obj(boardNow['待重扫']), { floor, chatCount })) {
     return { error: '本回合已经预约过地区重扫了，等下一回合刷新' };
   }
+  if (nullCore) {
+    const curDay = worldDay(stat);
+    const lastDay = normalizeDay(boardNow['上次重扫日']);
+    if (curDay && lastDay && curDay === lastDay) {
+      return { error: '今日已重扫过本地情报，请等次日再试' };
+    }
+    const next = draft(stat);
+    const board = ensureBoard(next);
+    if (curDay) board['上次重扫日'] = curDay;
+    board['待重扫'] = {
+      楼层: floor === undefined || floor === null ? '' : String(floor),
+      消息数: chatCount === undefined || chatCount === null ? '' : String(chatCount),
+    };
+    return { stat: next, done: '已启动今日免费地区情报重扫，下一回合刷新本地情报' };
+  }
+
+  const cost = DATA.questBoard.rescanFp;
   if (fpOf(stat) < cost) {
     return { error: `命运点数不足：地区重扫需要 ${cost} FP，现有 ${fpOf(stat)} FP` };
   }
   const next = draft(stat);
-  next['命运点数'] = String(fpOf(stat) - cost);
+  next['命运点数'] = fpOf(stat) - cost;
   const board = ensureBoard(next);
   board['待重扫'] = {
     楼层: floor === undefined || floor === null ? '' : String(floor),
@@ -243,6 +263,7 @@ function boardEntriesOf(board) {
       const r = obj(entry);
       return {
         id: text(r['id'] || r['编号']).trim() || `q${idx + 1}`,
+        rawKey: '',
         title: text(r['标题']).trim(),
         raw: r,
       };
@@ -251,37 +272,42 @@ function boardEntriesOf(board) {
   if (board['列表'] && typeof board['列表'] === 'object') {
     return Object.entries(board['列表']).map(([k, v]) => {
       const r = obj(v);
+      const rawKey = text(k).trim();
       return {
-        id: text(k).trim(),
+        id: rawKey,
+        rawKey,
         title: text(r['标题']).trim(),
-        raw: { id: k, ...r },
+        raw: r,
       };
     });
   }
   return [];
 }
 
-function isQuestEntryClosed(stat, entry, idx, claimedMap, everSet, everNormSet, historyStats) {
+function isQuestEntryClosed(stat, entry, idx, claimedMap, everSet, everNormSet, historyStats, rawKey = '') {
   const r = obj(entry);
   const title = text(r['标题']).trim();
   if (!title) return false;
-  const id = text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
+  const id = text(rawKey).trim() || text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
   const formal = matchFormalTask(formalEntriesOf(stat), title);
   if (formal) return CLOSED_TASK_RE.test(formal.status);
 
   // 已不在正式任务列表，满足任一条件即判定已完结：
-  // 1) 在「曾接取」印记中；2) 历史楼层的正式任务列表中曾出现过；3) 已有任意已兑现记录
+  // 1) 在「曾接取」印记中；2) 历史楼层的正式任务列表中曾出现过；3) 至少命中 1 个有效收益栏位的已兑现记录
   const norm = stripTaskTitle(title);
   if (everSet.has(id) || everSet.has(title) || (norm && everNormSet.has(norm))) return true;
   if (wasInHistoryFormalTasks(historyStats, id, title)) return true;
 
-  const claimedRaw = claimedMap[id] ?? claimedMap[title];
-  const hasMapClaim = Array.isArray(claimedRaw)
-    ? claimedRaw.length > 0
-    : (typeof claimedRaw === 'string' && !!claimedRaw.trim());
-  if (hasMapClaim) return true;
-  const rawRewards = Array.isArray(r['预期收益']) ? r['预期收益'] : [];
-  return rawRewards.some((rw) => /(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)])/.test(text(rw)));
+  const rawRewards = normalizeQuestRewards(r['预期收益']);
+  const claimedInfo = parseClaimedSet(claimedMap[id] ?? claimedMap[title]);
+  return rawRewards.some((rawRw, rwIdx) => {
+    const slot = rwIdx + 1;
+    const cleanText = cleanRewardText(rawRw) || rawRw;
+    const compact = cleanText.replace(/\s+/g, '');
+    return CLAIMED_MARK_RE.test(rawRw)
+      || claimedInfo.slots.has(slot)
+      || claimedInfo.texts.has(compact);
+  });
 }
 
 function everSetsOf(board) {
@@ -372,7 +398,7 @@ export function hasClosedQuestLeftovers(stat, current = {}) {
   }
   if (board['列表'] && typeof board['列表'] === 'object') {
     return Object.entries(board['列表']).some(([k, v], idx) =>
-      isQuestEntryClosed(stat, { id: k, ...obj(v) }, idx, claimedMap, everSet, everNormSet, historyStats),
+      isQuestEntryClosed(stat, v, idx, claimedMap, everSet, everNormSet, historyStats, k),
     );
   }
   return false;
@@ -409,7 +435,7 @@ export function sweepClosedQuests(stat, current = {}) {
     });
   } else if (board['列表'] && typeof board['列表'] === 'object') {
     for (const [k, v] of Object.entries(board['列表'])) {
-      if (isQuestEntryClosed(stat, { id: k, ...obj(v) }, 0, claimedMap, everSet, everNormSet, historyStats)) {
+      if (isQuestEntryClosed(stat, v, 0, claimedMap, everSet, everNormSet, historyStats, k)) {
         const title = text(obj(v)['标题']).trim();
         removedIds.add(k);
         if (title) {
@@ -444,4 +470,27 @@ export function sweepClosedQuests(stat, current = {}) {
     else delete board['曾接取'];
   }
   return { stat: next, done: '已清理已完结的任务情报' };
+}
+
+/** 合并后台维护：单次顺序执行清重扫 → 扫完结残留 → 登记曾接取，无改动时返回 { skip: true }。 */
+export function maintainQuestBoard(stat, { floor, chatCount, chat, historyStats } = {}) {
+  let cur = stat;
+  let changed = false;
+  if (questRescanDone(cur, floor, chatCount)) {
+    cur = clearQuestRescan(cur).stat;
+    changed = true;
+  }
+  const board = boardNode(cur);
+  if (board['列表']) {
+    if (hasClosedQuestLeftovers(cur, { chat, historyStats })) {
+      cur = sweepClosedQuests(cur, { chat, historyStats }).stat;
+      changed = true;
+    }
+    if (needsQuestAcceptedRecord(cur)) {
+      cur = recordAcceptedQuests(cur).stat;
+      changed = true;
+    }
+  }
+  if (!changed) return { skip: true };
+  return { stat: cur, done: '已完成任务情报板后台维护' };
 }

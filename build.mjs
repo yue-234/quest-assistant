@@ -1,5 +1,6 @@
 // 构建独立任务助手单文件粘贴脚本「⭐粘这个-任务助手脚本.js」
-// 借用 f:\git\Destined-Poem-Card\node_modules 中的 esbuild（只读引用，不写入该仓库）
+// 项目地址：https://github.com/yue-234/quest-assistant
+// 优先从当前环境解析 esbuild，亦可通过环境变量 ESBUILD_PATH 指定路径
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,15 +11,27 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 
 function loadEsbuild() {
-  const pnpmRoot = 'f:/git/Destined-Poem-Card/node_modules/.pnpm';
-  if (fs.existsSync(pnpmRoot)) {
+  if (process.env.ESBUILD_PATH && fs.existsSync(process.env.ESBUILD_PATH)) {
+    return require(process.env.ESBUILD_PATH);
+  }
+  try {
+    return require('esbuild');
+  } catch {
+    /* 继续尝试本地回退路径 */
+  }
+  const fallbackRoots = [
+    path.resolve(__dirname, 'node_modules/.pnpm'),
+    'f:/git/Destined-Poem-Card/node_modules/.pnpm',
+  ];
+  for (const pnpmRoot of fallbackRoots) {
+    if (!fs.existsSync(pnpmRoot)) continue;
     const dirs = fs.readdirSync(pnpmRoot).filter((d) => d.startsWith('esbuild@'));
     for (const d of dirs) {
       const candidate = path.join(pnpmRoot, d, 'node_modules', 'esbuild', 'lib', 'main.js');
       if (fs.existsSync(candidate)) return require(candidate);
     }
   }
-  return require(require.resolve('esbuild', { paths: ['f:/git/Destined-Poem-Card'] }));
+  throw new Error('未找到 esbuild，请先安装 esbuild 或设置环境变量 ESBUILD_PATH');
 }
 
 const esbuild = loadEsbuild();
@@ -72,7 +85,9 @@ async function build() {
     minify: true,
     plugins: [virtualPlugin],
     banner: {
-      js: '// 命定之诗 · 独立任务助手脚本（不依赖任何命定核心，直接粘贴至酒馆脚本助手即可）',
+      js:
+        '// 命定之诗 · 独立任务助手脚本（不依赖任何命定核心，直接粘贴至酒馆脚本助手即可）\n' +
+        '// 项目地址：https://github.com/yue-234/quest-assistant',
     },
   });
 

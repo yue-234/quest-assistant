@@ -1,13 +1,17 @@
 <%_ {
 // 独立任务助手世界书条目（不依赖任何命定核心，路径固定为 /事件/任务情报板）。
+// 项目地址：https://github.com/yue-234/quest-assistant
 // 下面 @data 一段与 src/data.js 的 DATA 保持同一份口径。
 // @data-begin
-const _data = {"questBoard":{"rescanFp":100,"storyAdvanceDays":5,"categories":{"剧情任务":{"max":2,"rewardSlots":7,"qualityShift":1,"crossRegion":true},"本地主线":{"max":2,"rewardSlots":5,"qualityShift":1,"crossRegion":false},"支线任务":{"max":3,"rewardSlots":3,"qualityShift":0,"crossRegion":false}},"maxItems":7,"maxIgnored":12,"eventHooks":[{"id":"mountains","regions":["铁炉堡","巨龙山脉"],"category":"剧情任务","rank":"A","doneEvent":"已完成事件关于我帮助矮人王女夺回群山王国的那些事","maxLevel":14,"way":"委托","rumor":"矮人王女艾波丽斯正在铁炉堡召集「铁砧之誓」远征队，高酬招募盟友参与夺回失落群山王国沃达坦的远征"},{"id":"blood_princess","regions":["瓦伦蒂亚","诺瓦·瓦伦蒂亚"],"category":"剧情任务","rank":"B","doneEvent":"已完成事件关于我战败后被血族女王变成女儿的那些事","maxLevel":7,"way":"悬赏","rumor":"瓦伦蒂亚城内流传着针对古老血族始祖莉莉娅丝的高额讨伐悬赏与征召令，公会与军方均在暗中物色人手"},{"id":"porcelain_room","regions":["锈潮港区","雾晶港"],"category":"本地主线","rank":"B","doneSignal":"密室_completed","way":"探索","rumor":"锈潮港区崖壁近日露出一条人工打磨的白石裂缝，传闻深处遗留着古代素瓷密室与不明魔法器"},{"id":"ice_song","regions":["北境","碎冕冰脊","冰峨镇","白曜城","诺斯加德"],"category":"剧情任务","rank":"A","doneFlag":["冰之歌","异神已击败"],"minLevel":10,"way":"异象","rumor":"北境极寒地带近日频现反常寒潮与古老咏叹异象，多支前去探查的商队与斥候均称风雪中藏有异常源头"},{"id":"sphinx","regions":["沙漠","沼泽","树海","荒野","山脉","废墟"],"category":"本地主线","rank":"A","doneSignal":"斯芬克斯支线_done0231","way":"探索","rumor":"荒野冒险者间流传着一只带翼人面巨兽出没的传闻，遇袭者若答出其谜题便可换得罕见馈赠"}]}};
+const _data = {"questBoard":{"rescanFp":100,"storyAdvanceDays":5,"categories":{"剧情任务":{"max":2,"rewardSlots":10,"qualityShift":1,"crossRegion":true},"本地主线":{"max":2,"rewardSlots":5,"qualityShift":1,"crossRegion":false},"支线任务":{"max":3,"rewardSlots":3,"qualityShift":0,"crossRegion":false}},"maxItems":7,"maxIgnored":12}};
 // @data-end
 
 const _int = (v) => { const m = String(v ?? '').replace(/[,，]/g, '').match(/-?\d+/); return m ? Number(m[0]) : 0; };
 const _obj = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
 const _txt = (v) => String(v ?? '');
+const _escPtr = (s) => _txt(s).replace(/~/g, '~0').replace(/\//g, '~1');
+const _isNullCore = (typeof destinyImmersiveMode === 'function' && destinyImmersiveMode())
+  || _txt(typeof getvar === 'function' ? getvar('系统核心', { scope: 'local', defaults: '' }) : '').trim() === 'null核心';
 
 let _sd = getvar('stat_data');
 if (typeof _sd === 'string') { try { _sd = JSON.parse(_sd); } catch (e) { _sd = {}; } }
@@ -180,19 +184,64 @@ const _parseClaimed = (raw) => {
   }
   return { slots, texts };
 };
-const _dayOrdinal = (s) => {
-  const norm = _normalizeDay(s);
-  const m = norm.match(/(\d+)年?-(\d+)月?-(\d+)日?/);
+const _validMD = (m, d) => m >= 1 && m <= 12 && d >= 1 && d <= 31;
+const _curYmd = (() => {
+  const m = _day.match(/(\d+)\s*年?-(\d{1,2})\s*月?-(\d{1,2})\s*日?/);
   if (!m) return null;
-  return Number(m[1]) * 360 + Number(m[2]) * 30 + Number(m[3]);
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  return _validMD(mo, d) ? { y, mo, d, ord: y * 360 + mo * 30 + d } : null;
+})();
+const _curYear = _curYmd ? _curYmd.y : null;
+const _curDayOrd = _curYmd ? _curYmd.ord : null;
+const _borrowYearOrd = (mo, d) => {
+  if (_curYear === null || !_validMD(mo, d)) return null;
+  const ord = _curYear * 360 + mo * 30 + d;
+  if (_curDayOrd !== null && ord > _curDayOrd) return (_curYear - 1) * 360 + mo * 30 + d;
+  return ord;
+};
+const _dayOrdinal = (s) => {
+  const raw = _txt(s).trim();
+  if (!raw || /(?:^|[^a-zA-Z0-9_])[vV]\d+\.\d+(?:\.\d+)?/.test(raw)) return null;
+  const norm = _normalizeDay(raw);
+  const ymd = norm.match(/(\d+)年?-(\d{1,2})月?-(\d{1,2})日?/);
+  if (ymd) {
+    const y = Number(ymd[1]), m = Number(ymd[2]), d = Number(ymd[3]);
+    return _validMD(m, d) ? y * 360 + m * 30 + d : null;
+  }
+  const md = norm.match(/(?:^|[^\d])(\d{1,2})月-(\d{1,2})日/);
+  if (md && _curYear !== null) {
+    return _borrowYearOrd(Number(md[1]), Number(md[2]));
+  }
+  return null;
 };
 const _lastDayOrdInText = (s) => {
-  const matches = [..._txt(s).matchAll(/(\d+)年?[-/.](\d+)月?[-/.](\d+)日?/g)];
-  if (!matches.length) return null;
-  const last = matches[matches.length - 1];
-  return Number(last[1]) * 360 + Number(last[2]) * 30 + Number(last[3]);
+  const str = _txt(s);
+  if (!str) return null;
+  const hits = [];
+  for (const m of str.matchAll(/(\d{1,6})\s*年\s*-?\s*(\d{1,2})\s*月\s*-?\s*(\d{1,2})\s*日/g)) {
+    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+    if (_validMD(mo, d)) hits.push({ idx: m.index, end: m.index + m[0].length, ord: y * 360 + mo * 30 + d });
+  }
+  for (const m of str.matchAll(/(?<![a-zA-Z0-9_.])(\d{1,6})([-/.])(\d{1,2})\2(\d{1,2})(?![a-zA-Z0-9_.])/g)) {
+    if (m[2] === '.' && m[1].length < 3) continue;
+    const y = Number(m[1]), mo = Number(m[3]), d = Number(m[4]);
+    if (_validMD(mo, d)) hits.push({ idx: m.index, end: m.index + m[0].length, ord: y * 360 + mo * 30 + d });
+  }
+  if (_curYear !== null) {
+    for (const m of str.matchAll(/(\d{1,2})\s*月\s*-?\s*(\d{1,2})\s*日/g)) {
+      if (hits.some((h) => m.index >= h.idx && m.index < h.end)) continue;
+      const ord = _borrowYearOrd(Number(m[1]), Number(m[2]));
+      if (ord !== null) hits.push({ idx: m.index, end: m.index + m[0].length, ord });
+    }
+    for (const m of str.matchAll(/[\[\(（](\d{1,2})-(\d{1,2})[\]\)）]/g)) {
+      const ord = _borrowYearOrd(Number(m[1]), Number(m[2]));
+      if (ord !== null) hits.push({ idx: m.index, end: m.index + m[0].length, ord });
+    }
+  }
+  if (!hits.length) return null;
+  hits.sort((a, b) => a.idx - b.idx);
+  return hits[hits.length - 1].ord;
 };
-const _curDayOrd = _dayOrdinal(_day);
 const _boardUpdatedDay = _normalizeDay(_qb['更新日']);
 const _closedTaskRe = /(?:已完成|完成|已失败|失败|已结束|已取消|放弃)/;
 const _formalTasks = Object.entries(_obj(_sd['任务列表']))
@@ -215,15 +264,17 @@ const _matchFormalIn = (list, title) => {
   if (norm) {
     const normExact = list.find((t) => _stripTaskTitle(t.key) === norm);
     if (normExact) return normExact;
-    if (norm.length >= 2) {
+    if (norm.length >= 4) {
       const normSub = list.find((t) => {
         const tk = _stripTaskTitle(t.key);
-        return tk.length >= 2 && (tk.includes(norm) || norm.includes(tk));
+        if (tk.length < 4) return false;
+        if (!tk.includes(norm) && !norm.includes(tk)) return false;
+        return Math.min(tk.length, norm.length) / Math.max(tk.length, norm.length) >= 0.75;
       });
       if (normSub) return normSub;
     }
   }
-  return list.find((t) => t.key.includes(title) || title.includes(t.key)) || null;
+  return null;
 };
 const _matchFormalTask = (title) => _matchFormalIn(_formalTasks, title);
 const _qbEverNormSet = new Set(_qbEver.map(_stripTaskTitle).filter(Boolean));
@@ -246,40 +297,43 @@ const _wasInHistFormal = (id, title) => {
     if (!_matchFormalIn(hList, title)) continue;
     const hb = _obj(_obj(hs['事件'])['任务情报板']);
     const hbList = Array.isArray(hb['列表'])
-      ? hb['列表']
-      : Object.entries(_obj(hb['列表'])).map(([k, v]) => ({ id: k, ..._obj(v) }));
-    if (hbList.length > 0) {
-      const onBoard = hbList.some((item, idx) => {
-        const r = _obj(item);
-        const itemId = _txt(r['id'] || r['编号']).trim() || `q${idx + 1}`;
-        const itemTitle = _txt(r['标题']).trim();
-        if (id && itemId === id && (!itemTitle || itemTitle === title || (norm && _stripTaskTitle(itemTitle) === norm))) return true;
-        if (itemTitle && (itemTitle === title || (norm && _stripTaskTitle(itemTitle) === norm))) return true;
-        return false;
-      });
-      if (!onBoard) continue;
-    }
+      ? hb['列表'].map((item, idx) => ({ item, rawKey: '', idx }))
+      : Object.entries(_obj(hb['列表'])).map(([k, v], idx) => ({ item: v, rawKey: _txt(k).trim(), idx }));
+    if (hbList.length === 0) continue;
+    const onBoard = hbList.some(({ item, rawKey, idx }) => {
+      const r = _obj(item);
+      const itemId = rawKey || _txt(r['id'] || r['编号']).trim() || `q${idx + 1}`;
+      const itemTitle = _txt(r['标题']).trim();
+      if (id && itemId === id && (!itemTitle || itemTitle === title || (norm && _stripTaskTitle(itemTitle) === norm))) return true;
+      if (itemTitle && (itemTitle === title || (norm && _stripTaskTitle(itemTitle) === norm))) return true;
+      return false;
+    });
+    if (!onBoard) continue;
     return true;
   }
   return false;
 };
+const _lastMsgRaw = _chatList.length ? _txt(_obj(_chatList[_chatList.length - 1])['mes']) : '';
+const _lastMsgNorm = _stripTaskTitle(_lastMsgRaw);
 const _storyAdvanceDays = (_data.questBoard && Number(_data.questBoard.storyAdvanceDays)) || 5;
 const _qbRegionChanged = !_sameRegion(_region, _qbRegionKey, _qbRegionName);
-const _qbRawList = Array.isArray(_qb['列表'])
-  ? _qb['列表']
-  : Object.entries(_obj(_qb['列表'])).map(([k, v]) => ({ id: k, ..._obj(v) }));
+const _qbListIsArr = Array.isArray(_qb['列表']);
+const _qbRawList = _qbListIsArr
+  ? _qb['列表'].map((entry, idx) => ({ entry, rawKey: '', idx }))
+  : Object.entries(_obj(_qb['列表'])).map(([k, v], idx) => ({ entry: v, rawKey: _txt(k).trim(), idx }));
 const _qbClosedTitles = [];
 const _qbItems = _qbRawList
-  .map((entry, idx) => {
+  .map(({ entry, rawKey, idx }) => {
     const r = _obj(entry);
     const title = _txt(r['标题']).trim();
     if (!title) return null;
+    const closedTag = _qbListIsArr ? `${title}(索引${idx})` : `${title}(键${rawKey})`;
     const formal = _matchFormalTask(title);
     if (formal && _closedTaskRe.test(formal.status)) {
-      _qbClosedTitles.push(title);
+      _qbClosedTitles.push(closedTag);
       return null;
     }
-    const id = _txt(r['id'] || r['编号']).trim() || `q${idx + 1}`;
+    const id = rawKey || _txt(r['id'] || r['编号']).trim() || `q${idx + 1}`;
     const cat = _txt(r['类别']).includes('剧情')
       ? '剧情任务'
       : (_txt(r['类别']).includes('主线') ? '本地主线' : '支线任务');
@@ -303,19 +357,24 @@ const _qbItems = _qbRawList
       || _qbEverSet.has(title)
       || (!!normTitle && _qbEverNormSet.has(normTitle));
     if (!accepted && (claimedCount > 0 || everAccepted || _wasInHistFormal(id, title))) {
-      _qbClosedTitles.push(title);
+      _qbClosedTitles.push(closedTag);
       return null;
     }
     const updatedDay = _normalizeDay(r['更新日']) || _boardUpdatedDay;
-    const itemOrd = (accepted ? _lastDayOrdInText(formal.progress) : null) ?? _dayOrdinal(updatedDay);
-    const idleDays = cat === '剧情任务' && _curDayOrd !== null && itemOrd !== null
+    // 未接取任务状态冻结：仅已接取的剧情任务计算搁置天数与跨区/搁置演进
+    const itemOrd = accepted ? (_lastDayOrdInText(formal.progress) ?? _dayOrdinal(updatedDay)) : null;
+    const idleDays = accepted && cat === '剧情任务' && _curDayOrd !== null && itemOrd !== null
       ? Math.max(0, _curDayOrd - itemOrd)
       : 0;
-    const advanceReason = cat === '剧情任务'
+    const advanceReason = accepted && cat === '剧情任务'
       ? (_qbRegionChanged ? '已跨区' : (idleDays >= _storyAdvanceDays ? `已搁置 ${idleDays} 日` : ''))
       : '';
+    const mentioned = !accepted && !!_lastMsgRaw && (
+      _lastMsgRaw.includes(title) || (normTitle.length >= 2 && _lastMsgNorm.includes(normTitle))
+    );
     return {
       id,
+      rawKey,
       rawIdx: idx,
       category: cat,
       rank: _txt(r['等级']).trim() || 'C',
@@ -329,6 +388,7 @@ const _qbItems = _qbRawList
       progress: accepted ? (formal.progress || _txt(r['进展'] || r['动态'] || r['最新进展']).trim()) : _txt(r['进展'] || r['动态'] || r['最新进展']).trim(),
       updatedDay,
       accepted,
+      mentioned,
       formalTaskName: formal ? formal.key : '',
       idleDays,
       advanceReason,
@@ -343,14 +403,17 @@ const _qbItems = _qbRawList
 const _qbRescan = _obj(_qb['待重扫']);
 const _qbRescanDue = (() => {
   if (!Object.keys(_qbRescan).length) return false;
-  const rc = _txt(_qbRescan['消息数']);
+  const rc = _txt(_qbRescan['消息数']).trim();
   const nc = Number(rc);
-  if (rc && Number.isFinite(nc)) return _msgCount <= nc + 2;
-  const rf = _txt(_qbRescan['楼层']);
+  if (rc && Number.isFinite(nc)) return _msgCount <= nc + 1;
+  const rf = _txt(_qbRescan['楼层']).trim();
   const nf = Number(rf);
-  if (rf && Number.isFinite(nf) && _lastId >= 0) return _lastId <= nf + 3;
+  if (rf && Number.isFinite(nf) && _lastId >= 0) return _lastId <= nf + 2;
   return false;
 })();
+const _qbBaseKeys = ['区域键', '区域', '更新日', '列表'];
+const _qbExistKeys = _hasQb ? _qbBaseKeys.filter((k) => Object.prototype.hasOwnProperty.call(_qb, k)) : [];
+const _qbMissKeys = _hasQb ? _qbBaseKeys.filter((k) => !Object.prototype.hasOwnProperty.call(_qb, k)) : _qbBaseKeys;
 const _qbOpenCount = _qbItems.filter((it) => !it.accepted).length;
 const _storyDue = _qbItems.filter((it) => !!it.advanceReason);
 const _qbMode = _qbRescanDue
@@ -363,49 +426,33 @@ const _qbMode = _qbRescanDue
         ? 'refill'
         : (_storyDue.length > 0 ? 'advance' : 'maintain'))));
 
-// 地区事件链钩子过滤：只在命中当前区域、等级吻合且未完成时输出（平时 0 token）
-const _level = _int(_player['等级']);
-const _eventsRoot = _obj(_sd['事件']);
-const _doneEvents = Array.isArray(_eventsRoot['已完成事件']) ? _eventsRoot['已完成事件'] : [];
-const _doneSignals = Array.isArray(_eventsRoot['信号']) ? _eventsRoot['信号'] : [];
-const _locSearch = `${_region.raw} ${_region.name}`;
-const _qbHooks = (_data.questBoard && Array.isArray(_data.questBoard.eventHooks) ? _data.questBoard.eventHooks : []).filter((h) => {
-  if (!h || !Array.isArray(h.regions) || !_locSearch.trim()) return false;
-  if (!h.regions.some((kw) => _locSearch.includes(kw))) return false;
-  if (h.doneEvent && _doneEvents.includes(h.doneEvent)) return false;
-  if (h.doneSignal && _doneSignals.includes(h.doneSignal)) return false;
-  if (Array.isArray(h.doneFlag) && h.doneFlag.length === 2 && _obj(_eventsRoot[h.doneFlag[0]])[h.doneFlag[1]] === true) return false;
-  if (typeof h.minLevel === 'number' && _level > 0 && _level < h.minLevel) return false;
-  if (typeof h.maxLevel === 'number' && _level > 0 && _level > h.maxLevel) return false;
-  return true;
-});
-
 const _qbNeedGen = _qbMode === 'init' || _qbMode === 'relocate' || _qbMode === 'refill' || _qbMode === 'rescan';
 const _qbNeedAdv = _storyDue.length > 0;
-const _qbTouchBoard = _qbNeedGen || _storyDue.some((it) => !it.accepted);
-const _qbShownHooks = !_qbNeedGen
-  ? []
-  : (_qbMode === 'rescan' && _qbItems.some((x) => x.category === '剧情任务')
-    ? _qbHooks.filter((h) => h.category !== '剧情任务')
-    : _qbHooks);
+const _qbTouchBoard = _qbNeedGen;
 const _qbShownItems = _qbMode === 'relocate'
   ? _qbItems.filter((it) => it.category === '剧情任务' || it.accepted || it.intent)
-  : _qbItems;
+  : (_qbNeedGen
+    ? _qbItems
+    : _qbItems.filter((it) => it.accepted || it.mentioned));
 const _qbHasTracked = _qbItems.some((it) => it.intent || it.accepted);
 const _qbClaimRule = !_hasQb
   ? ''
-  : '；实际发放某栏收益时，在 <UpdateVariable> 中按该条末尾的 `打勾Patch` 写入累计已发栏号（从 1 开始，未发足额的金钱栏暂不勾选），`[n✓]` 项不重复发放';
+  : '；实际发放某栏收益时，在 <UpdateVariable> 中按该条末尾的 `打勾Patch` 写入累计已发栏号（从 1 开始，未发足额的金钱栏暂不勾选），`[n✓]` 项不重复发放'
+    + (!_hasClaimed ? '（同轮首次为多条任务打勾时合并写入同一个 `insert /事件/任务情报板/已兑现` 对象中，勿重复 `insert` 同一路径）' : '');
 const _claimPatchHint = (it) => {
   if (!_hasQb) return '';
   if (!_hasClaimed) {
-    return `{ "op": "insert", "path": "/事件/任务情报板/已兑现", "value": { "${it.id}": [栏号] } }`;
+    return `{ "op": "insert", "path": "/事件/任务情报板/已兑现", "value": { ${JSON.stringify(it.id)}: [栏号] } }`;
   }
   const op = it.hasClaimedKey ? 'replace' : 'insert';
-  return `{ "op": "${op}", "path": "/事件/任务情报板/已兑现/${it.id}", "value": [累计栏号] }`;
+  return `{ "op": "${op}", "path": "/事件/任务情报板/已兑现/${_escPtr(it.id)}", "value": [累计栏号] }`;
 };
-const _removePatchHint = (it) => (_hasQb && Array.isArray(_qb['列表'])
-  ? `{ "op": "remove", "path": "/事件/任务情报板/列表/${it.rawIdx}" }`
-  : '');
+const _removePatchHint = (it) => {
+  if (!_hasQb || !_qb['列表']) return '';
+  if (_qbListIsArr) return `{ "op": "remove", "path": "/事件/任务情报板/列表/${it.rawIdx}" }`;
+  if (it.rawKey) return `{ "op": "remove", "path": "/事件/任务情报板/列表/${_escPtr(it.rawKey)}" }`;
+  return '';
+};
 _%>
 <任务情报板>
 任务情报板:
@@ -413,40 +460,36 @@ _%>
     同步: 通过 <UpdateVariable> JSON Patch 静默同步至 `/事件/任务情报板`，正文不输出面板、不提前写入 `任务列表`
     接取: <user> 行动与板上目标一致（联系委托方，或直接勘查、追查、介入现场）时，无需口头声明即视为接取，按板上原 `标题` 写入正式 `任务列表`
     更新: 未接取只写任务情报板；已接取后进展、状态与目标只更新 `/任务列表/<任务名>`（不双写任务情报板），原条目保留在板上透传 `预期收益`
-    结案移出: 完结（含单环支线或最后一次性结算的任务）发奖并从 `任务列表` 移除同轮，直接写该条 `结案移出` Patch 从任务情报板删除（无需再写 `打勾Patch`）；未接取支线单回合接取并完结同样移出
+    结案移出: 完结（含单环支线或最后一次性结算的任务）发奖并从 `任务列表` 移除同轮，直接写该条 `结案移出` Patch 从任务情报板删除（无需再写 `打勾Patch`）；未接取支线单回合接取并完结同样移出；同轮移出多条数组项时须按索引从大到小倒序 `remove`（或整表 `replace` `/事件/任务情报板/列表`）
     锁定与换区: `★已锁定` 与 `已接取` 跨区及重扫保留（已锁定仅因时限到期自动清除，过期项同步时移除）；仅跨城或跨大区触发换区，同城小场所不换区
-    路径: <% if (!_hasQb) { %>`/事件/任务情报板` 未创建，用 `{ "op": "insert", "path": "/事件/任务情报板", "value": { "区域键": "<%- _region.key || 'unknown' %>", "区域": "<%- _region.name || '当前区域' %>", "更新日": "<%- _day %>", "列表": [ ... ] } }`；**严禁对 `/事件` 执行 insert 或 replace**<% } else { %>分别用 `replace` 更新 `/事件/任务情报板` 下的 `区域键`<% if (_qbRegionChanged && _region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「曾接取」；**严禁整块覆写 `/事件`**）<% } %>
+    路径: <% if (!_hasQb) { %>`/事件/任务情报板` 未创建，用 `{ "op": "insert", "path": "/事件/任务情报板", "value": { "区域键": "<%- _region.key || 'unknown' %>", "区域": "<%- _region.name || '当前区域' %>", "更新日": "<%- _day %>", "列表": [ ... ] } }`；**严禁对 `/事件` 执行 insert 或 replace**<% } else if (_qbMissKeys.length === 0) { %>分别用 `replace` 更新 `/事件/任务情报板` 下的 `区域键`<% if (_qbRegionChanged && _region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」；**严禁整块覆写 `/事件`**）<% } else if (_qbExistKeys.length === 0) { %>`/事件/任务情报板` 仅含控制字段，分别用 `insert` 写入 `/事件/任务情报板` 下的 `区域键`<% if (_region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」；**严禁整块覆写 `/事件`**）<% } else { %>对已存在键（<%- _qbExistKeys.map((k) => '`' + k + '`').join('、') %>）用 `replace`、对缺失键（<%- _qbMissKeys.map((k) => '`' + k + '`').join('、') %>）用 `insert` 更新 `/事件/任务情报板` 下对应字段<% if (_qbRegionChanged && _region.key) { %>（`区域键` 写 `<%- _region.key %>`）<% } %>（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」；**严禁整块覆写 `/事件`**）<% } %>
 <% if (_qbNeedGen) { _%>
   生成规格（品质与禁项沿用<任务与委托规则>，+1 档即 D优良/C稀有/B史诗/A传说/S神话）:
     字段:
       基础: `id`、`类别`（剧情任务/本地主线/支线任务）、`等级`（D~S）、`标题`（纯任务名，不带 `（个人/团队）` 后缀）、`方式`（委托/悬赏/调查/探索/危机/周旋/异象）、`引导`（委托/悬赏写联络人与去处；其余写地点与切入线索）、`地点`、`时限`（对照当前世界时间匹配紧迫度与路程，濒死、追兵逼近等急事不写数天，跨区长线留足路程）、`摘要`（只写表面异状与疑点，不泄露幕后真相）、`预期收益`（字符串数组）
-      附加: 剧情任务与本地主线附加 `真相`（1~2 句客观幕后局势：真实起因、暗中势力意图与未解隐患，不写线性步骤；仅后台保存，不展示给 `<user>`）；剧情任务另含 `更新日`（`<%- _day %>`）与 `进展`（未接取演进后填写）
-    剧情任务（1~2 条，跨区保留｜数周~数月或无固定时限｜品质+1 档｜收益 7 栏）: 跨区或多势力连环长线，每阶段引出新局势变化、地点或深层线索，不单场结案；优先承接下方事件钩子；跨区或搁置满 <%- _storyAdvanceDays %> 天时自行演进 1 步
+      附加: 剧情任务与本地主线附加 `真相`（1~2 句客观幕后局势：真实起因、暗中势力意图与未解隐患，剧情任务须点明涉及的多地脉络及接取后长期放任对大区/世界的严重后果，不写线性步骤；仅后台保存，不展示给 `<user>`）；剧情任务另含 `更新日`（`<%- _day %>`）与 `进展`（接取后演进填写）
+    剧情任务（1~2 条，B~S 级，跨区保留｜数周~数月或无固定时限｜品质+1 档｜收益 10 栏）: 高危大格局的跨城/跨大区连环长线（如灾厄异变、封印松动、跨国阴谋、势力倾轧等），严禁写成局限于当前城镇的琐碎小事；`引导`可从本地风声切入，但`地点`与后续脉络须主动引导 <user> 前往别处并串联途经数个城市/区域，每阶段引出新局势变化、远方目的地或深层线索，不单场结案；未接取时状态冻结（不演进、不产生世界后果）；接取后具备明确紧迫感，跨区或搁置满 <%- _storyAdvanceDays %> 天时自行演进 1 步，长期放任将导致局势失控并波及多地乃至世界
     本地主线（1~2 条，限本区｜3~15 天或绑定当地事件节点｜品质+1 档｜收益 5 栏）: 区域级递进波折（含表象、幕后势力博弈与抉择），完结后留当地可见余波；不在击败敌方或处理表象后草率结案，也不将多条主线合并为一战收尾
     支线任务（2~3 条，限本区｜数小时~7 天｜品质按原规则｜收益 3 栏）: 单点闭环的一次性委托或短途探索
+    事件承接: 生成任务板（尤其是剧情任务与本地主线）时，优先承接当前上下文中已激活且尚未完成的世界书事件或事件链线索（无论原版还是创意工坊自制事件链），将其包装为不泄露幕后真相的公开情报（风声、委托、悬赏或异象切入）；未在上下文激活的事件链不得凭空捏造，无可用线索时再按当前区域与世界局势原创
     预期收益: 每栏写概括性独立品类与数量区间（如「史诗级武器 ×1」「稀有级魔导材料 ×4~6」），丰富不重复，品质与货币沿用<技能装备道具生成规则>与<经济价格指南>；推进已锁定或已接取任务时在中途与结算分批兑现，总兑现不低于底线<% if (_qbHasTracked && _qbClaimRule) { %><%- _qbClaimRule %><% } %>
 <% } else { _%>
   推进与兑现:
-    节奏: 剧情任务跨区连环长线推进（跨区或搁置满 <%- _storyAdvanceDays %> 天时自行演进 1 步）；本地主线限本区递进波折并留当地余波；支线限本区单点闭环
+    节奏: 未接取任务状态冻结，不自行演进也不产生世界后果；已接取的剧情任务按跨城/跨大区高危长线推进，持续牵引前往别处并串联多地（跨区或搁置满 <%- _storyAdvanceDays %> 天时自行演进恶化 1 步，长期放任会改变区域乃至世界局势）；本地主线限本区递进波折并留当地余波；支线限本区单点闭环
     演化与结案: 剧情与本地主线顺应 <user> 切入顺序，按幕后 `真相` 自由演化（直接切入暗线则反向牵出明线，无固定线性步骤）；`真相` 中幕后隐患或势力纠葛未落地、或 `预期收益` 主要部分仍为 `[□]` 时，不在击败敌方或处理表象后草率结案，也不将多条主线合并为一战收尾
     分批兑现: 推进已锁定或已接取任务时，将板上 `预期收益` 在中途与结算分批兑现（总兑现不低于底线，品质与货币沿用<技能装备道具生成规则>与<经济价格指南>）<% if (_qbHasTracked && _qbClaimRule) { %><%- _qbClaimRule %><% } %>
 <% } _%>
 <% if (_qbNeedAdv) { _%>
   剧情演进:
-    演进: 对下方标 `待演进` 的剧情任务自行演进 1 步（局势升级、线索转移或主导权易手），静默同步至任务情报板，必要时在正文中通过当地传闻或情报渠道自然带出一句
-    写回: 未接取时在任务情报板原 `id` 更新 `进展`、`更新日`（`<%- _day %>`）、`摘要`、`引导`、`地点` 与 `时限`；已接取时确认近期未随当前剧情推进，只更新 `/任务列表/<任务名>/进展`（开头附 `[<%- _day %>]`）及必要的 `目标`/`关注度`
+    演进: 对下方标 `待演进` 的已接取剧情任务自行演进 1 步（局势实质恶化、危机向其他城市/大区蔓延、关键筹码或主导权易手；屡次搁置须显露对大区或世界的可见冲击，而非原地踏步），静默同步至正式任务列表（不双写任务情报板），必要时在正文中通过当地传闻或情报渠道自然带出一句
+    写回: 确认近期未随当前剧情推进后，只更新 `/任务列表/<任务名>/进展`（开头附 `[<%- _day %>]`）及必要的 `目标`/`关注度`
 <% } _%>
-  本轮指令（<%- _region.name || '未记录' %><% if (_worldTime) { %>｜<%- _worldTime %><% } %>）: <% if (_qbMode === 'rescan') { %><user> 已支付 <%- _data.questBoard.rescanFp %> FP 启动地区情报重扫：仅重扫未锁定且未接取的本地主线与支线任务，静默同步至任务情报板，必要时在正文中通过当地传闻或情报渠道自然带出一句<% } else if (_qbMode === 'init') { %>首次初始化任务情报板：生成 1 条剧情任务 + 1~2 条本地主线 + 2~3 条支线任务，静默同步至任务情报板，必要时在正文中通过当地传闻或情报渠道自然带出一句<% } else if (_qbMode === 'relocate') { %>已跨区域迁入「<%- _region.name %>」（原「<%- _qbRegionName %>」）：保留下方现有项<% if (_qbNeedAdv) { %>并推进标 `待演进` 的剧情任务<% } %>，按新区生成 1~2 条本地主线 + 2~3 条支线任务（无剧情任务则补 1 条），静默同步至任务情报板，必要时在正文中通过当地传闻或情报渠道自然带出一句<% } else if (_qbMode === 'refill') { %>补足空缺：按当前区域补足未接取的剧情任务、本地主线或支线空缺<% if (_qbNeedAdv) { %>，并推进标 `待演进` 的剧情任务<% } %><% } else if (_qbMode === 'advance') { %>剧情任务搁置演进：按上方「剧情演进」推进标有 `待演进` 的条目<% } else { %>同区域常规停留：<% if (_qbHasTracked && _hasQb) { %>本轮若实际发放了板上任务的某栏预期收益，在 <UpdateVariable> 中写入该条给出的 `打勾Patch`；其余<% } %>仅移除已过期或已完结项，无上述变动（含本轮刚动身跨城）跳过写板并保持静默，等下轮自动同步<% } %><% if (_qbMode !== 'maintain' && _qbHasTracked && _hasQb) { %>；若本轮发放了板上某栏预期收益，一并写入对应 `打勾Patch`<% } %><% if (_qbClosedTitles.length) { %>（已完结任务可一并移出任务情报板：<%- _qbClosedTitles.join('、') %>）<% } %>
-<% if (_qbShownHooks.length) { _%>
-  本区事件钩子（优先包装为对应类别写入任务情报板，不泄露幕后真相）:
-<% _qbShownHooks.forEach((h) => { _%>
-    - [<%- h.category %> · <%- h.rank %>级 · <%- h.way %>] <%- h.rumor %>
-<% }) _%>
-<% } _%>
+  本轮指令（<%- _region.name || '未记录' %><% if (_worldTime) { %>｜<%- _worldTime %><% } %>）: <% if (_qbMode === 'rescan') { %><% if (_isNullCore) { %><user> 已启动今日免费地区情报重扫（每日 1 次）：仅重扫未锁定且未接取的本地主线与支线任务，静默同步至任务情报板，必要时在正文中通过当地传闻或情报渠道自然带出一句<% } else { %><user> 已支付 <%- _data.questBoard.rescanFp %> FP 启动地区情报重扫：仅重扫未锁定且未接取的本地主线与支线任务，静默同步至任务情报板，必要时在正文中通过当地传闻或情报渠道自然带出一句<% } %><% } else if (_qbMode === 'init') { %>首次初始化任务情报板：生成 1 条剧情任务 + 1~2 条本地主线 + 2~3 条支线任务，静默同步至任务情报板，必要时在正文中通过当地传闻或情报渠道自然带出一句<% } else if (_qbMode === 'relocate') { %>已跨区域迁入「<%- _region.name %>」（原「<%- _qbRegionName %>」）：保留下方现有项<% if (_qbNeedAdv) { %>并推进标 `待演进` 的剧情任务<% } %>，按新区生成 1~2 条本地主线 + 2~3 条支线任务（无剧情任务则补 1 条），静默同步至任务情报板，必要时在正文中通过当地传闻或情报渠道自然带出一句<% } else if (_qbMode === 'refill') { %>补足空缺：按当前区域补足未接取的剧情任务、本地主线或支线空缺<% if (_qbNeedAdv) { %>，并推进标 `待演进` 的剧情任务<% } %><% } else if (_qbMode === 'advance') { %>剧情任务搁置演进：按上方「剧情演进」推进标有 `待演进` 的条目<% } else { %>同区域常规停留：<% if (_qbHasTracked && _hasQb) { %>本轮若实际发放了板上任务的某栏预期收益，在 <UpdateVariable> 中写入该条给出的 `打勾Patch`；其余<% } %>仅移除已过期或已完结项，无上述变动（含本轮刚动身跨城）跳过写板并保持静默，等下轮自动同步<% } %><% if (_qbMode !== 'maintain' && _qbHasTracked && _hasQb) { %>；若本轮发放了板上某栏预期收益，一并写入对应 `打勾Patch`<% } %><% if (_qbClosedTitles.length) { %>（已完结任务可一并移出任务情报板：<%- _qbClosedTitles.join('、') %>）<% } %>
 <% if (_qbShownItems.length) { _%>
   板上任务:
 <% _qbShownItems.forEach((it) => {
   const _keep = _qbTouchBoard && (it.category === '剧情任务' || it.intent || it.accepted || _qbMode === 'refill' || _qbMode === 'advance');
+  const _showDetail = _keep || it.mentioned;
   const _locBit = it.location && it.location !== _region.name ? it.location : '';
   const _metaParts = [];
   if (_locBit) _metaParts.push(_locBit);
@@ -457,7 +500,7 @@ _%>
 <% if (it.accepted && !_qbTouchBoard) { _%>
     - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜已接取:<%- it.formalTaskName %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>]<% if (it.category !== '支线任务' && it.summary) { %> 摘要：<%- it.summary %><% } %><% if (it.category !== '支线任务' && it.truth) { %>｜幕后真相：<%- it.truth %><% } %><% if (it.rewardItems.length) { %>｜预期收益：<%- it.rewardItems.map((r) => `[${r.slot}${r.claimed ? '✓' : '□'}]${r.text}`).join('、') %>｜打勾Patch：<%- _claimPatchHint(it) %><% } %><% if (_removePatchHint(it)) { %>｜结案移出：<%- _removePatchHint(it) %><% } %>
 <% } else { _%>
-    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜<%- it.way %><% if (it.accepted) { %>｜已接取:<%- it.formalTaskName %><% } else if (it.intent) { %>｜★已锁定<% } %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>] <%- it.title %><% if (_metaBit) { %>（<%- _metaBit %>）<% } %><% if (!it.accepted && it.progress) { %>｜进展：<%- it.progress %><% } %><% if ((_keep || (it.accepted && it.category !== '支线任务')) && it.summary) { %>｜摘要：<%- it.summary %><% } %><% if ((_keep || it.accepted) && it.truth) { %>｜幕后真相：<%- it.truth %><% } %><% if (!it.accepted && it.guide) { %>｜引导：<%- it.guide %><% } %><% if ((it.intent || it.accepted) && it.rewardItems.length) { %>｜预期收益：<%- it.rewardItems.map((r) => `[${r.slot}${r.claimed ? '✓' : '□'}]${r.text}`).join('、') %>｜打勾Patch：<%- _claimPatchHint(it) %><% } else if (_keep && it.rewards.length) { %>｜预期收益：<%- it.rewards.join('、') %><% } %><% if (it.accepted && _removePatchHint(it)) { %>｜结案移出：<%- _removePatchHint(it) %><% } %>
+    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜<%- it.way %><% if (it.accepted) { %>｜已接取:<%- it.formalTaskName %><% } else if (it.intent) { %>｜★已锁定<% } %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>] <%- it.title %><% if (_metaBit) { %>（<%- _metaBit %>）<% } %><% if (!it.accepted && it.progress) { %>｜进展：<%- it.progress %><% } %><% if ((_showDetail || (it.accepted && it.category !== '支线任务')) && it.summary) { %>｜摘要：<%- it.summary %><% } %><% if ((_showDetail || it.accepted) && it.truth) { %>｜幕后真相：<%- it.truth %><% } %><% if (!it.accepted && it.guide) { %>｜引导：<%- it.guide %><% } %><% if ((it.intent || it.accepted) && it.rewardItems.length) { %>｜预期收益：<%- it.rewardItems.map((r) => `[${r.slot}${r.claimed ? '✓' : '□'}]${r.text}`).join('、') %>｜打勾Patch：<%- _claimPatchHint(it) %><% } else if (_showDetail && it.rewards.length) { %>｜预期收益：<%- it.rewards.join('、') %><% } %><% if (it.accepted && _removePatchHint(it)) { %>｜结案移出：<%- _removePatchHint(it) %><% } %>
 <% } _%>
 <% }) _%>
 <% } _%>

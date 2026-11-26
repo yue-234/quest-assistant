@@ -9,11 +9,9 @@ import {
   ignoreQuest,
   requestQuestRescan,
   questRescanDone,
-  clearQuestRescan,
   hasClosedQuestLeftovers,
-  sweepClosedQuests,
   needsQuestAcceptedRecord,
-  recordAcceptedQuests,
+  maintainQuestBoard,
 } from './actions.js';
 import { commit, generating } from './commit.js';
 import * as host from './host.js';
@@ -27,6 +25,7 @@ const ui = {
 
 let root = null;
 let app = null;
+let mounted = false;
 let busy = false;
 let busySince = 0;
 let sweeping = false;
@@ -94,21 +93,18 @@ function currentGeoData() {
   return null;
 }
 
+function seenProgressKey() {
+  const cid = host.readChatId();
+  return cid ? `${QUEST_SEEN_KEY}:${cid}` : QUEST_SEEN_KEY;
+}
+
 function readSeenProgress() {
-  try {
-    return window.localStorage.getItem(QUEST_SEEN_KEY) || '';
-  } catch {
-    return '';
-  }
+  return host.readStorage(seenProgressKey());
 }
 
 function markSeenProgress(sig) {
   if (!sig) return;
-  try {
-    window.localStorage.setItem(QUEST_SEEN_KEY, sig);
-  } catch {
-    /* 忽略 */
-  }
+  host.writeStorage(seenProgressKey(), sig);
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +266,26 @@ function renderContent(state) {
   const actBox = el('div', 'qh-quest-rescan');
   if (qb.rescanPending) {
     actBox.append(el('button', 'qh-btn qh-btn--primary', '已预约重扫，等待下一回合', { type: 'button', disabled: true }));
+  } else if (qb.nullCore) {
+    if (qb.rescanCooldownToday) {
+      actBox.append(el('button', 'qh-btn qh-btn--primary', '今日已重扫（次日可用）', { type: 'button', disabled: true }));
+    } else {
+      actBox.append(
+        el(
+          'button',
+          'qh-btn qh-btn--primary',
+          '重扫本地情报 · 每日 1 次',
+          { type: 'button' },
+          {
+            click: () => run(
+              '已预约重扫',
+              (s) => requestQuestRescan(s, lastFloor(), chatCount(), { nullCore: true }),
+              { redraw: true },
+            ),
+          },
+        ),
+      );
+    }
   } else if (state.fp < qb.rescanFp) {
     actBox.append(el('button', 'qh-btn qh-btn--primary', `命运点数不足（需 ${qb.rescanFp} FP）`, { type: 'button', disabled: true }));
   } else {
@@ -280,7 +296,11 @@ function renderContent(state) {
         `重扫本地情报 · ${qb.rescanFp} FP`,
         { type: 'button' },
         {
-          click: () => run('已预约重扫', (s) => requestQuestRescan(s, lastFloor(), chatCount()), { redraw: true }),
+          click: () => run(
+            '已预约重扫',
+            (s) => requestQuestRescan(s, lastFloor(), chatCount(), { nullCore: false }),
+            { redraw: true },
+          ),
         },
       ),
     );
@@ -326,7 +346,8 @@ function renderContent(state) {
       ),
     );
   });
-  if (qb.counts.total > 0) {
+  if (qb.counts.accepted === 0) ui.questEditRewards = false;
+  if (qb.counts.accepted > 0) {
     filterBar.append(
       el(
         'button',
@@ -349,6 +370,9 @@ function renderContent(state) {
 
   // 第三层：情报卡片列表
   if (filtered.length === 0) {
+    const rescanTip = qb.nullCore
+      ? '也可以点击上方按钮每日免费重扫 1 次。'
+      : `也可以点击上方按钮消耗 ${qb.rescanFp} FP 主动重扫。`;
     const emptyCard = el('section', 'qh-card', [
       el('div', 'qh-card-head', [
         el('h3', 'qh-card-title', '暂无任务情报'),
@@ -359,7 +383,7 @@ function renderContent(state) {
         'qh-empty',
         qb.counts.total > 0
           ? '当前分类下暂时没有任务情报，可以切回「全部」查看。'
-          : '任务情报板已就绪。推进下一回合后，系统会根据当前所在区域与剧情自动同步剧情任务、本地主线与支线委托；也可以点击上方按钮消耗 100 FP 主动重扫。',
+          : `任务情报板已就绪。推进下一回合后，系统会根据当前所在区域与剧情自动同步剧情任务、本地主线与支线委托；${rescanTip}`,
       ),
     ]);
     wrap.append(emptyCard);
@@ -546,34 +570,24 @@ function renderContent(state) {
 function render() {
   if (!root) return;
   const stat = currentStat();
+  const curFloor = lastFloor();
+  const curCount = chatCount();
+  const chatSnapshot = chatArray();
 
-  if (!sweeping && questRescanDone(stat, lastFloor(), chatCount())) {
+  if (
+    !sweeping &&
+    (questRescanDone(stat, curFloor, curCount)
+      || hasClosedQuestLeftovers(stat, { chat: chatSnapshot })
+      || needsQuestAcceptedRecord(stat))
+  ) {
     sweeping = true;
-    commit((statNow) => clearQuestRescan(statNow), { core: CORE_NAME, speaker: SPEAKER, redraw: false })
+    commit(
+      (statNow) => maintainQuestBoard(statNow, { floor: curFloor, chatCount: curCount, chat: chatSnapshot }),
+      { core: CORE_NAME, speaker: SPEAKER, redraw: false },
+    )
       .then((result) => {
         sweeping = false;
-        if (result && !result.error) render();
-      })
-      .catch(() => {
-        sweeping = false;
-      });
-  } else if (!sweeping && hasClosedQuestLeftovers(stat, { chat: chatArray() })) {
-    sweeping = true;
-    const chatSnapshot = chatArray();
-    commit((statNow) => sweepClosedQuests(statNow, { chat: chatSnapshot }), { core: CORE_NAME, speaker: SPEAKER, redraw: false })
-      .then((result) => {
-        sweeping = false;
-        if (result && !result.error) render();
-      })
-      .catch(() => {
-        sweeping = false;
-      });
-  } else if (!sweeping && needsQuestAcceptedRecord(stat)) {
-    sweeping = true;
-    commit((statNow) => recordAcceptedQuests(statNow), { core: CORE_NAME, speaker: SPEAKER, redraw: false })
-      .then((result) => {
-        sweeping = false;
-        if (result && !result.error) render();
+        if (result && !result.error && !result.skipped) render();
       })
       .catch(() => {
         sweeping = false;
@@ -588,10 +602,11 @@ function render() {
   let view;
   try {
     stateNow = readState(stat, {
-      floor: lastFloor(),
-      chatCount: chatCount(),
+      floor: curFloor,
+      chatCount: curCount,
       geoData: currentGeoData(),
-      chat: chatArray(),
+      chat: chatSnapshot,
+      nullCore: host.isNullCore(),
     });
     view = renderContent(stateNow);
   } catch (error) {
@@ -754,14 +769,22 @@ app = {
 window.questHelperPanel = app;
 
 export function mount(options = {}) {
+  if (mounted && root && root.isConnected) {
+    render();
+    if (options.autoOpen) app.open();
+    return app;
+  }
   const container = options.container || document.body;
   root = buildShell();
   container.append(root);
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && root && root.classList.contains('qh-open')) {
-      app.close();
-    }
-  });
+  if (!mounted) {
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && root && root.classList.contains('qh-open')) {
+        app.close();
+      }
+    });
+    mounted = true;
+  }
   render();
   if (options.autoOpen) app.open();
   return app;
