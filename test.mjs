@@ -107,6 +107,7 @@ test('EJS init 模式：首次初始化任务情报板 + 通用事件链承接�
   assert.match(out, /B~S 级/);
   assert.match(out, /收益 10 栏/);
   assert.match(out, /途经数个城市\/区域/);
+  assert.match(out, /严禁用 `→` 串联多站路线/);
   assert.match(out, /长期放任将导致局势失控并波及多地乃至世界/);
 });
 
