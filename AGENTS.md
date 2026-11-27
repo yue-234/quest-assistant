@@ -13,4 +13,5 @@
   - 阶段性修改默认提交并推送到远端 `main` 分支，**不要擅自升版本号、重新打包交付物或打 Git Tag**，避免产生半成品发布包。
   - 仅在 lili 明确确认进入打包或发版阶段时，再统一升 `SCRIPT_VERSION`、运行 `node build.mjs` 生成脚本与世界书 JSON 交付物、跑全量 `node --test test.mjs` 并打 Tag 推送。
   - 日常开发不直接手工修补构建生成物，改动后通过单元测试确认逻辑正确。
+- **后续发版待办（下次打包实施）**：将世界书交付文件名从 [⭐导入这个-命定任务助手世界书.json](⭐导入这个-命定任务助手世界书.json) 改为按当前 `SCRIPT_VERSION` 动态命名的 `命定任务助手世界书v1.x.x.json`（如 `命定任务助手世界书v1.4.11.json`）；实施时需在 [build.mjs](build.mjs) 生成前自动清理旧版世界书 JSON（含 `⭐导入这个-命定任务助手世界书.json` 及历史 `命定任务助手世界书v*.json`），并同步更新 [test.mjs](test.mjs)、[README.md](README.md)、[使用说明.md](使用说明.md) 与本文档。
 - **日志与提交**：重要功能、规则调整或问题修复按 [更新日志模版](docs/changelog-template.md) 同步记录到 [CHANGELOG.md](CHANGELOG.md)；Git 提交信息默认使用中文，阶段性修改验证通过后默认提交并推送至 `main`（不自动打 Tag）。
