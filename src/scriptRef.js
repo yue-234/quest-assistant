@@ -1,4 +1,4 @@
-// 远程脚本版本号（Git Ref）配置与可用版本查询工具。
+// 远程脚本版本号（Git Ref）配置与实时最新版本查询工具。
 
 export const DEFAULT_SCRIPT_REF = 'main';
 export const BASELINE_SCRIPT_TAG = 'v1.4.0';
@@ -23,6 +23,38 @@ export function normalizeScriptRef(raw) {
     return '';
   }
   return /^[A-Za-z0-9._/-]+$/.test(cleaned) ? cleaned : '';
+}
+
+/** 解析语义化版本号（如 v1.4.2），用于比较版本高低；非数字版本返回 null。 */
+function parseSemverTag(tag) {
+  const m = String(tag ?? '').trim().match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-(.+))?$/i);
+  if (!m) return null;
+  return {
+    major: Number(m[1]),
+    minor: Number(m[2] ?? 0),
+    patch: Number(m[3] ?? 0),
+    pre: m[4] || '',
+  };
+}
+
+/** 比较两个版本 Tag，降序排列时返回负数表示 a 新于 b。 */
+export function compareSemverTags(a, b) {
+  const pa = parseSemverTag(a);
+  const pb = parseSemverTag(b);
+  if (pa && pb) {
+    if (pa.major !== pb.major) return pb.major - pa.major;
+    if (pa.minor !== pb.minor) return pb.minor - pa.minor;
+    if (pa.patch !== pb.patch) return pb.patch - pa.patch;
+    if (pa.pre !== pb.pre) {
+      if (!pa.pre) return -1;
+      if (!pb.pre) return 1;
+      return pb.pre.localeCompare(pa.pre);
+    }
+    return 0;
+  }
+  if (pa) return -1;
+  if (pb) return 1;
+  return String(b ?? '').localeCompare(String(a ?? ''));
 }
 
 /** 读取玩家自定义覆盖的版本号；未设置时返回空字符串（由加载器采用默认 main 最新分支）。 */
@@ -53,7 +85,7 @@ async function fetchJsonWithTimeout(fetchFn, url, timeoutMs = 5000) {
   const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
   try {
     const res = await fetchFn(url, {
-      cache: 'no-cache',
+      cache: 'no-store',
       signal: ctrl ? ctrl.signal : undefined,
     });
     if (!res || !res.ok) return null;
@@ -65,7 +97,39 @@ async function fetchJsonWithTimeout(fetchFn, url, timeoutMs = 5000) {
   }
 }
 
-/** 拉取已发布版本列表（优先 jsDelivr，未返回 Tag 时回退 GitHub Tags API），并补齐 main 与基准版本。 */
+async function queryRemoteTags(fetchFn) {
+  if (typeof fetchFn !== 'function') return [];
+
+  const collect = (rawList, extract) => {
+    const out = [];
+    for (const entry of rawList) {
+      const n = normalizeScriptRef(extract(entry));
+      if (n && !out.includes(n)) out.push(n);
+    }
+    return out;
+  };
+
+  // 优先直接查询 GitHub Tags API（实时反映最新推送的 Tag），失败或空时回退 jsDelivr 列表
+  const ghTags = await fetchJsonWithTimeout(fetchFn, GITHUB_TAGS_URL);
+  if (Array.isArray(ghTags)) {
+    const parsed = collect(ghTags, (t) => t?.name);
+    if (parsed.length > 0) return parsed;
+  }
+
+  const jsdPayload = await fetchJsonWithTimeout(fetchFn, JSDELIVR_VERSIONS_URL);
+  const jsdVersions = Array.isArray(jsdPayload?.versions) ? jsdPayload.versions : [];
+  return collect(jsdVersions, (v) => (typeof v === 'string' ? v : v?.version));
+}
+
+/** 实时获取最新发布的版本 Tag（按语义化版本号降序取最高），失败时返回空字符串。 */
+export async function fetchLatestScriptTag(fetchFn = globalThis.fetch) {
+  const tags = await queryRemoteTags(fetchFn);
+  if (!tags.length) return '';
+  const sorted = tags.slice().sort(compareSemverTags);
+  return sorted[0] || '';
+}
+
+/** 拉取已发布版本列表并补齐 main 与基准版本。 */
 export async function fetchAvailableScriptRefs(fetchFn = globalThis.fetch, defaultRef = DEFAULT_SCRIPT_REF) {
   const list = [];
   const pushUnique = (val) => {
@@ -74,25 +138,8 @@ export async function fetchAvailableScriptRefs(fetchFn = globalThis.fetch, defau
   };
 
   pushUnique(defaultRef || DEFAULT_SCRIPT_REF);
-
-  if (typeof fetchFn === 'function') {
-    const jsdPayload = await fetchJsonWithTimeout(fetchFn, JSDELIVR_VERSIONS_URL);
-    const jsdVersions = Array.isArray(jsdPayload?.versions) ? jsdPayload.versions : [];
-    for (const entry of jsdVersions) {
-      if (typeof entry === 'string') pushUnique(entry);
-      else if (entry && typeof entry.version === 'string') pushUnique(entry.version);
-    }
-
-    if (jsdVersions.length === 0) {
-      const ghTags = await fetchJsonWithTimeout(fetchFn, GITHUB_TAGS_URL);
-      if (Array.isArray(ghTags)) {
-        for (const tag of ghTags) {
-          if (tag && typeof tag.name === 'string') pushUnique(tag.name);
-        }
-      }
-    }
-  }
-
+  const tags = await queryRemoteTags(fetchFn);
+  tags.slice().sort(compareSemverTags).forEach(pushUnique);
   pushUnique('main');
   pushUnique(BASELINE_SCRIPT_TAG);
   return list;

@@ -21,7 +21,8 @@ import { ENTRY_MODES, readEntryMode, writeEntryMode } from './entryMode.js';
 import {
   BASELINE_SCRIPT_TAG,
   DEFAULT_SCRIPT_REF,
-  fetchAvailableScriptRefs,
+  compareSemverTags,
+  fetchLatestScriptTag,
   normalizeScriptRef,
   readScriptRef,
 } from './scriptRef.js';
@@ -34,7 +35,8 @@ const ui = {
   confirmDeleteTrait: '',
   settingsOpen: false,
   entryMode: ENTRY_MODES.FAB,
-  availableRefs: null,
+  latestTag: '',
+  latestTagState: 'idle',
   switchingRef: false,
   traitsExpanded: {
     local: false,
@@ -926,49 +928,40 @@ function syncVersionControls() {
     resetBtn.textContent = `恢复默认 (${meta.defaultRef})`;
   }
 
-  const hintEl = root.querySelector('.qh-setting-ver-hint');
-  if (hintEl) {
-    hintEl.textContent = meta.remoteManaged
-      ? `默认追随 ${meta.defaultRef} 最新版（作者推送后刷新即可同步）；选择或输入旧 Tag（如 ${BASELINE_SCRIPT_TAG}）并点击「切换版本」即可固定老版本。`
-      : `可直接输入或点选 Tag（如 ${BASELINE_SCRIPT_TAG} 或 ${meta.defaultRef}）点击「切换版本」实时热重载并记住偏好；若版本不存在将自动保持当前版本。`;
+  const latestEl = root.querySelector('.qh-setting-latest');
+  if (latestEl) {
+    latestEl.classList.remove('is-newer', 'is-muted');
+    if (ui.latestTagState === 'loading') {
+      latestEl.textContent = '最新版本：查询中…';
+      latestEl.classList.add('is-muted');
+    } else if (ui.latestTag) {
+      const currentCmpRef = meta.loadedRef === 'main' ? meta.scriptVersion : meta.loadedRef;
+      const hasNewer = compareSemverTags(ui.latestTag, currentCmpRef) < 0;
+      latestEl.textContent = hasNewer ? `最新版本：${ui.latestTag}（有更新）` : `最新版本：${ui.latestTag}`;
+      if (hasNewer) latestEl.classList.add('is-newer');
+    } else if (ui.latestTagState === 'error') {
+      latestEl.textContent = '最新版本：暂未获取';
+      latestEl.classList.add('is-muted');
+    } else {
+      latestEl.textContent = `最新版本：${meta.scriptVersion}`;
+    }
   }
 
-  const tagsBox = root.querySelector('.qh-setting-ver-tags');
-  if (tagsBox) {
-    const refs = Array.isArray(ui.availableRefs) && ui.availableRefs.length > 0
-      ? ui.availableRefs
-      : [meta.defaultRef, BASELINE_SCRIPT_TAG, 'main'].filter((v, i, arr) => v && arr.indexOf(v) === i);
-    tagsBox.innerHTML = '';
-    refs.forEach((refName) => {
-      const isCurrent = refName === meta.loadedRef;
-      const label = refName === 'main'
-        ? (meta.defaultRef === 'main' ? 'main (默认·最新)' : 'main (最新)')
-        : (refName === meta.defaultRef ? `${refName} (默认)` : refName);
-      tagsBox.append(
-        el(
-          'button',
-          'qh-setting-ver-tag' + (isCurrent ? ' is-active' : ''),
-          label,
-          { type: 'button', disabled: !!ui.switchingRef, title: `填入版本号 ${refName}` },
-          {
-            click: () => {
-              const box = root?.querySelector('.qh-setting-ver-input');
-              if (box) {
-                box.value = refName;
-                box.focus();
-              }
-            },
-          },
-        ),
-      );
-    });
+  const hintEl = root.querySelector('.qh-setting-ver-hint');
+  if (hintEl) {
+    const exampleRef = ui.latestTag || meta.scriptVersion || BASELINE_SCRIPT_TAG;
+    hintEl.textContent = meta.remoteManaged
+      ? `默认追随 ${meta.defaultRef} 最新版；对照上方「最新版本」手动输入目标版本号（如 ${exampleRef} 或 ${meta.defaultRef}）点击「切换版本」即可固定或切回。`
+      : `请对照上方「最新版本」手动输入目标版本号（如 ${exampleRef} 或 ${meta.defaultRef}）点击「切换版本」实时热重载；若版本不存在将自动保持当前版本。`;
   }
 }
 
-async function refreshAvailableRefs() {
-  const meta = getVersionMeta();
-  const refs = await fetchAvailableScriptRefs(globalThis.fetch, meta.defaultRef);
-  ui.availableRefs = refs;
+async function refreshLatestTag() {
+  ui.latestTagState = 'loading';
+  if (ui.settingsOpen) syncVersionControls();
+  const tag = await fetchLatestScriptTag(globalThis.fetch);
+  ui.latestTag = tag;
+  ui.latestTagState = tag ? 'ready' : 'error';
   if (ui.settingsOpen) syncVersionControls();
 }
 
@@ -1028,8 +1021,8 @@ function syncSettingsLayer() {
 function setSettingsOpen(open) {
   ui.settingsOpen = !!open;
   syncSettingsLayer();
-  if (ui.settingsOpen && !ui.availableRefs) {
-    void refreshAvailableRefs();
+  if (ui.settingsOpen) {
+    void refreshLatestTag();
   }
 }
 
@@ -1140,9 +1133,11 @@ function buildSettingsLayer() {
   );
 
   const verGroup = el('div', 'qh-setting-group qh-setting-group--sep', [
-    el('div', 'qh-setting-label', '脚本版本（jsDelivr）'),
+    el('div', 'qh-setting-label-row', [
+      el('div', 'qh-setting-label', '脚本版本（jsDelivr）'),
+      el('span', 'qh-setting-latest', `最新版本：${SCRIPT_VERSION}`),
+    ]),
     el('div', 'qh-setting-ver-meta', `当前版本：${SCRIPT_VERSION}`),
-    el('div', 'qh-setting-ver-tags'),
     el('div', 'qh-setting-ver-row', [
       verInput,
       el(
