@@ -9,7 +9,8 @@
   - 更新日志与文档：[CHANGELOG.md](CHANGELOG.md)、[README.md](README.md)、[使用说明.md](使用说明.md)
 - **提示词去古风与标准化（重要）**：编写、修改或审查 [任务助手-世界书.ejs](任务助手-世界书.ejs) 及任何模型提示词时，必须按 [prompt-style](.agents/skills/prompt-style/SKILL.md) 与 [提示词写作与古风清理](docs/archaic-wording-cleanup.md) 审校语体、文风、`<user>` 指代、变量契约与冗余表述。
 - **配置口径同步**：[src/data.js](src/data.js) 中的 `DATA` 与 [任务助手-世界书.ejs](任务助手-世界书.ejs) 顶部的 `@data-begin` ~ `@data-end` 必须保持同一份口径。
-- **构建与验证**：
-  - 修改 `src/` 后运行 `node build.mjs` 重新生成构建产物，不直接手工修补生成物。
-  - 任何代码或世界书修改后，运行 `node --test test.mjs` 确认全部单元测试通过。
-- **日志与提交**：重要功能、规则调整或问题修复按 [更新日志模版](docs/changelog-template.md) 同步记录到 [CHANGELOG.md](CHANGELOG.md)；Git 提交信息默认使用中文，项目修改验证通过后默认提交并推送到远端仓库。
+- **构建与发版节奏**：
+  - 阶段性修改默认提交并推送到远端 `main` 分支，**不要擅自升版本号、重新打包交付物或打 Git Tag**，避免产生半成品发布包。
+  - 仅在 lili 明确确认进入打包或发版阶段时，再统一升 `SCRIPT_VERSION`、运行 `node build.mjs` 生成脚本与世界书 JSON 交付物、跑全量 `node --test test.mjs` 并打 Tag 推送。
+  - 日常开发不直接手工修补构建生成物，改动后通过单元测试确认逻辑正确。
+- **日志与提交**：重要功能、规则调整或问题修复按 [更新日志模版](docs/changelog-template.md) 同步记录到 [CHANGELOG.md](CHANGELOG.md)；Git 提交信息默认使用中文，阶段性修改验证通过后默认提交并推送至 `main`（不自动打 Tag）。
