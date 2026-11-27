@@ -260,6 +260,7 @@ const _planAdvanceLoss = ({ id, updatedDay, advanceReason, rewardItems }) => {
   const total = rewardItems.length;
   const open = rewardItems.filter((r) => !r.claimed && !r.lost).map((r) => r.slot);
   const prevLost = rewardItems.filter((r) => r.lost).map((r) => r.slot);
+  const claimedCount = rewardItems.filter((r) => r.claimed).length;
   const lostCount = prevLost.length;
   if (!open.length) {
     return lostCount > 0
@@ -268,6 +269,9 @@ const _planAdvanceLoss = ({ id, updatedDay, advanceReason, rewardItems }) => {
   }
   if (open.length === 1) {
     const nextLost = Array.from(new Set([...prevLost, ...open])).sort((a, b) => a - b);
+    if (lostCount === 0 && claimedCount > 0) {
+      return { stage: 3, stageLabel: '尾声折损', newlyLost: open.slice(), nextLost, failClose: false };
+    }
     return { stage: 4, stageLabel: '彻底失败', newlyLost: open.slice(), nextLost, failClose: true };
   }
   let coreEnd = 1;

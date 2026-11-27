@@ -583,7 +583,38 @@ export function recordAcceptedQuests(stat) {
   return { stat: next, done: '已登记进行中的任务印记' };
 }
 
-/** 任务板里是否存在已完结却尚未清理的残留条目。 */
+function activeBoardRewardKeySet(board) {
+  const keys = new Set();
+  const remaining = boardEntriesOf(board);
+  for (const e of remaining) {
+    if (e.id) keys.add(e.id);
+    if (e.title) keys.add(e.title);
+  }
+  if (board['列表'] && typeof board['列表'] === 'object' && !Array.isArray(board['列表'])) {
+    for (const k of Object.keys(board['列表'])) {
+      keys.add(k);
+      const trimmed = text(k).trim();
+      if (trimmed) keys.add(trimmed);
+    }
+  }
+  return keys;
+}
+
+function hasOrphanRewardMapKeys(board) {
+  if (!board['列表'] || typeof board['列表'] !== 'object') return false;
+  const activeKeys = activeBoardRewardKeySet(board);
+  for (const mapField of ['已兑现', '已失效']) {
+    const map = board[mapField];
+    if (!map || typeof map !== 'object' || Array.isArray(map)) continue;
+    for (const k of Object.keys(map)) {
+      const trimmed = text(k).trim();
+      if (!activeKeys.has(k) && (!trimmed || !activeKeys.has(trimmed))) return true;
+    }
+  }
+  return false;
+}
+
+/** 任务板里是否存在已完结却尚未清理的残留条目（含已脱离列表的已兑现/已失效孤儿键）。 */
 export function hasClosedQuestLeftovers(stat, current = {}) {
   const board = boardNode(stat);
   const claimedMap = obj(board['已兑现']);
@@ -592,14 +623,16 @@ export function hasClosedQuestLeftovers(stat, current = {}) {
     ? current.historyStats
     : extractHistoryStats(current.chat || current.messages);
   if (Array.isArray(board['列表'])) {
-    return board['列表'].some((entry, idx) =>
+    if (board['列表'].some((entry, idx) =>
       isQuestEntryClosed(stat, entry, idx, claimedMap, everSet, everNormSet, historyStats),
-    );
+    )) return true;
+    return hasOrphanRewardMapKeys(board);
   }
   if (board['列表'] && typeof board['列表'] === 'object') {
-    return Object.entries(board['列表']).some(([k, v], idx) =>
+    if (Object.entries(board['列表']).some(([k, v], idx) =>
       isQuestEntryClosed(stat, v, idx, claimedMap, everSet, everNormSet, historyStats, k),
-    );
+    )) return true;
+    return hasOrphanRewardMapKeys(board);
   }
   return false;
 }
@@ -651,11 +684,19 @@ export function sweepClosedQuests(stat, current = {}) {
   if (Array.isArray(board['意向'])) {
     board['意向'] = board['意向'].filter((x) => !removedIds.has(x) && !removedTitles.has(x));
   }
-  if (board['已兑现'] && typeof board['已兑现'] === 'object') {
-    for (const k of [...removedIds, ...removedTitles]) delete board['已兑现'][k];
-  }
-  if (board['已失效'] && typeof board['已失效'] === 'object') {
-    for (const k of [...removedIds, ...removedTitles]) delete board['已失效'][k];
+  const activeRewardKeys = activeBoardRewardKeySet(board);
+  for (const mapField of ['已兑现', '已失效']) {
+    const map = board[mapField];
+    if (!map || typeof map !== 'object' || Array.isArray(map)) continue;
+    for (const k of [...removedIds, ...removedTitles]) delete map[k];
+    if (board['列表'] && typeof board['列表'] === 'object') {
+      for (const k of Object.keys(map)) {
+        const trimmed = text(k).trim();
+        if (!activeRewardKeys.has(k) && (!trimmed || !activeRewardKeys.has(trimmed))) {
+          delete map[k];
+        }
+      }
+    }
   }
   if (Array.isArray(board['曾接取'])) {
     const remaining = boardEntriesOf(board);

@@ -1869,7 +1869,7 @@ test('EJS 待演进确定性分层抽签：4 阶段全覆盖、Patch 分支与�
     assert.ok(line, `应存在任务 ${id} 的输出行`);
     const patchMatch = line.match(/｜失效Patch：(\{[^｜]+\})/);
     const patch = patchMatch ? JSON.parse(patchMatch[1]) : null;
-    const lossMatch = line.match(/｜本步失效（(轻度演进|中度演进|重度止损)）：([^｜]+)/);
+    const lossMatch = line.match(/｜本步失效（(轻度演进|中度演进|重度止损|尾声折损)）：([^｜]+)/);
     if (lossMatch) {
       const slots = [...lossMatch[2].matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1]));
       return { line, failClose: false, stageLabel: lossMatch[1], newlyLost: slots, patch };
@@ -2048,13 +2048,32 @@ test('EJS 待演进确定性分层抽签：4 阶段全覆盖、Patch 分支与�
   assert.deepEqual(leg2S2.newlyLost, [1]);
   assert.equal(leg2S2.patch, null, 'open.length === 1 彻底失败不应输出 失效Patch');
 
-  // 1 栏老存档（open.length === 1 && lostCount === 0）：直接进入 S4 彻底失败且无 失效Patch
+  // 1 栏老存档（open.length === 1 && lostCount === 0 && claimedCount === 0）：直接进入 S4 彻底失败且无 失效Patch
   const outLegacy1 = renderEjs(makeAdvanceStat({ rewards: ['唯一宝物 ×1'] }));
   assertCleanOutput(outLegacy1, 'adv-legacy-1');
   const leg1 = parseAdvLine(outLegacy1, 'q1');
   assert.equal(leg1.failClose, true);
   assert.deepEqual(leg1.newlyLost, [1]);
   assert.equal(leg1.patch, null);
+
+  // 回归：已完成 9/10 栏（claimed=2..10, lost=0）仅剩 1 栏压轴核心时搁置，不直接误杀为彻底失败，先走尾声折损保留任务收尾；再次搁置才彻底失败结案
+  const claimedNine = { q1: [2, 3, 4, 5, 6, 7, 8, 9, 10] };
+  const outNineStep1 = renderEjs(makeAdvanceStat({ claimedMap: claimedNine }));
+  assertCleanOutput(outNineStep1, 'adv-nine-claimed-s1');
+  const nineS1 = parseAdvLine(outNineStep1, 'q1');
+  assert.equal(nineS1.failClose, false, '已完成 9/10 且从未折损时，首次搁置不得直接误判彻底失败');
+  assert.equal(nineS1.stageLabel, '尾声折损');
+  assert.deepEqual(nineS1.newlyLost, [1]);
+  assert.deepEqual(nineS1.patch, {
+    op: 'insert',
+    path: '/事件/任务情报板/已失效',
+    value: { q1: [1] },
+  });
+  const outNineStep2 = renderEjs(makeAdvanceStat({ claimedMap: claimedNine, lostMap: { q1: [1] } }));
+  assertCleanOutput(outNineStep2, 'adv-nine-claimed-s4');
+  const nineS2 = parseAdvLine(outNineStep2, 'q1');
+  assert.equal(nineS2.failClose, true, '尾声折损后再继续搁置应正常彻底失败结案');
+  assert.equal(nineS2.patch, null);
 });
 
 test('前端 已失效 解析、三态循环切换与 ignoreQuest / sweepClosedQuests 清理联动', () => {
@@ -2079,8 +2098,11 @@ test('前端 已失效 解析、三态循环切换与 ignoreQuest / sweepClosedQ
   assert.equal(cleanRewardText('宝石 ×'), '宝石');
   assert.equal(cleanRewardText('[4✕] 星辰碎屑 ×2'), '星辰碎屑 ×2');
   assert.equal(CLAIMED_MARK_RE.test('[1✓] 传说权杖 ×1'), true);
+  assert.equal(CLAIMED_MARK_RE.test('[ 1 ✓ ] 传说权杖 ×1'), true);
   assert.equal(CLAIMED_MARK_RE.test('[✓] 圣杯'), true);
   assert.equal(cleanRewardText('[✓] 圣杯'), '圣杯');
+  assert.equal(LOST_MARK_RE.test('宝石2×'), false);
+  assert.equal(cleanRewardText('宝石2×'), '宝石2×');
   assert.equal(parseClaimedSet('1、3').slots.has(3), true);
   assert.equal(parseLostSet([2, '4']).slots.has(4), true);
 
@@ -2299,6 +2321,30 @@ test('前端 已失效 解析、三态循环切换与 ignoreQuest / sweepClosedQ
   const sweptObj = sweepClosedQuests(sweepObjStat);
   assert.deepEqual(Object.keys(sweptObj.stat.事件.任务情报板.列表), ['k/open']);
   assert.deepEqual(sweptObj.stat.事件.任务情报板.已失效, { 'k/open': [1] });
+
+  // 回归：LLM 完结移出后残留的孤儿 已兑现/已失效 键应被 hasClosedQuestLeftovers 检出并由 sweepClosedQuests 清扫，防后续复用 q1 串台
+  const orphanKeyStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: {
+      '进行中任务': { 状态: '进行中' },
+    },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        已兑现: { qOld: [1, 2], qOpen: [1] },
+        已失效: { qOld: [3], '已删除旧任务': [2], qOpen: [2] },
+        列表: [
+          { id: 'qOpen', 类别: '本地主线', 等级: 'B', 标题: '进行中任务', 方式: '探索', 预期收益: ['丙', '丁'] },
+        ],
+      },
+    },
+  };
+  assert.equal(hasClosedQuestLeftovers(orphanKeyStat), true, '应检测到已脱离列表的孤儿 已兑现/已失效 键');
+  const sweptOrphan = sweepClosedQuests(orphanKeyStat);
+  assert.deepEqual(sweptOrphan.stat.事件.任务情报板.已兑现, { qOpen: [1] });
+  assert.deepEqual(sweptOrphan.stat.事件.任务情报板.已失效, { qOpen: [2] });
+  assert.equal(hasClosedQuestLeftovers(sweptOrphan.stat), false, '清扫孤儿键后不应再误报残留');
 
   // 7) P0 回归：id 与 title 双键并存时合并保留双方栏号，写回归并到 id 并删除 title 键不丢数据
   const dualKeyStat = {
