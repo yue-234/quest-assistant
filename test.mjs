@@ -2804,10 +2804,16 @@ test('构建产物 ⭐粘这个-任务助手脚本.js、.txt、dist/quest-assist
   const wbJson = JSON.parse(fs.readFileSync(builtWorldbookPath, 'utf8'));
   assert.equal(txtCode, code, '⭐粘这个-任务助手脚本.txt 应与 .js 产物完全一致');
   assert.equal(distCode, code, 'dist/quest-assistant.js 应与 .js 产物完全一致');
-  assert.equal(wbJson?.entries?.['0']?.comment, '任务助手v1.4.8');
+  const builtWbJson = buildWorldbookJson(ejsSource, SCRIPT_VERSION);
+  assert.deepEqual(wbJson, builtWbJson, '⭐导入这个-命定任务助手世界书.json 应与 buildWorldbookJson 产物完全一致');
+  assert.equal(wbJson?.entries?.['0']?.comment, `[mvu_plot]任务助手-剧情引导${SCRIPT_VERSION}`);
+  assert.equal(wbJson?.entries?.['0']?.order, 1150);
   assert.equal(wbJson?.entries?.['0']?.constant, true);
   assert.equal(wbJson?.entries?.['0']?.disable, false);
-  assert.equal(wbJson?.entries?.['0']?.content, ejsSource.replace(/\r\n/g, '\n'));
+  assert.equal(wbJson?.entries?.['1']?.comment, `[mvu_update]任务助手-变量更新${SCRIPT_VERSION}`);
+  assert.equal(wbJson?.entries?.['1']?.order, 99999);
+  assert.equal(wbJson?.entries?.['1']?.constant, true);
+  assert.equal(wbJson?.entries?.['1']?.disable, false);
   assert.ok(code.length > 5000, '产物内容过短');
   assert.doesNotMatch(code, /<\/script>/i, '产物不得包含未转义 </script>');
   assert.doesNotMatch(code, /UNNCore|unn-core-studio|unn-core-fab|unn_studio_fab_pos_v1|unn_qb_seen_progress/, '不得与 UNN 命名空间冲突');
@@ -2818,7 +2824,7 @@ test('构建产物 ⭐粘这个-任务助手脚本.js、.txt、dist/quest-assist
   assert.match(code, /quest_helper_entry_mode_v1/);
   assert.match(code, /quest_helper_script_ref_v1/);
   assert.match(code, /v1\.4\.0/);
-  assert.match(code, /v1\.4\.8/);
+  assert.match(code, new RegExp(SCRIPT_VERSION.replace(/\./g, '\\.')));
   assert.doesNotThrow(() => new Function(code), '产物必须通过 new Function 语法校验');
   assert.doesNotThrow(() => new Function(`"use strict";\n${code}`), '产物必须兼容严格模式 / ES Module import');
 });

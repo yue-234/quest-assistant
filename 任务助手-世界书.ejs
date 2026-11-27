@@ -1,6 +1,6 @@
 <%_ {
 // 独立任务助手世界书条目（不依赖任何命定核心，路径固定为 /事件/任务情报板）。
-// @version v1.4.8
+// @version v1.4.9
 // @role all
 const _wbRole = 'all';
 const _emitPlot = _wbRole !== 'update';
@@ -19,7 +19,7 @@ const _isNullCore = typeof destinyImmersiveMode === 'function'
   ? !!destinyImmersiveMode()
   : _txt(typeof getvar === 'function' ? getvar('系统核心', { scope: 'local', defaults: '' }) : '').trim() === 'null核心';
 
-let _sd = getvar('stat_data');
+let _sd = typeof getvar === 'function' ? getvar('stat_data', { defaults: {} }) : {};
 if (typeof _sd === 'string') { try { _sd = JSON.parse(_sd); } catch (e) { _sd = {}; } }
 if (!_sd || typeof _sd !== 'object') _sd = {};
 
