@@ -291,6 +291,43 @@ test('EJS rescan 模式：100 FP 地区情报重扫（仅保留剧情/已接取/
   assert.doesNotMatch(out, /旧委托/);
   assert.match(out, /未列出的旧未接取未锁定本地任务不保留，整表 `replace` 写入 `列表`/);
   assert.match(out, /OTHER SPECIFIC REQUIREMENTS/);
+
+  // 无任何需保留旧任务 + 同回合提及待淘汰旧支线：plot/update 同步不展示，状态栏注明 需保留：0 条，指令直接全新生成
+  const allDroppedRescanStat = {
+    世界: { 地点: '铁炉堡-东区', 时间: '复兴纪元488年-3月-11日-10:00' },
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        更新日: '复兴纪元488年-3月-10日',
+        待重扫: { 楼层: '4', 消息数: '5' },
+        列表: [
+          { id: 'q2', 类别: '支线任务', 等级: 'D', 标题: '校准风向仪', 方式: '委托', 预期收益: ['金币 ×50'] },
+        ],
+      },
+    },
+  };
+  const chatMentionDropped = [
+    ...new Array(4).fill({ is_user: false, mes: '' }),
+    { is_user: true, is_system: false, mes: '我想顺手看看校准风向仪的任务。' },
+    { is_user: false, is_system: false, mes: '' },
+  ];
+  const allDropAll = renderEjs(allDroppedRescanStat, { chat: chatMentionDropped, lastUserMessageId: 4 });
+  const allDropPlot = renderEjs(allDroppedRescanStat, {
+    chat: chatMentionDropped,
+    lastUserMessageId: 4,
+    source: ejsSource.replace("const _wbRole = 'all';", "const _wbRole = 'plot';").replace('// @role all', '// @role plot'),
+  });
+  const allDropUpdate = renderEjs(allDroppedRescanStat, {
+    chat: chatMentionDropped,
+    lastUserMessageId: 4,
+    source: ejsSource.replace("const _wbRole = 'all';", "const _wbRole = 'update';").replace('// @role all', '// @role update'),
+  });
+  assert.doesNotMatch(allDropPlot, /校准风向仪/);
+  assert.doesNotMatch(allDropUpdate, /校准风向仪/);
+  assert.doesNotMatch(allDropAll, /校准风向仪/);
+  assert.match(allDropUpdate, /在板任务：1 条（需保留：0 条）/);
+  assert.match(allDropUpdate, /当前没有需保留的旧任务，按当前区域全新生成/);
 });
 
 test('EJS 未接取冻结：未接取任务不演进且常规不展示给 AI，用户主动提及后按需透传', () => {
@@ -1121,16 +1158,24 @@ test('精确历法 31 日跨月差值、首次建板空日期与空壳板 rescan
   assert.doesNotMatch(outEmptyDay, /"区域访问日":/);
   assert.match(outEmptyDay, /"区域": "带\\"引号\\"之城"/);
 
-  // 3) 空壳板 rescan 补齐基础键时同样输出区域访问日 Patch
+  // 3) 空壳板 rescan 补齐基础键时同样输出区域访问日 Patch，且 update 正确显示未建立并使用 insert
+  const shellRescanStat = {
+    世界: { 地点: '白石镇', 时间: '复兴纪元488年-4月-2日-10:00' },
+    事件: { 任务情报板: { 待重扫: { 消息数: '5' } } },
+  };
   const outShellRescan = renderEjs(
-    {
-      世界: { 地点: '白石镇', 时间: '复兴纪元488年-4月-2日-10:00' },
-      事件: { 任务情报板: { 待重扫: { 消息数: '5' } } },
-    },
+    shellRescanStat,
     { chat: Array.from({ length: 5 }, () => ({ mes: '' })) },
   );
   assertCleanOutput(outShellRescan, 'shell-rescan-visit-day');
   assert.match(outShellRescan, /"op": "insert", "path": "\/事件\/任务情报板\/区域访问日", "value": \{ "白石镇": "复兴纪元488年-4月-2日" \}/);
+  assert.match(outShellRescan, /整表 `insert` 写入 `列表`/);
+  const shellUpdateOut = renderEjs(shellRescanStat, {
+    chat: Array.from({ length: 5 }, () => ({ mes: '' })),
+    source: ejsSource.replace("const _wbRole = 'all';", "const _wbRole = 'update';").replace('// @role all', '// @role update'),
+  });
+  assert.match(shellUpdateOut, /列表形态：未建立/);
+  assert.match(shellUpdateOut, /整表 `insert` 写入 `列表`/);
 });
 
 test('parseAftermathEntry 与 deleteAftermathEntry：三色前缀与短标签兼容解析、精准删除与空节点清理', () => {
@@ -3237,6 +3282,17 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
 
   // plot 通用规则兼容原版 <task_info> 单据
   assert.match(plotOut, /正文不打印任务情报板清单/);
+
+  // 仅有 楼层 字段（无 消息数）的旧待重扫也应在 swipe/continue 时被屏蔽
+  const floorOnlyRescanStat = {
+    世界: { 地点: '卡拉什利亚斯-巡天王庭', 时间: '复兴纪元488年-5月-26日' },
+    任务列表: {},
+    事件: { 任务情报板: { 区域键: '铁炉堡', 区域: '铁炉堡', 待重扫: { 楼层: '9' }, 列表: [] } },
+  };
+  assert.doesNotMatch(
+    renderEjs(floorOnlyRescanStat, { chat: extraChat12, lastUserMessageId: 10, generateType: 'swipe', source: updateSrc }),
+    /启动地区情报重扫/,
+  );
 
   // 下一轮玩家再发消息（消息数=13，末尾 is_user: true）时 rescan 正常过期，不重复触发
   const extraChat13 = [...extraChat12, { is_user: true, is_system: false, mes: '下一轮' }];

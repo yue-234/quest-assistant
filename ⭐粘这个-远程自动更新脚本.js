@@ -1,7 +1,7 @@
 // 命定之诗 · 独立任务助手（jsDelivr 远程版本切换加载器）
 // 项目地址：https://github.com/yue-234/quest-assistant
 // 使用方式：将本文件全文粘贴至酒馆脚本助手（TavernHelper）新建脚本并启用即可。
-// 默认跟随 main 分支最新构建（推送后自动同步）；如需固定老版本，可在面板「⚙ 设置」中切换为指定 Tag（如 v1.4.0）或修改下方 DEFAULT_REF。
+// 默认跟随 main 分支最新构建（推送后自动同步）；如需固定老版本，可在面板「⚙ 设置」中切换为指定 Tag（如 v1.4.1）或修改下方 DEFAULT_REF。
 
 (function () {
   const DEFAULT_REF = 'main';
@@ -114,6 +114,8 @@
       const normalized = normalizeRef(nextRef);
       const targetRef = normalized || DEFAULT_REF;
       const prevOverride = readStorage(REF_STORAGE_KEY);
+      const prevLoadedRef = remoteState.loadedRef;
+      const prevLoadedOrigin = remoteState.loadedOrigin;
       const result = await fetchByRef(targetRef);
       writeStorage(REF_STORAGE_KEY, normalized);
       remoteState.loadedRef = result.ref;
@@ -130,6 +132,8 @@
         return { ref: result.ref, origin: result.origin };
       } catch (err) {
         writeStorage(REF_STORAGE_KEY, prevOverride);
+        remoteState.loadedRef = prevLoadedRef;
+        remoteState.loadedOrigin = prevLoadedOrigin;
         throw err;
       }
     },

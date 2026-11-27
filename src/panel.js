@@ -1266,7 +1266,7 @@ function buildSettingsLayer() {
     'input',
     'qh-setting-ver-input',
     null,
-    { type: 'text', placeholder: `${DEFAULT_SCRIPT_REF} 或 ${BASELINE_SCRIPT_TAG}`, 'aria-label': '输入脚本版本号' },
+    { type: 'text', placeholder: `${DEFAULT_SCRIPT_REF} 或 v1.4.1`, 'aria-label': '输入脚本版本号' },
     {
       keydown: (e) => {
         if (e.key === 'Enter') {

@@ -1,6 +1,6 @@
 <%_ {
 // 独立任务助手世界书条目（不依赖任何命定核心，路径固定为 /事件/任务情报板）。
-// @version v1.4.9
+// @version v1.4.10
 // @role all
 const _wbRole = 'all';
 const _emitPlot = _wbRole !== 'update';
@@ -716,7 +716,10 @@ const _qbRescanDue = (() => {
   }
   const rf = _txt(_qbRescan['楼层']).trim();
   const nf = Number(rf);
-  if (rf && Number.isFinite(nf) && _lastId >= 0) return _lastId <= nf + 2;
+  if (rf && Number.isFinite(nf) && _lastId >= 0) {
+    if (['swipe', 'continue', 'append', 'appendFinal'].includes(_genType)) return false;
+    return _lastId <= nf + (_inExtraUpdateTurn ? 2 : 1);
+  }
   return false;
 })();
 const _qbBaseKeys = ['区域键', '区域', '更新日', '列表'];
@@ -780,8 +783,10 @@ const _visitPatchHint = (() => {
 const _qbNeedGen = _qbMode === 'init' || _qbMode === 'relocate' || _qbMode === 'refill' || _qbMode === 'rescan';
 const _qbNeedAdv = _storyDue.length > 0;
 const _qbTouchBoard = _qbNeedGen;
-const _qbShownItems = (_qbMode === 'relocate' || _qbMode === 'rescan')
-  ? _qbItems.filter((it) => it.category === '剧情任务' || it.accepted || it.intent)
+const _keepInReset = (it) => it.category === '剧情任务' || it.accepted || it.intent;
+const _qbNeedResetList = _qbMode === 'relocate' || _qbMode === 'rescan';
+const _qbShownItems = _qbNeedResetList
+  ? _qbItems.filter(_keepInReset)
   : (_qbNeedGen
     ? _qbItems
     : _qbItems.filter((it) => it.accepted || it.intent || it.mentioned));
@@ -792,14 +797,16 @@ const _qbHasFormalOnlyActive = _formalTasks.some(
 );
 const _qbHasAnyActive = _qbHasTracked || _qbShownItems.length > 0 || _qbHasFormalOnlyActive;
 const _qbHasStoryOrLocalActive = _qbItems.some(
-  (it) => it.category !== '支线任务' && (it.accepted || it.intent || it.mentioned)
+  (it) => it.category !== '支线任务' && (it.accepted || it.intent || (!_qbNeedResetList && it.mentioned))
 ) || _qbHasFormalOnlyActive;
 const _qbHasStoryItem = _qbItems.some((it) => it.category === '剧情任务');
-const _qbPlotItems = _qbItems.filter((it) => it.accepted || it.intent || it.mentioned);
+const _qbPlotItems = _qbNeedResetList
+  ? _qbItems.filter(_keepInReset)
+  : _qbItems.filter((it) => it.accepted || it.intent || it.mentioned);
 const _qbNeedInitAftermathRule = (_qbMode === 'init' || _qbMode === 'relocate' || _qbMode === 'rescan') && _localAftermathShown.length === 0;
 const _qbNeedRevisitAftermathRule = _qbMode === 'relocate' && _localAftermathShown.length > 0;
 const _qbHasLocked = _qbItems.some((it) => it.intent);
-const _ind = _wbRole === 'update' ? '  ' : '';
+const _ind = '';
 const _tierMapText = 'D一层/C二层/B三层/A四层/S五层';
 const _tierGuardRule = `任务中正面敌对、阻拦、主动攻击或追杀 <user> 的角色，生命层级不得超过任务对应层级（${_tierMapText}）；如果 <user> 主动挑衅、袭击或强闯高于本任务等级的人物与核心禁地，对方按真实生命层级反击`;
 const _tierSequelRule = `${_tierGuardRule}。高于任务等级的人物与势力只作为背景存在、幕后授意者或线索来源（不主动下场攻击），任务推进或完结时可借他们留下的动向或线索，按「剧情追加」引出高一级的新任务，形成连续的后续线`;
@@ -927,7 +934,7 @@ _%>
 - 除 `/事件/任务情报板` 及本规则联动的 `/任务列表` 外，不借本协议修改其他无关变量。
 </任务情报板变量更新协议>
 <任务情报板当前状态>
-任务情报板: <% if (!_hasQb) { %>未创建<% } else { %>已存在（当前板区：<%- _qbRegionName || _qbRegionKey || '未记录' %>；列表形态：<%- _qbListIsArr ? '数组' : '对象' %>；在板任务：<%- _qbItems.length %> 条；已兑现键：<%- _hasClaimed ? Object.keys(_claimedMap).length : 0 %>；已失效键：<%- _hasLost ? Object.keys(_lostMap).length : 0 %>；当前区余波键：<%- _localAftermathKey ? '已存在（' + _localAftermathKey + '）' : '未建立' %>）<% } %>
+任务情报板: <% if (!_hasQb) { %>未创建<% } else { %>已存在（当前板区：<%- _qbRegionName || _qbRegionKey || '未记录' %>；列表形态：<%- _qbExistKeys.includes('列表') ? (_qbListIsArr ? '数组' : '对象') : '未建立' %>；在板任务：<%- _qbItems.length %> 条<% if (_qbNeedResetList) { %>（需保留：<%- _qbShownItems.length %> 条）<% } %>；已兑现键：<%- _hasClaimed ? Object.keys(_claimedMap).length : 0 %>；已失效键：<%- _hasLost ? Object.keys(_lostMap).length : 0 %>；当前区余波键：<%- _localAftermathKey ? '已存在（' + _localAftermathKey + '）' : '未建立' %>）<% } %>
 </任务情报板当前状态>
 任务情报板变量更新规则（路径为 `事件.任务情报板`）:
 <% } else { _%>
@@ -935,7 +942,7 @@ _%>
 任务情报板:
 <% } _%>
 <%- _ind %>  单源与写入:
-<%- _ind %>    同步: 通过 <UpdateVariable> JSON Patch 静默同步至 `/事件/任务情报板`<% if (_emitPlot) { %>（属 `OTHER SPECIFIC REQUIREMENTS` 授权维护的隐藏节点，不出现在 `<status_current_variables>` 时也照常创建与更新<% if (_qbNeedGen || _qbNeedAdv) { %>；本轮为后台推演指令，即使最新正文未直接描写也结合设定写入<% } %>），正文不输出面板、不提前写入 `/任务列表`<%- _genHintRule %><% } else { %>，不提前写入 `/任务列表`<% } %>
+<%- _ind %>    同步: 通过 <UpdateVariable> JSON Patch 静默同步至 `/事件/任务情报板`<% if (_emitPlot) { %>（属 `OTHER SPECIFIC REQUIREMENTS` 授权维护的隐藏节点，不出现在 `<status_current_variables>` 时也照常创建与更新，联动 `/任务列表` 且不动其他无关变量<% if (_qbNeedGen || _qbNeedAdv) { %>；本轮为后台推演指令，即使最新正文未直接描写也结合设定写入<% } %>），正文不输出面板、不提前写入 `/任务列表`<%- _genHintRule %><% } else { %>，不提前写入 `/任务列表`<% } %>
 <%- _ind %>    接取: <user> 行动与板上目标一致（联系委托方，或直接勘查、追查、介入现场）时，无需口头声明直接视为接取，按板上原 `标题` 写入 `/任务列表`
 <%- _ind %>    更新: 未接取任务状态冻结（不演进、不产生世界后果），仅在任务情报板维护；已接取后进展、状态与目标只更新 `/任务列表/<任务名>`（不双写任务情报板），原条目保留在板上追踪 `预期收益`
 <%- _ind %>    完结移出: <% if (_qbTouchBoard || _qbHasAnyActive || _qbClosedTitles.length) { %>任务完结（含单环支线或一次性结算任务）发奖并移出 `/任务列表` 的同轮，执行该条 `完结移出` Patch 从任务情报板删除（无需再写 `兑现Patch` 或 `失效Patch`）；未接取支线单回合接取并完结同样移出；同轮移除多条数组项时按索引从大到小倒序 `remove`（或整表 `replace` `/事件/任务情报板/列表`）<% } else { %>未接取支线单回合接取并完结时从 `/事件/任务情报板/列表` 移除；其余任务完结移出 `/任务列表` 的同轮从任务情报板移除（无需再写 `兑现Patch` 或 `失效Patch`）<% } %>
@@ -990,7 +997,7 @@ _%>
 <%- _ind %>    写回: 确认下方标注 `待演进` 的已接取剧情任务近期未随当前剧情推进后，按阶梯推进 1 步并写入对应变量（第 1 步筹码转移或原路失效；第 2 步冲突公开化、中间站恶化；第 3 步造成不可逆后果并写入区域或世界 `[黄/红]` 词条、同时转入止损；继续搁置按失败结案）：普通演进更新 `/任务列表/<任务名>/进展`（开头附 `[<%- _day %>]`）及必要的 `目标`/`关注度`（不双写任务情报板），并按该条预抽定的 `本步失效` 与 `失效Patch` 写入 `/事件/任务情报板/已失效`（不得减免或替换栏号）；彻底失败时按该条提示零新收益结案、移出 `/任务列表` 与任务情报板并写入 `[黄/红]` 词条（不再更新进展或写 `失效Patch`）<% if (_qbLostMergeInAdv) { %><%- _qbLostMergeNote %><% } %>
 <% } _%>
 <% } _%>
-<%- _ind %>  本轮指令（<%- _region.name || '未记录' %><% if (_worldTime) { %>｜<%- _worldTime %><% } %>）: <% if (_qbMode === 'rescan') { %><% if (_isNullCore) { %><user> 已启动今日免费地区情报重扫（每日 1 次）：<% } else { %><user> 已支付 <%- _data.questBoard.rescanFp %> FP 启动地区情报重扫：<% } %>保留剧情任务、已接取与 `★已锁定` 项，按当前区域重新生成 1~2 条本地主线 + 2~3 条支线任务<% if (!_qbHasStoryItem) { %>（没有剧情任务时补 1 条剧情任务）<% } %>（未列出的旧未接取未锁定本地任务不保留，整表 `replace` 写入 `列表`）<% if (_localAftermathShown.length === 0) { %>，为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日<% } %><% } else if (_qbMode === 'init') { %>首次初始化任务情报板：生成 1 条剧情任务 + 1~2 条本地主线 + 2~3 条支线任务<% if (_localAftermathShown.length === 0) { %>，为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日<% } else { %>，并记录区域访问日<% } %><% } else if (_qbMode === 'relocate') { %>已跨区域迁入「<%- _region.name %>」（原「<%- _qbRegionName %>」）：保留下方现有项<% if (_qbNeedAdv) { %>并推进标注 `待演进` 的剧情任务<% } %>，按新区生成 1~2 条本地主线 + 2~3 条支线任务（没有剧情任务时补 1 条）<% if (_localAftermathShown.length === 0) { %>，为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日<% } else if (_awayDays === null) { %>；返回旧区域（首次记录访问日）：无明确剧情变故或到期预告事件时保持原词条不变，并记录区域访问日<% } else if (_revisitDue) { %>；返回旧区域（已离开 <%- _awayDays %> 天）：按上方词条规则演进或改写本区最多 1 条词条（没有明显变化时保持不变），并更新区域访问日<% } else { %>；返回旧区域（离开不足 <%- _regionRevisitDays %> 天）：无明确剧情变故或到期预告事件时保持原词条不变，并更新区域访问日<% } %><% } else if (_qbMode === 'refill') { %>补足空缺：按当前区域补足未接取的剧情任务、本地主线或支线空缺<% if (_qbNeedAdv) { %>，并推进标注 `待演进` 的剧情任务<% } %><% } else if (_qbMode === 'advance') { %>剧情任务搁置演进：按上方「剧情演进」推进标注 `待演进` 的条目<% } else { %>同区域常规停留：<% if (_qbHasTracked && _hasQb) { %>发放板上收益时按 `兑现Patch` 写入，发生折损失效时按 `失效Patch` 写入，<% } %>发生重大剧情或事件链变故时按规则更新区域或世界词条，其余仅移除过期或已完结项；没有变动（含本轮刚跨城）时跳过写板<% } %><% if (_qbClosedTitles.length) { %>（已完结任务一并移出任务情报板：<%- _qbClosedTitles.join('、') %>）<% } %>
+<%- _ind %>  本轮指令（<%- _region.name || '未记录' %><% if (_worldTime) { %>｜<%- _worldTime %><% } %>）: <% if (_qbMode === 'rescan') { %><% if (_isNullCore) { %><user> 已启动今日免费地区情报重扫（每日 1 次）：<% } else { %><user> 已支付 <%- _data.questBoard.rescanFp %> FP 启动地区情报重扫：<% } %><% if (_qbShownItems.length > 0) { %>保留剧情任务、已接取与 `★已锁定` 项，按当前区域重新生成 1~2 条本地主线 + 2~3 条支线任务<% } else { %>当前没有需保留的旧任务，按当前区域全新生成 1~2 条本地主线 + 2~3 条支线任务<% } %><% if (!_qbHasStoryItem) { %>（没有剧情任务时补 1 条剧情任务）<% } %>（未列出的旧未接取未锁定本地任务不保留，整表 `<%- _qbExistKeys.includes('列表') ? 'replace' : 'insert' %>` 写入 `列表`）<% if (_localAftermathShown.length === 0) { %>，为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日<% } %><% } else if (_qbMode === 'init') { %>首次初始化任务情报板：生成 1 条剧情任务 + 1~2 条本地主线 + 2~3 条支线任务<% if (_localAftermathShown.length === 0) { %>，为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日<% } else { %>，并记录区域访问日<% } %><% } else if (_qbMode === 'relocate') { %>已跨区域迁入「<%- _region.name %>」（原「<%- _qbRegionName %>」）：<% if (_qbShownItems.length > 0) { %>保留下方现有项<% if (_qbNeedAdv) { %>并推进标注 `待演进` 的剧情任务<% } %>，<% } else { %>当前没有需保留的旧任务，<% if (_qbNeedAdv) { %>推进标注 `待演进` 的剧情任务并<% } %><% } %>按新区生成 1~2 条本地主线 + 2~3 条支线任务（没有剧情任务时补 1 条）<% if (_localAftermathShown.length === 0) { %>，为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日<% } else if (_awayDays === null) { %>；返回旧区域（首次记录访问日）：无明确剧情变故或到期预告事件时保持原词条不变，并记录区域访问日<% } else if (_revisitDue) { %>；返回旧区域（已离开 <%- _awayDays %> 天）：按上方词条规则演进或改写本区最多 1 条词条（没有明显变化时保持不变），并更新区域访问日<% } else { %>；返回旧区域（离开不足 <%- _regionRevisitDays %> 天）：无明确剧情变故或到期预告事件时保持原词条不变，并更新区域访问日<% } %><% } else if (_qbMode === 'refill') { %>补足空缺：按当前区域补足未接取的剧情任务、本地主线或支线空缺<% if (_qbNeedAdv) { %>，并推进标注 `待演进` 的剧情任务<% } %><% } else if (_qbMode === 'advance') { %>剧情任务搁置演进：按上方「剧情演进」推进标注 `待演进` 的条目<% } else { %>同区域常规停留：<% if (_qbHasTracked && _hasQb) { %>发放板上收益时按 `兑现Patch` 写入，发生折损失效时按 `失效Patch` 写入，<% } %>发生重大剧情或事件链变故时按规则更新区域或世界词条，其余仅移除过期或已完结项；没有变动（含本轮刚跨城）时跳过写板<% } %><% if (_qbClosedTitles.length) { %>（已完结任务一并移出任务情报板：<%- _qbClosedTitles.join('、') %>）<% } %>
 <% if (_qbShownItems.length) { _%>
 <%- _ind %>  板上任务:
 <% _qbShownItems.forEach((it) => {
