@@ -717,10 +717,11 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
   assert.doesNotMatch(outNone, /当前词条（持续生效的客观现状）/);
   assert.match(outNone, /区域与世界词条:/);
   assert.match(outNone, /\[绿\/黄\/红\]【2~6字短标签】30~50字客观现状/);
-  assert.match(outNone, /默认写入 3 条词条/);
+  assert.match(outNone, /默认写入 3 条常驻词条/);
   assert.match(outNone, /分属不同维度.*彼此逻辑自洽，不重复、不自相矛盾/);
   assert.match(outNone, /禁止 3 绿、3 黄、3 红/);
   assert.match(outNone, /不得每区机械套用 1 绿 1 黄 1 红/);
+  assert.match(outNone, /当地正有短期活动时应先写满 3 条常驻词条，再额外追加 1~2 条限时词条/);
   assert.match(outNone, /离开满 14 天/);
   assert.match(outNone, /明确剧情变故、已到期的预告事件/);
   assert.match(outNone, /禁止以 `<user>` 或冒险者为主语写战绩记录/);
@@ -738,7 +739,7 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
     事件: {},
   });
   assertCleanOutput(outInit, 'aftermath-init-hint');
-  assert.match(outInit, /为当前区域写入 3 条差异化色阶的初始区域词条（禁止纯色）并记录区域访问日/);
+  assert.match(outInit, /为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时另行额外叠加 1~2 条限时词条）并记录区域访问日/);
   assert.match(outInit, /"区域访问日": \{ "港口": "复兴纪元488年-3月-11日" \}/);
 
   const outRelocateNoTrait = renderEjs({
@@ -746,7 +747,7 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
     事件: { 任务情报板: baseBoard },
   });
   assertCleanOutput(outRelocateNoTrait, 'aftermath-relocate-hint');
-  assert.match(outRelocateNoTrait, /为当前区域写入 3 条差异化色阶的初始区域词条（禁止纯色）并记录区域访问日/);
+  assert.match(outRelocateNoTrait, /为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时另行额外叠加 1~2 条限时词条）并记录区域访问日/);
   assert.match(outRelocateNoTrait, /"op": "insert", "path": "\/事件\/任务情报板\/区域访问日"/);
 
   const outRelocateHasTrait = renderEjs({
@@ -761,7 +762,7 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
     },
   });
   assertCleanOutput(outRelocateHasTrait, 'aftermath-relocate-has-trait');
-  assert.doesNotMatch(outRelocateHasTrait, /为当前区域写入 3 条差异化色阶的初始区域词条/);
+  assert.doesNotMatch(outRelocateHasTrait, /为当前区域写入 3 条差异化色阶的初始常驻词条/);
   assert.match(outRelocateHasTrait, /返回旧区域（首次记录访问日）：无明确剧情变故或到期预告事件时保持原词条不变，并记录区域访问日/);
 
   // 2) 有地区词条但处于异区且无世界词条：异区 0 token 注入
@@ -925,7 +926,7 @@ test('返回旧区域 14 天演变防抖：离开 < 14 天保持稳定（保留�
     事件: { 任务情报板: baseBoard },
   });
   assertCleanOutput(outNewCity, 'revisit-new-city');
-  assert.match(outNewCity, /为当前区域写入 3 条差异化色阶的初始区域词条（禁止纯色）并记录区域访问日/);
+  assert.match(outNewCity, /为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时另行额外叠加 1~2 条限时词条）并记录区域访问日/);
   assert.match(outNewCity, /"op": "replace", "path": "\/事件\/任务情报板\/区域访问日\/铁炉堡", "value": "复兴纪元488年-3月-26日"/);
   assert.match(outNewCity, /"op": "insert", "path": "\/事件\/任务情报板\/区域访问日\/雾晶港", "value": "复兴纪元488年-3月-26日"/);
 
