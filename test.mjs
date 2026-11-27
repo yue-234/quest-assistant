@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import vm from 'node:vm';
 
 import { DATA } from './src/data.js';
 import {
@@ -76,6 +77,8 @@ const ejs = loadEjs();
 const ejsSource = fs.readFileSync(path.join(__dirname, '任务助手-世界书.ejs'), 'utf8');
 const builtScriptPath = path.join(__dirname, '⭐粘这个-任务助手脚本.js');
 const builtScriptTxtPath = path.join(__dirname, '⭐粘这个-任务助手脚本.txt');
+const builtDistScriptPath = path.join(__dirname, 'dist', 'quest-assistant.js');
+const remoteLoaderPath = path.join(__dirname, '⭐粘这个-远程自动更新脚本.js');
 
 function renderEjs(statData, { chat = [], lastUserMessageId = 0, geoData = {}, systemCore = '', destinyImmersiveMode } = {}) {
   const ctx = {
@@ -1658,12 +1661,15 @@ test('魔法棒菜单入口：挂载 #extensionsMenu、同步未读、点击收�
 // 4. 最终构建产物校验
 // ---------------------------------------------------------------------------
 
-test('构建产物 ⭐粘这个-任务助手脚本.js 与 .txt 语法合法且无未转义 </script> 或 UNN 冲突', () => {
+test('构建产物 ⭐粘这个-任务助手脚本.js、.txt 与 dist/quest-assistant.js 语法合法且一致', () => {
   assert.equal(fs.existsSync(builtScriptPath), true, '应先运行 build.mjs 生成最终脚本');
   assert.equal(fs.existsSync(builtScriptTxtPath), true, '应同步生成 .txt 脚本产物');
+  assert.equal(fs.existsSync(builtDistScriptPath), true, '应同步生成 dist/quest-assistant.js 供 jsDelivr 分发');
   const code = fs.readFileSync(builtScriptPath, 'utf8');
   const txtCode = fs.readFileSync(builtScriptTxtPath, 'utf8');
+  const distCode = fs.readFileSync(builtDistScriptPath, 'utf8');
   assert.equal(txtCode, code, '⭐粘这个-任务助手脚本.txt 应与 .js 产物完全一致');
+  assert.equal(distCode, code, 'dist/quest-assistant.js 应与 .js 产物完全一致');
   assert.ok(code.length > 5000, '产物内容过短');
   assert.doesNotMatch(code, /<\/script>/i, '产物不得包含未转义 </script>');
   assert.doesNotMatch(code, /UNNCore|unn-core-studio|unn-core-fab|unn_studio_fab_pos_v1|unn_qb_seen_progress/, '不得与 UNN 命名空间冲突');
@@ -1673,4 +1679,86 @@ test('构建产物 ⭐粘这个-任务助手脚本.js 与 .txt 语法合法且�
   assert.match(code, /quest-helper-wand-item/);
   assert.match(code, /quest_helper_entry_mode_v1/);
   assert.doesNotThrow(() => new Function(code), '产物必须通过 new Function 语法校验');
+});
+
+test('jsDelivr 远程自动更新脚本：多节点回退、内容校验、记住可用节点与失败提示', async () => {
+  assert.equal(fs.existsSync(remoteLoaderPath), true, '应存在远程自动更新脚本');
+  const loaderCode = fs.readFileSync(remoteLoaderPath, 'utf8');
+  assert.doesNotThrow(() => new Function(loaderCode), '远程加载器必须语法合法');
+  assert.match(loaderCode, /testingcf\.jsdelivr\.net/);
+  assert.match(loaderCode, /cdn\.jsdelivr\.net/);
+  assert.match(loaderCode, /fastly\.jsdelivr\.net/);
+  assert.match(loaderCode, /gcore\.jsdelivr\.net/);
+  assert.match(loaderCode, /dist\/quest-assistant\.js/);
+
+  // 场景 1：前两节点异常/返回伪装页面，自动回退第三节点并记住节点
+  const storage = new Map();
+  const requestedUrls = [];
+  const errors = [];
+  let executedCount = 0;
+  const ctx1 = {
+    console: { error: () => {} },
+    setTimeout,
+    clearTimeout,
+    AbortController,
+    window: {
+      localStorage: {
+        getItem: (k) => storage.get(k) ?? null,
+        setItem: (k, v) => storage.set(k, String(v)),
+      },
+    },
+    toastr: { error: (m) => errors.push(m) },
+    fetch: async (url) => {
+      requestedUrls.push(url);
+      if (url.startsWith('https://testingcf.jsdelivr.net')) {
+        return { ok: false, status: 503, text: async () => '' };
+      }
+      if (url.startsWith('https://cdn.jsdelivr.net')) {
+        return { ok: true, status: 200, text: async () => '<html>blocked</html>' };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => 'globalThis.QuestHelperApp = { ok: true }; __markExecuted();',
+      };
+    },
+    __markExecuted: () => {
+      executedCount += 1;
+    },
+  };
+  ctx1.globalThis = ctx1;
+  ctx1.window.parent = ctx1.window;
+  vm.runInNewContext(loaderCode, ctx1);
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.equal(executedCount, 1);
+  assert.equal(errors.length, 0);
+  assert.deepEqual(requestedUrls, [
+    'https://testingcf.jsdelivr.net/gh/yue-234/quest-assistant@main/dist/quest-assistant.js',
+    'https://cdn.jsdelivr.net/gh/yue-234/quest-assistant@main/dist/quest-assistant.js',
+    'https://fastly.jsdelivr.net/gh/yue-234/quest-assistant@main/dist/quest-assistant.js',
+  ]);
+  assert.equal(storage.get('quest_helper_cdn_origin_v1'), 'https://fastly.jsdelivr.net');
+
+  // 场景 2：所有节点不可达时触发 toastr.error 提醒改用离线版
+  const failErrors = [];
+  const ctx2 = {
+    console: { error: () => {} },
+    setTimeout,
+    clearTimeout,
+    AbortController,
+    window: { localStorage: { getItem: () => null, setItem: () => {} } },
+    toastr: { error: (m) => failErrors.push(m) },
+    fetch: async () => {
+      throw new Error('network down');
+    },
+  };
+  ctx2.globalThis = ctx2;
+  ctx2.window.parent = ctx2.window;
+  vm.runInNewContext(loaderCode, ctx2);
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.equal(failErrors.length, 1);
+  assert.match(failErrors[0], /jsDelivr/);
+  assert.match(failErrors[0], /⭐粘这个-任务助手脚本\.js/);
 });

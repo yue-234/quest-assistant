@@ -23,20 +23,26 @@
 
 ## 快速安装（SillyTavern）
 
-1. **安装前端脚本**：复制 [`⭐粘这个-任务助手脚本.js`](./⭐粘这个-任务助手脚本.js) 的全部内容，在酒馆脚本助手（TavernHelper）中新建脚本粘贴并启用。
+1. **安装前端脚本（二选一）**：
+   - **方式 A · 远程自动更新版（推荐）**：复制 [`⭐粘这个-远程自动更新脚本.js`](./⭐粘这个-远程自动更新脚本.js) 的全部内容，在酒馆脚本助手（TavernHelper）中新建脚本粘贴并启用；脚本会按 `testingcf` / `cdn` / `fastly` / `gcore` 四个 jsDelivr 节点自动回退拉取 [`dist/quest-assistant.js`](./dist/quest-assistant.js) 并记忆可用节点。
+   - **方式 B · 离线单文件版**：复制 [`⭐粘这个-任务助手脚本.js`](./⭐粘这个-任务助手脚本.js)（或 [`.txt`](./⭐粘这个-任务助手脚本.txt)）的全部内容粘贴并启用，不依赖外网访问。
 2. **安装世界书条目**：复制 [`任务助手-世界书.ejs`](./任务助手-世界书.ejs) 的全部内容，在当前使用的世界书中新建常驻（蓝灯）条目粘贴并启用。
 
-详细使用说明见 [`使用说明.md`](./使用说明.md)。
+> 远程直链参考：`https://testingcf.jsdelivr.net/gh/yue-234/quest-assistant@main/dist/quest-assistant.js`（可将 `@main` 替换为具体 Git Tag 锁定版本）。详细使用说明见 [`使用说明.md`](./使用说明.md)。
 
 ## 目录结构
 
 ```text
-├── ⭐粘这个-任务助手脚本.js   # 构建好的零依赖单文件脚本（直接粘贴使用）
-├── 任务助手-世界书.ejs        # 独立通用世界书提示词（直接粘贴使用）
-├── 使用说明.md                # 安装与日常使用说明
-├── build.mjs                  # esbuild 打包脚本
-├── test.mjs                   # Node 原生单元测试
-└── src/                       # 前端与逻辑源码
+├── ⭐粘这个-任务助手脚本.js     # 构建好的零依赖单文件脚本（离线粘贴使用）
+├── ⭐粘这个-任务助手脚本.txt    # 同内容文本副本（方便移动端复制）
+├── ⭐粘这个-远程自动更新脚本.js # jsDelivr 四节点自动回退远程加载脚本
+├── dist/quest-assistant.js      # jsDelivr CDN 分发用纯英文路径产物
+├── 任务助手-世界书.ejs          # 独立通用世界书提示词（直接粘贴使用）
+├── 使用说明.md                  # 安装与日常使用说明
+├── build.mjs                    # esbuild 打包脚本
+├── test.mjs                     # Node 原生单元测试
+├── tools/purge-cdn.mjs          # 刷新 jsDelivr @main 缓存辅助脚本
+└── src/                         # 前端与逻辑源码
     ├── data.js                # 任务板基础配置（档位、栏位与重扫参数）
     ├── state.js               # 区域识别、去后缀匹配、历史楼层反查与完结判定
     ├── actions.js             # 锁定、忽略、100 FP 重扫、打勾与清扫动作
@@ -56,6 +62,9 @@ node build.mjs
 
 # 运行全部单元测试
 node --test test.mjs
+
+# 推送 main 后主动刷新 jsDelivr CDN 缓存
+node tools/purge-cdn.mjs
 ```
 
 ## 授权协议

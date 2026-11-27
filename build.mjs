@@ -44,6 +44,7 @@ async function build() {
   const srcDir = path.join(__dirname, 'src');
   const outFile = path.join(__dirname, '⭐粘这个-任务助手脚本.js');
   const outTxtFile = path.join(__dirname, '⭐粘这个-任务助手脚本.txt');
+  const outDistFile = path.join(__dirname, 'dist', 'quest-assistant.js');
 
   // 1. 打包并压缩 iframe 面板 CSS 与 JS
   const rawCss = fs.readFileSync(path.join(srcDir, 'panel.css'), 'utf8');
@@ -97,10 +98,12 @@ async function build() {
     throw new Error('构建产物包含未转义的 </script> 标签');
   }
 
+  fs.mkdirSync(path.dirname(outDistFile), { recursive: true });
   fs.writeFileSync(outFile, finalCode, 'utf8');
   fs.writeFileSync(outTxtFile, finalCode, 'utf8');
+  fs.writeFileSync(outDistFile, finalCode, 'utf8');
   const kb = (Buffer.byteLength(finalCode, 'utf8') / 1024).toFixed(1);
-  console.log(`构建完成：${outFile} & ${outTxtFile} (${kb} KB)`);
+  console.log(`构建完成：${outFile} & ${outTxtFile} & ${outDistFile} (${kb} KB)`);
 }
 
 build().catch((err) => {
