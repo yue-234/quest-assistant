@@ -86,6 +86,12 @@ function createWorldbookEntry({ uid, comment, order, content }) {
   };
 }
 
+/** 生成按当前版本号命名的标准世界书导出文件名。 */
+export function worldbookFilename(version = SCRIPT_VERSION) {
+  const ver = String(version ?? '').trim();
+  return `命定任务助手世界书${ver}.json`;
+}
+
 /** 从单一 EJS 源码导出双条目标准酒馆世界书 JSON（剧情引导 + 变量更新）。 */
 export function buildWorldbookJson(ejsContent, version = SCRIPT_VERSION) {
   const normalized = String(ejsContent ?? '').replace(/\r\n/g, '\n');
@@ -195,10 +201,18 @@ export async function build() {
   fs.writeFileSync(outTxtFile, finalCode, 'utf8');
   fs.writeFileSync(outDistFile, finalCode, 'utf8');
 
-  // 3. 同步导出带版本号子标题的标准酒馆双条目世界书 JSON
+  // 3. 清理历史世界书交付文件并导出按当前版本号命名的标准酒馆双条目世界书 JSON
   const ejsContent = fs.readFileSync(path.join(__dirname, '任务助手-世界书.ejs'), 'utf8');
   const worldbookJson = buildWorldbookJson(ejsContent, SCRIPT_VERSION);
-  const outWorldbookFile = path.join(__dirname, '⭐导入这个-命定任务助手世界书.json');
+  const targetWorldbookName = worldbookFilename(SCRIPT_VERSION);
+  const legacyWbName = '⭐导入这个-命定任务助手世界书.json';
+  const versionedWbRe = /^命定任务助手世界书v\d+\.\d+\.\d+.*\.json$/i;
+  for (const name of fs.readdirSync(__dirname)) {
+    if ((name === legacyWbName || versionedWbRe.test(name)) && name !== targetWorldbookName) {
+      fs.unlinkSync(path.join(__dirname, name));
+    }
+  }
+  const outWorldbookFile = path.join(__dirname, targetWorldbookName);
   fs.writeFileSync(outWorldbookFile, JSON.stringify(worldbookJson), 'utf8');
 
   const kb = (Buffer.byteLength(finalCode, 'utf8') / 1024).toFixed(1);

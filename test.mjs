@@ -77,7 +77,7 @@ import {
   readMessages,
   readActiveWorldbookInfo,
 } from './src/host.js';
-import { buildWorldbookJson } from './build.mjs';
+import { buildWorldbookJson, worldbookFilename } from './build.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -115,7 +115,8 @@ const ejsSource = fs.readFileSync(path.join(__dirname, '任务助手-世界书.e
 const builtScriptPath = path.join(__dirname, '⭐粘这个-任务助手脚本.js');
 const builtScriptTxtPath = path.join(__dirname, '⭐粘这个-任务助手脚本.txt');
 const builtDistScriptPath = path.join(__dirname, 'dist', 'quest-assistant.js');
-const builtWorldbookPath = path.join(__dirname, '⭐导入这个-命定任务助手世界书.json');
+const builtWorldbookName = worldbookFilename(SCRIPT_VERSION);
+const builtWorldbookPath = path.join(__dirname, builtWorldbookName);
 const remoteLoaderPath = path.join(__dirname, '⭐粘这个-远程自动更新脚本.js');
 
 function renderEjs(statData, { chat = [], lastUserMessageId = 0, geoData = {}, systemCore = '', destinyImmersiveMode, generateType = '', Mvu, source = ejsSource } = {}) {
@@ -2882,11 +2883,16 @@ test('魔法棒菜单入口：挂载 #extensionsMenu、同步未读、点击收�
 // 4. 最终构建产物校验
 // ---------------------------------------------------------------------------
 
-test('构建产物 ⭐粘这个-任务助手脚本.js、.txt、dist/quest-assistant.js 与世界书 JSON 合法且一致', () => {
+test(`构建产物 ⭐粘这个-任务助手脚本.js、.txt、dist/quest-assistant.js 与 ${builtWorldbookName} 合法且一致`, () => {
   assert.equal(fs.existsSync(builtScriptPath), true, '应先运行 build.mjs 生成最终脚本');
   assert.equal(fs.existsSync(builtScriptTxtPath), true, '应同步生成 .txt 脚本产物');
   assert.equal(fs.existsSync(builtDistScriptPath), true, '应同步生成 dist/quest-assistant.js 供 jsDelivr 分发');
-  assert.equal(fs.existsSync(builtWorldbookPath), true, '应同步生成 ⭐导入这个-命定任务助手世界书.json 交付物');
+  assert.equal(fs.existsSync(builtWorldbookPath), true, `应同步生成 ${builtWorldbookName} 交付物`);
+  assert.equal(fs.existsSync(path.join(__dirname, '⭐导入这个-命定任务助手世界书.json')), false, '旧版固定名称世界书文件应已清理');
+  const strayWb = fs.readdirSync(__dirname).filter(
+    (name) => /^命定任务助手世界书v\d+\.\d+\.\d+.*\.json$/i.test(name) && name !== builtWorldbookName,
+  );
+  assert.deepEqual(strayWb, [], '不应残留历史版本的世界书交付 JSON');
   const code = fs.readFileSync(builtScriptPath, 'utf8');
   const txtCode = fs.readFileSync(builtScriptTxtPath, 'utf8');
   const distCode = fs.readFileSync(builtDistScriptPath, 'utf8');
@@ -2894,7 +2900,7 @@ test('构建产物 ⭐粘这个-任务助手脚本.js、.txt、dist/quest-assist
   assert.equal(txtCode, code, '⭐粘这个-任务助手脚本.txt 应与 .js 产物完全一致');
   assert.equal(distCode, code, 'dist/quest-assistant.js 应与 .js 产物完全一致');
   const builtWbJson = buildWorldbookJson(ejsSource, SCRIPT_VERSION);
-  assert.deepEqual(wbJson, builtWbJson, '⭐导入这个-命定任务助手世界书.json 应与 buildWorldbookJson 产物完全一致');
+  assert.deepEqual(wbJson, builtWbJson, `${builtWorldbookName} 应与 buildWorldbookJson 产物完全一致`);
   assert.equal(wbJson?.entries?.['0']?.comment, `[mvu_plot]任务助手-剧情引导${SCRIPT_VERSION}`);
   assert.equal(wbJson?.entries?.['0']?.order, 1150);
   assert.equal(wbJson?.entries?.['0']?.constant, true);
