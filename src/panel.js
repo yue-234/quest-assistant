@@ -11,6 +11,7 @@ import {
   requestQuestRescan,
   questRescanDone,
   hasClosedQuestLeftovers,
+  hasExpiredAftermath,
   needsQuestAcceptedRecord,
   maintainQuestBoard,
 } from './actions.js';
@@ -231,6 +232,16 @@ function renderNoteCallout(textStr, tone = '') {
   ]);
 }
 
+function formatTraitCountdown(entry, compact = false) {
+  if (!entry || !entry.isTemp) return '';
+  if (entry.daysLeft === 0) return compact ? '今日' : '今日结束';
+  if (typeof entry.daysLeft === 'number' && entry.daysLeft > 0) {
+    return compact ? `剩${entry.daysLeft}天` : `剩 ${entry.daysLeft} 天`;
+  }
+  if (entry.until) return `至${entry.until}`;
+  return '';
+}
+
 function renderContent(state) {
   const wrap = el('div', 'qh-page');
   const qb = state.questBoard || {
@@ -369,9 +380,16 @@ function renderContent(state) {
           const fallback = (entry.body || entry.text || '').trim();
           const label = entry.tag || (fallback.length > 6 ? `${fallback.slice(0, 6)}…` : fallback);
           const toneClass = entry.tone ? ` is-${entry.tone}` : '';
+          const ttlCompact = formatTraitCountdown(entry, true);
+          const ttlFull = formatTraitCountdown(entry, false);
+          const tagChildren = ttlCompact
+            ? [label, el('span', 'qh-trait-summary-ttl', ` · ${ttlCompact}`)]
+            : label;
+          const tipBase = entry.body || entry.text || label;
+          const tipText = ttlFull ? `${tipBase}（${ttlFull}）` : tipBase;
           tagStrip.append(
-            el('span', `qh-trait-tag qh-trait-summary-tag${toneClass}`, label, {
-              title: entry.body || entry.text || label,
+            el('span', `qh-trait-tag qh-trait-summary-tag${toneClass}${entry.isTemp ? ' is-temp' : ''}`, tagChildren, {
+              title: tipText,
             }),
           );
         });
@@ -414,12 +432,23 @@ function renderContent(state) {
         const traitUid = `${kind}:${entry.key}:${entry.index}:${entry.text}`;
         const confirming = ui.questEditRewards && ui.confirmDeleteTrait === traitUid;
         const toneClass = entry.tone ? ` is-${entry.tone}` : '';
-        const item = el('div', 'qh-trait-item' + toneClass + (confirming ? ' is-confirming' : ''));
+        const item = el(
+          'div',
+          'qh-trait-item' + toneClass + (entry.isTemp ? ' is-temp' : '') + (confirming ? ' is-confirming' : ''),
+        );
         const main = el('div', 'qh-trait-main');
         if (entry.tag) {
           main.append(el('span', 'qh-trait-tag', entry.tag));
         } else if (entry.tone) {
           main.append(el('span', 'qh-trait-dot'));
+        }
+        const ttlText = formatTraitCountdown(entry, false);
+        if (ttlText) {
+          main.append(
+            el('span', 'qh-trait-ttl' + (entry.daysLeft === 0 ? ' is-urgent' : ''), `⏳ ${ttlText}`, {
+              title: entry.until ? `有效期至 ${entry.until}` : '',
+            }),
+          );
         }
         const bodyText = entry.tag ? entry.body : (entry.body || entry.text);
         if (bodyText) {
@@ -769,7 +798,8 @@ function render() {
     !sweeping &&
     (questRescanDone(stat, curFloor, curCount)
       || hasClosedQuestLeftovers(stat, { chat: chatSnapshot })
-      || needsQuestAcceptedRecord(stat))
+      || needsQuestAcceptedRecord(stat)
+      || hasExpiredAftermath(stat))
   ) {
     sweeping = true;
     commit(

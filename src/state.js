@@ -371,23 +371,93 @@ export function wasInHistoryFormalTasks(historyStats, id, title) {
 }
 
 const AFTERMATH_TONE_MAP = { 绿: 'green', 黄: 'yellow', 红: 'red' };
+const MONTH_PREFIX = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+const validMD = (m, d) => m >= 1 && m <= 12 && d >= 1 && d <= 31;
+const ymdOrd = (y, mo, d) => y * 365 + MONTH_PREFIX[mo - 1] + d;
 
-/** 解析单条区域/世界词条，支持「[绿/黄/红]【短标签】正文」、无色阶与旧纯文本兼容格式。 */
-export function parseAftermathEntry(raw) {
+function parseYmdInfo(raw) {
+  const norm = normalizeDay(raw);
+  if (!norm) return null;
+  const m = norm.match(/(\d+)\s*年?-(\d{1,2})\s*月?-(\d{1,2})\s*日?/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  return validMD(mo, d) ? { y, mo, d, ord: ymdOrd(y, mo, d) } : null;
+}
+
+function parseUntilOrdinal(untilRaw, curInfo) {
+  const raw = text(untilRaw).trim();
+  if (!raw || /(?:^|[^a-zA-Z0-9_])[vV]\d+\.\d+(?:\.\d+)?/.test(raw)) return null;
+  const norm = normalizeDay(raw);
+  const ymd = norm.match(/(\d+)\s*年?-(\d{1,2})\s*月?-(\d{1,2})\s*日?/);
+  if (ymd) {
+    const y = Number(ymd[1]);
+    const mo = Number(ymd[2]);
+    const d = Number(ymd[3]);
+    return validMD(mo, d) ? ymdOrd(y, mo, d) : null;
+  }
+  const md = norm.match(/(?:^|[^\d])(\d{1,2})月-(\d{1,2})日/);
+  if (md && curInfo) {
+    const mo = Number(md[1]);
+    const d = Number(md[2]);
+    if (!validMD(mo, d)) return null;
+    let ord = ymdOrd(curInfo.y, mo, d);
+    if (ord < curInfo.ord - 180) ord = ymdOrd(curInfo.y + 1, mo, d);
+    return ord;
+  }
+  return null;
+}
+
+/** 解析单条区域/世界词条，支持「[绿/黄/红][至到期日]【短标签】正文」（前缀顺序任意）、无色阶与旧纯文本兼容格式。 */
+export function parseAftermathEntry(raw, currentDay = '') {
   const str = text(raw).trim();
-  if (!str) return { text: '', tone: '', tag: '', body: '' };
+  if (!str) {
+    return { text: '', tone: '', tag: '', body: '', until: '', isTemp: false, daysLeft: null, expired: false };
+  }
   let rest = str;
   let tone = '';
-  const toneMatch = rest.match(/^(?:\[([绿黄红])\]|【([绿黄红])】)\s*/);
-  if (toneMatch) {
-    tone = AFTERMATH_TONE_MAP[toneMatch[1] || toneMatch[2]] || '';
-    rest = rest.slice(toneMatch[0].length);
+  let until = '';
+  for (let guard = 0; guard < 4; guard += 1) {
+    if (!tone) {
+      const toneMatch = rest.match(/^(?:\[([绿黄红])\]|【([绿黄红])】)\s*/);
+      if (toneMatch) {
+        tone = AFTERMATH_TONE_MAP[toneMatch[1] || toneMatch[2]] || '';
+        rest = rest.slice(toneMatch[0].length);
+        continue;
+      }
+    }
+    if (!until) {
+      const untilMatch = rest.match(/^(?:\[\s*至\s*([^\]]+)\]|【\s*至\s*([^】]+)】)\s*/);
+      if (untilMatch) {
+        until = (untilMatch[1] || untilMatch[2] || '').trim();
+        rest = rest.slice(untilMatch[0].length);
+        continue;
+      }
+    }
+    break;
   }
   const tagMatch = rest.match(/^【([^】]{1,12})】\s*([\s\S]*)$/);
-  if (tagMatch) {
-    return { text: str, tone, tag: tagMatch[1].trim(), body: tagMatch[2].trim() };
+  const tag = tagMatch ? tagMatch[1].trim() : '';
+  const body = tagMatch ? tagMatch[2].trim() : (rest.trim() || str);
+  const isTemp = !!until;
+  let daysLeft = null;
+  if (isTemp && currentDay) {
+    const curInfo = parseYmdInfo(currentDay);
+    if (curInfo) {
+      const untilOrd = parseUntilOrdinal(until, curInfo);
+      if (untilOrd !== null) {
+        daysLeft = untilOrd - curInfo.ord;
+      }
+    }
   }
-  return { text: str, tone, tag: '', body: rest.trim() || str };
+  const expired = daysLeft !== null && daysLeft < 0;
+  return { text: str, tone, tag, body, until, isTemp, daysLeft, expired };
+}
+
+/** 判断单条区域/世界词条是否已到期失效。 */
+export function isAftermathEntryExpired(raw, currentDay) {
+  return parseAftermathEntry(raw, currentDay).expired;
 }
 
 /** 读取当前任务情报板状态。 */
@@ -437,21 +507,35 @@ export function questBoardState(stat, current = {}) {
 
   const regionChanged = !sameRegion(region, boardRegionKey, boardRegionName, current.geoData || null);
 
-  // 读取当前区域词条与世界词条（仅命中当前区域，不跨区混入）
+  // 读取当前区域词条与世界词条（仅命中当前区域，不跨区混入；常驻与限时分开计额且自动跳过已过期限时词条）
   const maxAftermath = DATA.questBoard.maxAftermathPerScope || 3;
+  const maxTempAftermath = DATA.questBoard.maxTempAftermathPerScope || 2;
   const aftermathRoot = obj(board['余波']);
   const collectAftermathEntries = (scopeKey, raw) => {
     const out = [];
     if (Array.isArray(raw)) {
       for (let idx = 0; idx < raw.length; idx += 1) {
-        const parsed = parseAftermathEntry(raw[idx]);
-        if (parsed.text) out.push({ key: scopeKey, index: idx, ...parsed });
+        const parsed = parseAftermathEntry(raw[idx], currentDay);
+        if (parsed.text && !parsed.expired) out.push({ key: scopeKey, index: idx, ...parsed });
       }
       return out;
     }
-    const parsed = parseAftermathEntry(raw);
-    if (parsed.text) out.push({ key: scopeKey, index: 0, ...parsed });
+    const parsed = parseAftermathEntry(raw, currentDay);
+    if (parsed.text && !parsed.expired) out.push({ key: scopeKey, index: 0, ...parsed });
     return out;
+  };
+  const capAftermathEntries = (entries) => {
+    const permIndices = [];
+    const tempIndices = [];
+    entries.forEach((entry, idx) => {
+      if (entry.isTemp) tempIndices.push(idx);
+      else permIndices.push(idx);
+    });
+    const keepIdx = new Set([
+      ...permIndices.slice(-maxAftermath),
+      ...tempIndices.slice(-maxTempAftermath),
+    ]);
+    return entries.filter((_, idx) => keepIdx.has(idx));
   };
   const localRawEntries = [];
   if (region.key || region.name) {
@@ -463,8 +547,8 @@ export function questBoardState(stat, current = {}) {
       }
     }
   }
-  const localEntries = localRawEntries.slice(-maxAftermath);
-  const worldEntries = collectAftermathEntries('世界', aftermathRoot['世界']).slice(-maxAftermath);
+  const localEntries = capAftermathEntries(localRawEntries);
+  const worldEntries = capAftermathEntries(collectAftermathEntries('世界', aftermathRoot['世界']));
   const aftermath = {
     local: localEntries.map((e) => e.text),
     world: worldEntries.map((e) => e.text),

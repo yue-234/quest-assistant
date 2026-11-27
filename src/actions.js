@@ -6,6 +6,7 @@ import {
   BOARD_KEY, CORE_NAME, SPEAKER, fpOf, boardNode, rescanFresh,
   normalizeDay, worldDay, cleanRewardText, parseClaimedSet, normalizeQuestRewards,
   stripTaskTitle, matchFormalTask, extractHistoryStats, wasInHistoryFormalTasks,
+  isAftermathEntryExpired,
 } from './state.js';
 
 export { CORE_NAME, SPEAKER };
@@ -246,6 +247,49 @@ export function deleteAftermathEntry(stat, scopeKey, index, expectedText = '') {
     delete board['余波'];
   }
   return { stat: next, done: '已删除词条' };
+}
+
+/** 全地图（含所有区域与「世界」）是否存在已过期的限时词条。 */
+export function hasExpiredAftermath(stat) {
+  const currentDay = worldDay(stat);
+  if (!currentDay) return false;
+  const board = boardNode(stat);
+  const root = board['余波'];
+  if (!root || typeof root !== 'object' || Array.isArray(root)) return false;
+  for (const val of Object.values(root)) {
+    if (Array.isArray(val)) {
+      if (val.some((item) => isAftermathEntryExpired(item, currentDay))) return true;
+    } else if (typeof val === 'string') {
+      if (isAftermathEntryExpired(val, currentDay)) return true;
+    }
+  }
+  return false;
+}
+
+/** 遍历 `/事件/任务情报板/余波` 下全部键，静默移除所有已过期的限时词条并清理空键。 */
+export function sweepExpiredAftermath(stat) {
+  const currentDay = worldDay(stat);
+  const next = draft(stat);
+  const board = ensureBoard(next);
+  const root = board['余波'];
+  if (!currentDay || !root || typeof root !== 'object' || Array.isArray(root)) {
+    return { stat: next, done: '已清理过期词条' };
+  }
+  for (const [k, val] of Object.entries(root)) {
+    if (Array.isArray(val)) {
+      const kept = val.filter((item) => !isAftermathEntryExpired(item, currentDay));
+      if (kept.length > 0) root[k] = kept;
+      else delete root[k];
+    } else if (typeof val === 'string') {
+      if (isAftermathEntryExpired(val, currentDay)) {
+        delete root[k];
+      }
+    }
+  }
+  if (Object.keys(root).length === 0) {
+    delete board['余波'];
+  }
+  return { stat: next, done: '已清理过期词条' };
 }
 
 /** 预约下一回合重扫当前区域的本地任务情报（保留已锁定与跨区剧情任务）。 */
@@ -525,7 +569,7 @@ export function sweepClosedQuests(stat, current = {}) {
   return { stat: next, done: '已清理已完结的任务情报' };
 }
 
-/** 合并后台维护：单次顺序执行清重扫 → 扫完结残留 → 登记曾接取，无改动时返回 { skip: true }。 */
+/** 合并后台维护：单次顺序执行清重扫 → 扫完结残留 → 登记曾接取 → 清全地图过期词条，无改动时返回 { skip: true }。 */
 export function maintainQuestBoard(stat, { floor, chatCount, chat, historyStats } = {}) {
   let cur = stat;
   let changed = false;
@@ -543,6 +587,10 @@ export function maintainQuestBoard(stat, { floor, chatCount, chat, historyStats 
       cur = recordAcceptedQuests(cur).stat;
       changed = true;
     }
+  }
+  if (hasExpiredAftermath(cur)) {
+    cur = sweepExpiredAftermath(cur).stat;
+    changed = true;
   }
   if (!changed) return { skip: true };
   return { stat: cur, done: '已完成任务情报板后台维护' };

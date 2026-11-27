@@ -6,6 +6,7 @@ import { PANEL_CSS, PANEL_JS } from 'quest-helper:panel';
 import { BOARD_KEY, CORE_NAME, SPEAKER, readState } from './state.js';
 import {
   hasClosedQuestLeftovers,
+  hasExpiredAftermath,
   needsQuestAcceptedRecord,
   questRescanDone,
   maintainQuestBoard,
@@ -262,7 +263,8 @@ export function start() {
     const needClearRescan = questRescanDone(stat, curFloor, curCount);
     const needSweep = !!board['列表'] && hasClosedQuestLeftovers(stat, { chat: chatSnapshot });
     const needRecord = !!board['列表'] && needsQuestAcceptedRecord(stat);
-    if (!needClearRescan && !needSweep && !needRecord) return;
+    const needSweepExpired = hasExpiredAftermath(stat);
+    if (!needClearRescan && !needSweep && !needRecord && !needSweepExpired) return;
 
     bgSweeping = true;
     try {

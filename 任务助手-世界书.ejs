@@ -3,7 +3,7 @@
 // 项目地址：https://github.com/yue-234/quest-assistant
 // 下面 @data 一段与 src/data.js 的 DATA 保持同一份口径。
 // @data-begin
-const _data = {"questBoard":{"rescanFp":100,"storyAdvanceDays":5,"categories":{"剧情任务":{"max":2,"rewardSlots":10,"qualityShift":1,"crossRegion":true},"本地主线":{"max":2,"rewardSlots":5,"qualityShift":1,"crossRegion":false},"支线任务":{"max":3,"rewardSlots":3,"qualityShift":0,"crossRegion":false}},"maxItems":7,"maxIgnored":12,"maxAftermathPerScope":3,"regionRevisitDays":14}};
+const _data = {"questBoard":{"rescanFp":100,"storyAdvanceDays":5,"categories":{"剧情任务":{"max":2,"rewardSlots":10,"qualityShift":1,"crossRegion":true},"本地主线":{"max":2,"rewardSlots":5,"qualityShift":1,"crossRegion":false},"支线任务":{"max":3,"rewardSlots":3,"qualityShift":0,"crossRegion":false}},"maxItems":7,"maxIgnored":12,"maxAftermathPerScope":3,"maxTempAftermathPerScope":2,"regionRevisitDays":14}};
 // @data-end
 
 const _int = (v) => { const m = String(v ?? '').replace(/[,，]/g, '').match(/-?\d+/); return m ? Number(m[0]) : 0; };
@@ -165,6 +165,7 @@ const _hasClaimed = !!(
 );
 const _claimedMap = _hasClaimed ? _qb['已兑现'] : {};
 const _maxAftermath = (_data.questBoard && Number(_data.questBoard.maxAftermathPerScope)) || 3;
+const _maxTempAftermath = (_data.questBoard && Number(_data.questBoard.maxTempAftermathPerScope)) || 2;
 const _regionRevisitDays = (_data.questBoard && Number(_data.questBoard.regionRevisitDays)) || 14;
 const _hasVisitMap = !!(
   _hasQb &&
@@ -185,20 +186,6 @@ const _aftermathRoot = _hasAftermath ? _qb['余波'] : {};
 const _aftermathArr = (raw) => (Array.isArray(raw)
   ? raw.map((x) => _txt(x).trim()).filter(Boolean)
   : (typeof raw === 'string' && raw.trim() ? [raw.trim()] : []));
-const _localAftermath = [];
-let _localAftermathKey = '';
-if (_region.key || _region.name) {
-  for (const [k, v] of Object.entries(_aftermathRoot)) {
-    const kk = _txt(k).trim();
-    if (!kk || kk === '世界') continue;
-    if (_sameRegion(_region, kk, kk)) {
-      if (!_localAftermathKey) _localAftermathKey = kk;
-      for (const item of _aftermathArr(v)) _localAftermath.push(item);
-    }
-  }
-}
-const _localAftermathShown = _localAftermath.slice(-_maxAftermath);
-const _worldAftermathShown = _aftermathArr(_aftermathRoot['世界']).slice(-_maxAftermath);
 const _claimedMarkRe = /(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)]|\[\d+\s*[✓✔☑]\])/;
 const _cleanRw = (s) => _txt(s)
   .replace(/^\s*\[\s*\d+\s*[✓✔☑□☐]?\s*\]\s*/g, '')
@@ -251,6 +238,78 @@ const _dayOrdinal = (s) => {
   }
   return null;
 };
+const _parseUntilOrd = (untilRaw) => {
+  const raw = _txt(untilRaw).trim();
+  if (!raw || /(?:^|[^a-zA-Z0-9_])[vV]\d+\.\d+(?:\.\d+)?/.test(raw)) return null;
+  const norm = _normalizeDay(raw);
+  const ymd = norm.match(/(\d+)\s*年?-(\d{1,2})\s*月?-(\d{1,2})\s*日?/);
+  if (ymd) {
+    const y = Number(ymd[1]), m = Number(ymd[2]), d = Number(ymd[3]);
+    return _validMD(m, d) ? _ymdOrd(y, m, d) : null;
+  }
+  const md = norm.match(/(?:^|[^\d])(\d{1,2})月-(\d{1,2})日/);
+  if (md && _curYear !== null) {
+    const m = Number(md[1]), d = Number(md[2]);
+    if (!_validMD(m, d)) return null;
+    let ord = _ymdOrd(_curYear, m, d);
+    if (_curDayOrd !== null && ord < _curDayOrd - 180) ord = _ymdOrd(_curYear + 1, m, d);
+    return ord;
+  }
+  return null;
+};
+const _parseAftermathMeta = (raw) => {
+  const str = _txt(raw).trim();
+  if (!str) return { text: '', isTemp: false, expired: false };
+  let rest = str;
+  let hasTone = false;
+  let until = '';
+  for (let g = 0; g < 4; g += 1) {
+    if (!hasTone) {
+      const tm = rest.match(/^(?:\[([绿黄红])\]|【([绿黄红])】)\s*/);
+      if (tm) { hasTone = true; rest = rest.slice(tm[0].length); continue; }
+    }
+    if (!until) {
+      const um = rest.match(/^(?:\[\s*至\s*([^\]]+)\]|【\s*至\s*([^】]+)】)\s*/);
+      if (um) { until = (um[1] || um[2] || '').trim(); rest = rest.slice(um[0].length); continue; }
+    }
+    break;
+  }
+  const isTemp = !!until;
+  let expired = false;
+  if (isTemp && _curDayOrd !== null) {
+    const uOrd = _parseUntilOrd(until);
+    if (uOrd !== null && uOrd < _curDayOrd) expired = true;
+  }
+  return { text: str, isTemp, expired };
+};
+const _capAftermath = (list) => {
+  const active = list.map(_parseAftermathMeta).filter((x) => x.text && !x.expired);
+  const permIdx = [];
+  const tempIdx = [];
+  active.forEach((x, i) => {
+    if (x.isTemp) tempIdx.push(i);
+    else permIdx.push(i);
+  });
+  const keep = new Set([
+    ...permIdx.slice(-_maxAftermath),
+    ...tempIdx.slice(-_maxTempAftermath),
+  ]);
+  return active.filter((_, i) => keep.has(i)).map((x) => x.text);
+};
+const _localAftermath = [];
+let _localAftermathKey = '';
+if (_region.key || _region.name) {
+  for (const [k, v] of Object.entries(_aftermathRoot)) {
+    const kk = _txt(k).trim();
+    if (!kk || kk === '世界') continue;
+    if (_sameRegion(_region, kk, kk)) {
+      if (!_localAftermathKey) _localAftermathKey = kk;
+      for (const item of _aftermathArr(v)) _localAftermath.push(item);
+    }
+  }
+}
+const _localAftermathShown = _capAftermath(_localAftermath);
+const _worldAftermathShown = _capAftermath(_aftermathArr(_aftermathRoot['世界']));
 let _lastVisitDay = '';
 let _lastVisitOrd = null;
 let _lastVisitKey = '';
@@ -565,7 +624,7 @@ _%>
     完结移出: 任务完结（含单环支线或一次性结算任务）发奖并移出 `/任务列表` 同轮，执行该条 `完结移出` Patch 从任务情报板删除（无需再写 `兑现Patch`）；未接取支线单回合接取并完结同样移出；同轮移除多条数组项时按索引从大到小倒序 `remove`（或整表 `replace` `/事件/任务情报板/列表`）
     锁定与换区: `★已锁定` 与 `已接取` 跨区及重扫保留（`★已锁定` 仅在时限到期后清除，过期项同步时移除）；仅跨城或跨大区触发换区，同城地点变更不换区
     剧情追加: 剧情中 NPC 给出新委托、悬赏或线索，或触发 `/任务列表` 新任务时，不受默认参考配额限制，用 `insert` 追加至 `/事件/任务情报板/列表/-`（对象型列表用 `insert` 新键）；优先按体量定级为「剧情任务」（B~S 级｜10 栏收益｜品质+1 档）或「本地主线」（5 栏收益｜品质+1 档），仅简单委托或短途事务归「支线任务」（3 栏）；<% if (_qbNeedGen) { %>按下方字段补全<% } else { %>补全 `id`/`类别`/`等级`/`标题`/`方式`/`引导`（联络人或起始线索）/`地点`（仅当前阶段单个去处）/`时限`/`摘要`/`预期收益`<% } %>，剧情任务与本地主线附带后台隐藏 `真相`（剧情任务另含 `更新日`）；已当场写入 `/任务列表` 的按相同原 `标题` 同步追加以追踪收益
-    区域与世界词条: 存储在 `/事件/任务情报板/余波`，每条格式为 `[绿/黄/红]【2~6字短标签】30~50字客观现状`（`[绿]` 表示利好、稳定或优势；`[黄]` 表示隐患、摩擦或波动；`[红]` 表示危机、恶化或封锁）；只写当前仍可见的实体变化（如控制权变更、区域封锁或开放、物价波动、环境改变、新法令、难民或商路变动等），禁止以 `<user>` 或冒险者为主语写战绩记录，禁止写“恢复平静”“居民感激”等空泛描述。首次进入尚未记录词条的区域（初始化或跨区迁入且当前区域无词条）时，按当前世界书设定与近期剧情为当前区域默认写入 3 条词条（分属不同维度，如商贸、治安、设施、环境、势力等，彼此逻辑自洽，不重复、不自相矛盾）；禁止 3 绿、3 黄、3 红（每区至少包含 2 种色阶），也不得每区机械套用 1 绿 1 黄 1 红，按各地实际繁荣度、秩序与局势做差异化组合（如安定商都偏 2 绿 1 黄或 2 绿 1 红，隐患较多的城镇偏 1 绿 2 黄或 2 黄 1 红，动荡前线偏 1 黄 2 红或 1 绿 2 红）。`世界` 词条同样使用 `[绿/黄/红]` 色阶，不默认生成，仅剧情任务或重大剧情与事件链引发的跨大区或全大陆级重大后果允许写入或改写 `世界`（单区与 `世界` 各自最多保留 <%- _maxAftermath %> 条，超出替换最旧项）。当剧情任务、本地主线（完结、失败或搁置恶化）或非任务的重大剧情与事件链变故（如敌对势力袭击城镇、灾害、政变、控制权变更等）造成实质后果时，无论正停留在当地还是返回旧区域，都可以即时新增、改写替换或移除对应区域词条，并随局势同步升降色阶（恶化转黄或升红，好转降黄或转绿；本地主线一律按具体城市或区域名归档；支线任务与日常琐事不改写词条）。返回已有词条的旧区域时：离开满 <%- _regionRevisitDays %> 天时，可根据期间剧情与局势演进或改写 1 条词条（无明显变化则保持不变）；离开不足 <%- _regionRevisitDays %> 天时不得无故改动词条，但如果期间已有明确剧情变故、已到期的预告事件（如预告的袭击、灾害、政变等）或任务后果实际波及该区域，仍按剧情改写对应词条。<% if (!_hasAftermath) { %>首次写入用 `{ "op": "insert", "path": "/事件/任务情报板/余波", "value": { "<区域名或世界>": ["[绿/黄/红]【短标签】..."] } }`（同轮多键合并写入同一对象）<% } else { %>对已有区域键用 `replace`、新区域键用 `insert` 更新 `/事件/任务情报板/余波/<区域名或世界>`<% } %>
+    区域与世界词条: 存储在 `/事件/任务情报板/余波`，每条格式为 `[绿/黄/红]【2~6字短标签】30~50字客观现状`（`[绿]` 表示利好、稳定或优势；`[黄]` 表示隐患、摩擦或波动；`[红]` 表示危机、恶化或封锁）；只写当前仍可见的实体变化（如控制权变更、区域封锁或开放、物价波动、环境改变、新法令、难民或商路变动等），禁止以 `<user>` 或冒险者为主语写战绩记录，禁止写“恢复平静”“居民感激”等空泛描述。首次进入尚未记录词条的区域（初始化或跨区迁入且当前区域无词条）时，按当前世界书设定与近期剧情为当前区域默认写入 3 条词条（分属不同维度，如商贸、治安、设施、环境、势力等，彼此逻辑自洽，不重复、不自相矛盾）；禁止 3 绿、3 黄、3 红（每区至少包含 2 种色阶），也不得每区机械套用 1 绿 1 黄 1 红，按各地实际繁荣度、秩序与局势做差异化组合（如安定商都偏 2 绿 1 黄或 2 绿 1 红，隐患较多的城镇偏 1 绿 2 黄或 2 黄 1 红，动荡前线偏 1 黄 2 红或 1 绿 2 红）。`世界` 词条同样使用 `[绿/黄/红]` 色阶，不默认生成，仅剧情任务或重大剧情与事件链引发的跨大区或全大陆级重大后果允许写入或改写 `世界`（常驻词条每区与 `世界` 各自最多保留 <%- _maxAftermath %> 条，超出替换最旧项）。具有明确截止期的短期活动、盛会、招生、临时戒严或短期灾害等，写入为限时词条（作为额外状态叠加，不占用 <%- _maxAftermath %> 条常驻名额，每区与 `世界` 各自最多额外叠加 <%- _maxTempAftermath %> 条），格式为 `[绿/黄/红][至YYYY年-M月-D日]【2~6字短标签】30~50字客观现状`，到期后由系统自动失效移除。当剧情任务、本地主线（完结、失败或搁置恶化）或非任务的重大剧情与事件链变故（如敌对势力袭击城镇、灾害、政变、控制权变更等）造成实质后果时，无论正停留在当地还是返回旧区域，都可以即时新增、改写替换或移除对应区域词条，并随局势同步升降色阶（恶化转黄或升红，好转降黄或转绿；本地主线一律按具体城市或区域名归档；支线任务与日常琐事不改写词条）。返回已有词条的旧区域时：离开满 <%- _regionRevisitDays %> 天时，可根据期间剧情与局势演进或改写 1 条词条（无明显变化则保持不变）；离开不足 <%- _regionRevisitDays %> 天时不得无故改动词条，但如果期间已有明确剧情变故、已到期的预告事件（如预告的袭击、灾害、政变等）或任务后果实际波及该区域，仍按剧情改写对应词条。<% if (!_hasAftermath) { %>首次写入用 `{ "op": "insert", "path": "/事件/任务情报板/余波", "value": { "<区域名或世界>": ["[绿/黄/红]【短标签】..."] } }`（同轮多键合并写入同一对象）<% } else { %>对已有区域键用 `replace`、新区域键用 `insert` 更新 `/事件/任务情报板/余波/<区域名或世界>`<% } %>
     路径: <% if (!_hasQb) { %>`/事件/任务情报板` 未创建，用 `{ "op": "insert", "path": "/事件/任务情报板", "value": { "区域键": <%- JSON.stringify(_region.key || 'unknown') %>, "区域": <%- JSON.stringify(_region.name || '当前区域') %>, "更新日": <%- JSON.stringify(_day) %>,<% if (_day) { %> "区域访问日": { <%- JSON.stringify(_visitRegionKey) %>: <%- JSON.stringify(_day) %> },<% } %> "列表": [ ... ] } }`；**严禁对 `/事件` 执行 insert 或 replace**<% } else if (_qbMissKeys.length === 0) { %>分别用 `replace` 更新 `/事件/任务情报板` 下的 `区域键`<% if (_qbRegionChanged && _region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」「区域访问日」；**严禁整块覆写 `/事件`**）<% } else if (_qbExistKeys.length === 0) { %>`/事件/任务情报板` 仅含控制字段，分别用 `insert` 写入 `/事件/任务情报板` 下的 `区域键`<% if (_region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」「区域访问日」；**严禁整块覆写 `/事件`**）<% } else { %>对已存在键（<%- _qbExistKeys.map((k) => '`' + k + '`').join('、') %>）用 `replace`、对缺失键（<%- _qbMissKeys.map((k) => '`' + k + '`').join('、') %>）用 `insert` 更新 `/事件/任务情报板` 下对应字段<% if (_qbRegionChanged && _region.key) { %>（`区域键` 写 `<%- _region.key %>`）<% } %>（保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」「区域访问日」；**严禁整块覆写 `/事件`**）<% } %><% if (_visitPatchHint) { %>；同步区域访问日用 <%- _visitPatchHint %><% } %>
 <% if (_qbNeedGen) { _%>
   生成规格（品质与禁项沿用<任务与委托规则>，+1 档对应 D优良/C稀有/B史诗/A传说/S神话；下列条数为自动生成与补缺的参考配额，非硬上限，剧情追加不受此限）:

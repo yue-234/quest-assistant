@@ -10,6 +10,7 @@ import {
   questBoardState,
   readState,
   parseAftermathEntry,
+  isAftermathEntryExpired,
   stripTaskTitle,
   matchFormalTask,
   extractHistoryStats,
@@ -20,6 +21,8 @@ import {
   ignoreQuest,
   toggleQuestRewardClaimed,
   deleteAftermathEntry,
+  hasExpiredAftermath,
+  sweepExpiredAftermath,
   requestQuestRescan,
   questRescanDone,
   clearQuestRescan,
@@ -823,8 +826,30 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
     '【霜潮封路】北境商路因霜潮封冻中断，各大主城魔导燃料配给收紧，边境流民向南涌入。',
   ]);
   assert.deepEqual(stLocal.aftermath.localEntries, [
-    { key: '铁炉堡', index: 1, text: '【税卡增设】旧条2', tone: '', tag: '税卡增设', body: '旧条2' },
-    { key: '铁炉堡', index: 2, text: '旧条3', tone: '', tag: '', body: '旧条3' },
+    {
+      key: '铁炉堡',
+      index: 1,
+      text: '【税卡增设】旧条2',
+      tone: '',
+      tag: '税卡增设',
+      body: '旧条2',
+      until: '',
+      isTemp: false,
+      daysLeft: null,
+      expired: false,
+    },
+    {
+      key: '铁炉堡',
+      index: 2,
+      text: '旧条3',
+      tone: '',
+      tag: '',
+      body: '旧条3',
+      until: '',
+      isTemp: false,
+      daysLeft: null,
+      expired: false,
+    },
     {
       key: '铁炉堡',
       index: 3,
@@ -832,6 +857,10 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
       tone: '',
       tag: '高炉重启',
       body: '南门高炉重启后黑烟终日不散，城防军接管矿业税局，铁锭价格回落但走私案激增。',
+      until: '',
+      isTemp: false,
+      daysLeft: null,
+      expired: false,
     },
   ]);
   assert.deepEqual(stLocal.aftermath.worldEntries, [
@@ -842,6 +871,10 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
       tone: '',
       tag: '霜潮封路',
       body: '北境商路因霜潮封冻中断，各大主城魔导燃料配给收紧，边境流民向南涌入。',
+      until: '',
+      isTemp: false,
+      daysLeft: null,
+      expired: false,
     },
   ]);
 });
@@ -976,6 +1009,10 @@ test('parseAftermathEntry 与 deleteAftermathEntry：三色前缀与短标签兼
       tone: 'green',
       tag: '商队云集',
       body: '东门集市日夜不息，药材与魔导晶供应充裕。',
+      until: '',
+      isTemp: false,
+      daysLeft: null,
+      expired: false,
     },
   );
   assert.deepEqual(
@@ -985,6 +1022,10 @@ test('parseAftermathEntry 与 deleteAftermathEntry：三色前缀与短标签兼
       tone: 'yellow',
       tag: '商税上调',
       body: '城邦议会提高外港关税，布匹零售价普涨两成。',
+      until: '',
+      isTemp: false,
+      daysLeft: null,
+      expired: false,
     },
   );
   assert.deepEqual(
@@ -994,6 +1035,10 @@ test('parseAftermathEntry 与 deleteAftermathEntry：三色前缀与短标签兼
       tone: 'red',
       tag: '城门戒严',
       body: '北境魔潮逼近，入城须逐车盘查并实行宵禁。',
+      until: '',
+      isTemp: false,
+      daysLeft: null,
+      expired: false,
     },
   );
   assert.deepEqual(
@@ -1003,6 +1048,10 @@ test('parseAftermathEntry 与 deleteAftermathEntry：三色前缀与短标签兼
       tone: 'red',
       tag: '',
       body: '城外突发异变，南门暂时关闭。',
+      until: '',
+      isTemp: false,
+      daysLeft: null,
+      expired: false,
     },
   );
   assert.deepEqual(
@@ -1012,6 +1061,10 @@ test('parseAftermathEntry 与 deleteAftermathEntry：三色前缀与短标签兼
       tone: '',
       tag: '港口戒严',
       body: '夜间禁止商船靠岸，入城货物须经海军检查。',
+      until: '',
+      isTemp: false,
+      daysLeft: null,
+      expired: false,
     },
   );
   assert.deepEqual(
@@ -1021,6 +1074,10 @@ test('parseAftermathEntry 与 deleteAftermathEntry：三色前缀与短标签兼
       tone: '',
       tag: '',
       body: '旧版纯文本余波词条无短标签。',
+      until: '',
+      isTemp: false,
+      daysLeft: null,
+      expired: false,
     },
   );
 
@@ -1069,6 +1126,10 @@ test('parseAftermathEntry 与 deleteAftermathEntry：三色前缀与短标签兼
       tone: 'yellow',
       tag: '商路受阻',
       body: '第一行现状。\n第二行补充说明。',
+      until: '',
+      isTemp: false,
+      daysLeft: null,
+      expired: false,
     },
   );
   assert.deepEqual(
@@ -1078,6 +1139,10 @@ test('parseAftermathEntry 与 deleteAftermathEntry：三色前缀与短标签兼
       tone: 'red',
       tag: '全城戒严',
       body: '',
+      until: '',
+      isTemp: false,
+      daysLeft: null,
+      expired: false,
     },
   );
 
@@ -1230,6 +1295,178 @@ test('前端自动聚合未上墙的原版 /任务列表 进行中任务（去�
   const qbBoundary = questBoardState(boundaryStat);
   assert.equal(qbBoundary.items.find((x) => x.title === '讨伐洞穴首领').rank, '原版');
   assert.equal(qbBoundary.items.find((x) => x.title === '护送重要学者').rank, '原版');
+});
+
+test('限时 Buff 词条：解析、常驻3+限时2共存、过期隐藏/0注入与跨区域全地图自动清理', () => {
+  // 1) 标准顺序与互换顺序、无年份跨年、当天有效与次日过期
+  const parsedStd = parseAftermathEntry(
+    '[绿][至488年-7月-15日]【踏星盛会】全港挂起星灯，观礼商船云集码头。',
+    '复兴纪元488年-6月-24日',
+  );
+  assert.deepEqual(parsedStd, {
+    text: '[绿][至488年-7月-15日]【踏星盛会】全港挂起星灯，观礼商船云集码头。',
+    tone: 'green',
+    tag: '踏星盛会',
+    body: '全港挂起星灯，观礼商船云集码头。',
+    until: '488年-7月-15日',
+    isTemp: true,
+    daysLeft: 21,
+    expired: false,
+  });
+
+  const parsedSwapped = parseAftermathEntry(
+    '[至488-07-15][黄]【临时戒严】外城关卡加派巡逻，夜间盘查趋严。',
+    '复兴纪元488年-7月-15日',
+  );
+  assert.equal(parsedSwapped.tone, 'yellow');
+  assert.equal(parsedSwapped.tag, '临时戒严');
+  assert.equal(parsedSwapped.until, '488-07-15');
+  assert.equal(parsedSwapped.isTemp, true);
+  assert.equal(parsedSwapped.daysLeft, 0);
+  assert.equal(parsedSwapped.expired, false);
+  assert.equal(
+    isAftermathEntryExpired('[至488-07-15][黄]【临时戒严】外城关卡加派巡逻。', '复兴纪元488年-7月-15日'),
+    false,
+  );
+  assert.equal(
+    isAftermathEntryExpired('[至488-07-15][黄]【临时戒严】外城关卡加派巡逻。', '复兴纪元488年-7月-16日'),
+    true,
+  );
+
+  // 无年份年末跨年初到期日（12月25日 -> 至1月10日 = 剩 16 天）
+  const parsedCrossYear = parseAftermathEntry(
+    '【红】【至1月10日】【寒潮封港】港湾浮冰未消，大型商船暂缓出航。',
+    '复兴纪元488年-12月-25日',
+  );
+  assert.equal(parsedCrossYear.tone, 'red');
+  assert.equal(parsedCrossYear.isTemp, true);
+  assert.equal(parsedCrossYear.daysLeft, 16);
+  assert.equal(parsedCrossYear.expired, false);
+
+  // 2) 3 条常驻 + 2 条限时同时存在，且夹杂 1 条已过期限时词条：前端与 EJS 均保留 5 条，过期词条隐藏/0 注入
+  const coexistStat = {
+    世界: { 地点: '雾晶港-主港区', 时间: '复兴纪元488年-7月-10日-12:00' },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        更新日: '复兴纪元488年-7月-10日',
+        列表: [
+          { id: 'q1', 类别: '支线任务', 等级: 'D', 标题: '核对仓单', 方式: '委托', 预期收益: ['金币 ×50'] },
+          { id: 'q2', 类别: '支线任务', 等级: 'D', 标题: '修补缆绳', 方式: '委托', 预期收益: ['金币 ×60'] },
+          { id: 'q3', 类别: '支线任务', 等级: 'D', 标题: '护送货箱', 方式: '委托', 预期收益: ['金币 ×70'] },
+          { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '巡查灯塔', 方式: '委托', 预期收益: ['金币 ×80'] },
+        ],
+        余波: {
+          雾晶港: [
+            '[绿]【商路畅通】南北航线稳定通航，香料与药材供应充裕。',
+            '[黄]【关税波动】港务司调整外商卸货费，部分货栈观望。',
+            '[红]【暗礁频现】外海浓雾增多，夜航船只多次触礁。',
+            '[绿][至488年-7月-15日]【踏星盛会】全港挂起星灯，各国旅人与商船云集。',
+            '[黄][至488年-7月-10日]【学院招生】星海学院在港口广场设点考核新学员。',
+            '[红][至488年-7月-05日]【旧日封港】前期风暴封锁已成过去，不应再展示。',
+          ],
+          世界: [
+            '[绿]【大陆通商】各大城邦签署临时护航协定，陆海商路回暖。',
+            '[黄][至488年-7月-20日]【星象大潮】各地魔力潮汐活跃，炼金工坊加紧采晶。',
+            '[红][至488年-7月-01日]【过期灾厄】早已消退的旧灾厄，不应再注入。',
+          ],
+        },
+      },
+    },
+  };
+
+  const qbCoexist = questBoardState(coexistStat);
+  assert.equal(qbCoexist.aftermath.localEntries.length, 5);
+  assert.deepEqual(
+    qbCoexist.aftermath.localEntries.map((e) => e.tag),
+    ['商路畅通', '关税波动', '暗礁频现', '踏星盛会', '学院招生'],
+  );
+  assert.equal(qbCoexist.aftermath.localEntries[3].daysLeft, 5);
+  assert.equal(qbCoexist.aftermath.localEntries[4].daysLeft, 0);
+  assert.equal(qbCoexist.aftermath.worldEntries.length, 2);
+  assert.deepEqual(
+    qbCoexist.aftermath.worldEntries.map((e) => e.tag),
+    ['大陆通商', '星象大潮'],
+  );
+
+  const outCoexist = renderEjs(coexistStat);
+  assertCleanOutput(outCoexist, 'temp-aftermath-coexist');
+  assert.match(outCoexist, /限时词条/);
+  assert.match(outCoexist, /最多额外叠加 2 条/);
+  assert.match(outCoexist, /\[绿\/黄\/红\]\[至YYYY年-M月-D日\]【2~6字短标签】30~50字客观现状/);
+  assert.match(outCoexist, /【商路畅通】/);
+  assert.match(outCoexist, /【关税波动】/);
+  assert.match(outCoexist, /【暗礁频现】/);
+  assert.match(outCoexist, /【踏星盛会】/);
+  assert.match(outCoexist, /【学院招生】/);
+  assert.doesNotMatch(outCoexist, /【旧日封港】/);
+  assert.match(outCoexist, /【大陆通商】/);
+  assert.match(outCoexist, /【星象大潮】/);
+  assert.doesNotMatch(outCoexist, /【过期灾厄】/);
+
+  // 3) 跨区域全地图自动清理：主角在铁炉堡，雾晶港的过期「踏星盛会」与白石镇全过期区域均被自动清除
+  const crossRegionStat = {
+    世界: { 地点: '铁炉堡-商业街', 时间: '复兴纪元488年-7月-20日-09:00' },
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        更新日: '复兴纪元488年-7月-20日',
+        列表: [],
+        余波: {
+          铁炉堡: [
+            '[绿]【高炉满产】主熔炉群日夜运转，精铁产量稳步上升。',
+            '[黄][至488年-7月-25日]【锻造大比】铁匠行会举办公开锻造赛，城内旅店爆满。',
+          ],
+          雾晶港: [
+            '[绿]【商路畅通】南北航线稳定通航，香料与药材供应充裕。',
+            '[绿][至488年-7月-15日]【踏星盛会】全港挂起星灯，观礼商船云集码头。',
+          ],
+          白石镇: [
+            '[红][至488年-7月-10日]【临时宵禁】镇门夜间封闭，行旅受限。',
+          ],
+          世界: [
+            '[黄][至488年-7月-18日]【过期天象】旧星象已退散。',
+            '[绿][至488年-7月-20日]【今日盛典】今日恰为最后一天，仍应保留。',
+          ],
+        },
+      },
+    },
+  };
+
+  assert.equal(hasExpiredAftermath(crossRegionStat), true);
+  const maintained = maintainQuestBoard(crossRegionStat, {});
+  assert.equal(maintained.skip, undefined);
+  assert.equal(hasExpiredAftermath(maintained.stat), false);
+  // 铁炉堡常驻与未过期限时均完好保留
+  assert.equal(maintained.stat.事件.任务情报板.余波.铁炉堡.length, 2);
+  // 雾晶港仅移除过期的踏星盛会，常驻词条完好保留
+  assert.deepEqual(maintained.stat.事件.任务情报板.余波.雾晶港, [
+    '[绿]【商路畅通】南北航线稳定通航，香料与药材供应充裕。',
+  ]);
+  // 白石镇全部过期后，空区域键被自动删除
+  assert.equal(Object.prototype.hasOwnProperty.call(maintained.stat.事件.任务情报板.余波, '白石镇'), false);
+  // 世界移除过期项，保留当日到期的有效项
+  assert.deepEqual(maintained.stat.事件.任务情报板.余波.世界, [
+    '[绿][至488年-7月-20日]【今日盛典】今日恰为最后一天，仍应保留。',
+  ]);
+  // 再次维护应返回 skip: true
+  assert.deepEqual(maintainQuestBoard(maintained.stat, {}), { skip: true });
+
+  // 全部词条都过期时，sweepExpiredAftermath 清空整个 余波 字段
+  const allExpiredStat = {
+    世界: { 地点: '铁炉堡', 时间: '复兴纪元488年-8月-01日' },
+    事件: {
+      任务情报板: {
+        余波: {
+          雾晶港: '[绿][至488年-7月-15日]【踏星盛会】已结束。',
+        },
+      },
+    },
+  };
+  const sweptAll = sweepExpiredAftermath(allExpiredStat);
+  assert.equal(Object.prototype.hasOwnProperty.call(sweptAll.stat.事件.任务情报板, '余波'), false);
 });
 
 // ---------------------------------------------------------------------------
