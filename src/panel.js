@@ -922,12 +922,6 @@ function syncVersionControls() {
     applyBtn.textContent = ui.switchingRef ? '切换中…' : '切换版本';
   }
 
-  const resetBtn = root.querySelector('.qh-setting-ver-reset');
-  if (resetBtn) {
-    resetBtn.disabled = !!ui.switchingRef || !canSwitch || (!meta.overrideRef && meta.loadedRef === meta.defaultRef);
-    resetBtn.textContent = `恢复默认 (${meta.defaultRef})`;
-  }
-
   const latestEl = root.querySelector('.qh-setting-latest');
   if (latestEl) {
     latestEl.classList.remove('is-newer', 'is-muted');
@@ -950,9 +944,7 @@ function syncVersionControls() {
   const hintEl = root.querySelector('.qh-setting-ver-hint');
   if (hintEl) {
     const exampleRef = ui.latestTag || meta.scriptVersion || BASELINE_SCRIPT_TAG;
-    hintEl.textContent = meta.remoteManaged
-      ? `默认追随 ${meta.defaultRef} 最新版；对照上方「最新版本」手动输入目标版本号（如 ${exampleRef} 或 ${meta.defaultRef}）点击「切换版本」即可固定或切回。`
-      : `请对照上方「最新版本」手动输入目标版本号（如 ${exampleRef} 或 ${meta.defaultRef}）点击「切换版本」实时热重载；若版本不存在将自动保持当前版本。`;
+    hintEl.textContent = `请对照上方「最新版本」手动输入目标版本号（如 ${exampleRef}）点击「切换版本」热重载；若版本不存在将自动保持当前版本。`;
   }
 }
 
@@ -973,11 +965,11 @@ async function applyScriptRef(rawRef) {
     return;
   }
   const normalized = normalizeScriptRef(rawRef);
-  if (String(rawRef ?? '').trim() && !normalized) {
-    toast('版本号格式无效，请输入如 v1.4.0 或 main', 'err');
+  if (!normalized) {
+    toast('请输入有效的版本号（如 v1.4.3 或 main）', 'err');
     return;
   }
-  const targetRef = normalized || meta.defaultRef;
+  const targetRef = normalized;
   if (targetRef === meta.loadedRef && normalized === meta.overrideRef) {
     toast(`当前已处于版本 ${targetRef}`, 'info');
     return;
@@ -1146,15 +1138,6 @@ function buildSettingsLayer() {
         '切换版本',
         { type: 'button' },
         { click: () => void applyScriptRef(verInput.value) },
-      ),
-    ]),
-    el('div', 'qh-setting-ver-actions', [
-      el(
-        'button',
-        'qh-btn qh-btn--sm qh-btn--ghost qh-setting-ver-reset',
-        `恢复默认 (${DEFAULT_SCRIPT_REF})`,
-        { type: 'button' },
-        { click: () => void applyScriptRef('') },
       ),
     ]),
     el('div', 'qh-setting-hint qh-setting-ver-hint'),

@@ -1692,7 +1692,7 @@ test('构建产物 ⭐粘这个-任务助手脚本.js、.txt 与 dist/quest-assi
   assert.match(code, /quest_helper_entry_mode_v1/);
   assert.match(code, /quest_helper_script_ref_v1/);
   assert.match(code, /v1\.4\.0/);
-  assert.match(code, /v1\.4\.2/);
+  assert.match(code, /v1\.4\.3/);
   assert.doesNotThrow(() => new Function(code), '产物必须通过 new Function 语法校验');
   assert.doesNotThrow(() => new Function(`"use strict";\n${code}`), '产物必须兼容严格模式 / ES Module import');
 });
