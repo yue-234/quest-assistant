@@ -1,6 +1,6 @@
 # 更新日志（CHANGELOG）
 
-本文档记录「任务助手（Quest Assistant）」自初始化以来的全部功能更新、优化与问题修复。
+本文档记录「任务助手（Quest Assistant）」自初始化以来的全部功能更新、优化与问题修复。新增条目请按 [更新日志模版](docs/changelog-template.md) 分类填写。
 
 ---
 
