@@ -350,9 +350,193 @@
   color: var(--qh-text);
 }
 
-.qh-top-close-icon {
+.qh-top-close-icon,
+.qh-top-settings-icon {
   font-size: 12px;
   line-height: 1;
+}
+
+.qh-top-settings {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  background: rgba(20, 31, 52, 0.92);
+  border: 1px solid rgba(74, 128, 200, 0.34);
+  border-radius: 6px;
+  color: var(--qh-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.qh-top-settings:hover,
+.qh-top-settings.is-active {
+  background: var(--qh-raised2);
+  border-color: rgba(240, 169, 44, 0.56);
+  color: var(--qh-gold-soft);
+}
+
+/* 设置浮层 */
+
+.qh-settings-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  display: none;
+}
+
+.qh-settings-layer.is-open {
+  display: block;
+}
+
+.qh-settings-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 8, 15, 0.52);
+  backdrop-filter: blur(2px);
+}
+
+.qh-settings-card {
+  position: absolute;
+  top: 64px;
+  right: 24px;
+  width: min(380px, calc(100% - 32px));
+  padding: 16px 18px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(20, 29, 46, 0.98) 0%, rgba(12, 18, 30, 0.98) 100%);
+  border: 1px solid rgba(240, 169, 44, 0.42);
+  box-shadow:
+    0 18px 42px rgba(0, 0, 0, 0.72),
+    0 0 0 1px rgba(74, 128, 200, 0.2) inset;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.qh-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(74, 128, 200, 0.22);
+}
+
+.qh-settings-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--qh-text);
+}
+
+.qh-settings-title-icon {
+  color: var(--qh-gold-soft);
+}
+
+.qh-settings-close {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid rgba(74, 128, 200, 0.3);
+  background: rgba(20, 31, 52, 0.85);
+  color: var(--qh-muted);
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.qh-settings-close:hover {
+  color: var(--qh-text);
+  border-color: rgba(112, 174, 248, 0.52);
+}
+
+.qh-setting-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.qh-setting-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--qh-muted);
+  letter-spacing: 0.03em;
+}
+
+.qh-setting-choices {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.qh-setting-choice {
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(74, 128, 200, 0.28);
+  background: rgba(14, 20, 32, 0.86);
+  color: var(--qh-text);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.qh-setting-choice:hover {
+  border-color: rgba(112, 174, 248, 0.5);
+  background: var(--qh-raised);
+}
+
+.qh-setting-choice.is-active {
+  border-color: rgba(240, 169, 44, 0.72);
+  background: linear-gradient(135deg, rgba(240, 169, 44, 0.16) 0%, rgba(28, 46, 76, 0.9) 100%);
+  box-shadow: 0 0 0 1px rgba(240, 169, 44, 0.2) inset;
+}
+
+.qh-setting-choice-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.qh-setting-choice-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--qh-text);
+}
+
+.qh-setting-choice.is-active .qh-setting-choice-name {
+  color: var(--qh-gold-soft);
+}
+
+.qh-setting-choice-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--qh-gold-soft);
+  background: rgba(240, 169, 44, 0.16);
+  border: 1px solid rgba(240, 169, 44, 0.36);
+}
+
+.qh-setting-choice-desc {
+  font-size: 12px;
+  color: var(--qh-muted);
+  line-height: 1.4;
+}
+
+.qh-setting-hint {
+  font-size: 11px;
+  color: var(--qh-faint);
+  line-height: 1.45;
 }
 
 /* -------------------------------------------------------------------------
@@ -1401,6 +1585,18 @@
 
   .qh-top-fp-label {
     display: none;
+  }
+
+  .qh-top-settings,
+  .qh-top-close {
+    padding: 5px 9px;
+  }
+
+  .qh-settings-card {
+    top: 58px;
+    right: 14px;
+    left: 14px;
+    width: auto;
   }
 
   .qh-body {

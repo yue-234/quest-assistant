@@ -14,6 +14,8 @@ import {
 import { commit, generating } from './commit.js';
 import * as host from './host.js';
 import { mountFab } from './fab.js';
+import { mountWand } from './wand.js';
+import { ENTRY_MODES, normalizeEntryMode, readEntryMode, writeEntryMode } from './entryMode.js';
 
 const QUEST_SEEN_KEY = 'quest_helper_seen_progress_v1';
 const FRAME_ID = 'quest-helper-studio';
@@ -58,6 +60,10 @@ export function start() {
   let ready = null;
   let lastFocus = null;
   let stopped = false;
+  let panelOpened = false;
+  let lastUnread = false;
+  let entryMode = readEntryMode(host.readStorage);
+  let entryControl = null;
 
   const toast = (message, kind = 'error') => {
     const t = win.toastr;
@@ -138,9 +144,10 @@ export function start() {
 
   const hide = () => {
     if (!frame) return;
+    panelOpened = false;
     frame.style.display = 'none';
-    fab.setHidden(false);
-    syncFabUnread();
+    entryControl?.setHidden(false);
+    syncEntryUnread();
     try {
       frame.contentWindow.questHelperPanel?.hide();
     } catch {
@@ -174,9 +181,11 @@ export function start() {
       if (stopped) return;
       if (!panel) throw new Error('任务情报面板未初始化');
       panel.onClose = hide;
+      panel.onEntryModeChange = (nextMode) => mountActiveEntry(nextMode);
+      panelOpened = true;
       panel.open();
       el.style.display = 'block';
-      fab.setHidden(true);
+      entryControl?.setHidden(true);
       try {
         doc.defaultView.focus();
         el.contentWindow.focus();
@@ -185,28 +194,40 @@ export function start() {
       }
     } catch (error) {
       if (stopped) return;
+      panelOpened = false;
       el.remove();
       frame = null;
       ready = null;
-      fab.setHidden(false);
+      entryControl?.setHidden(false);
       toast(`任务情报板打不开：${error && error.message ? error.message : error}`);
     }
   };
 
   const close = () => hide();
 
-  const fab = mountFab(doc, win, { onOpen: () => void open() });
+  const mountActiveEntry = (mode = entryMode) => {
+    entryControl?.destroy();
+    entryControl = null;
+    entryMode = normalizeEntryMode(mode);
+    entryControl = entryMode === ENTRY_MODES.WAND
+      ? mountWand(doc, win, { onOpen: () => void open() })
+      : mountFab(doc, win, { onOpen: () => void open() });
+    entryControl.setHidden(panelOpened);
+    entryControl.setUnread(lastUnread);
+    return entryMode;
+  };
 
   const seenProgressKey = () => {
     const cid = host.readChatId();
     return cid ? `${QUEST_SEEN_KEY}:${cid}` : QUEST_SEEN_KEY;
   };
 
-  const syncFabUnread = (statOverride) => {
+  const syncEntryUnread = (statOverride) => {
     try {
       const stat = statOverride || host.readStat();
       if (!stat || typeof stat !== 'object') {
-        fab.setUnread(false);
+        lastUnread = false;
+        entryControl?.setUnread(false);
         return;
       }
       const chat = readHostChat();
@@ -219,12 +240,16 @@ export function start() {
       });
       const sig = st && st.questBoard ? st.questBoard.progressSignature : '';
       const seen = host.readStorage(seenProgressKey());
-      fab.setUnread(!!(sig && sig !== seen));
+      lastUnread = !!(sig && sig !== seen);
+      entryControl?.setUnread(lastUnread);
     } catch {
-      fab.setUnread(false);
+      lastUnread = false;
+      entryControl?.setUnread(false);
     }
   };
-  syncFabUnread();
+
+  mountActiveEntry(entryMode);
+  syncEntryUnread();
 
   const events = win.tavern_events || (win.parent && win.parent.tavern_events);
   const eventOn = win.eventOn || (win.parent && win.parent.eventOn);
@@ -252,7 +277,7 @@ export function start() {
       return;
     }
     if (!stat || typeof stat !== 'object') return;
-    syncFabUnread(stat);
+    syncEntryUnread(stat);
 
     const board = stat['事件'] && stat['事件'][BOARD_KEY];
     if (!board || typeof board !== 'object') return;
@@ -292,7 +317,7 @@ export function start() {
     listen(events.CHAT_CHANGED, () => {
       clearTimeout(bgTimer);
       close();
-      syncFabUnread();
+      syncEntryUnread();
     });
   }
   listen(events && events.MESSAGE_RECEIVED ? events.MESSAGE_RECEIVED : 'message_received', scheduleMaintenance);
@@ -300,8 +325,10 @@ export function start() {
 
   const stop = () => {
     stopped = true;
+    panelOpened = false;
     clearTimeout(bgTimer);
-    fab.destroy();
+    entryControl?.destroy();
+    entryControl = null;
     for (const off of stops) {
       try {
         off();
@@ -319,7 +346,17 @@ export function start() {
     if (win.QuestHelperApp === surface) delete win.QuestHelperApp;
   };
 
-  const surface = { open, close, stop };
+  const surface = {
+    open,
+    close,
+    stop,
+    getEntryMode: () => entryMode,
+    setEntryMode: (mode) => {
+      const next = writeEntryMode(host.writeStorage, mode);
+      mountActiveEntry(next);
+      return next;
+    },
+  };
   win.QuestHelperApp = surface;
   api = surface;
   return api;

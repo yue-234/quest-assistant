@@ -32,6 +32,14 @@ import {
   sweepClosedQuests,
   maintainQuestBoard,
 } from './src/actions.js';
+import {
+  ENTRY_MODES,
+  ENTRY_MODE_KEY,
+  normalizeEntryMode,
+  readEntryMode,
+  writeEntryMode,
+} from './src/entryMode.js';
+import { mountWand } from './src/wand.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -67,6 +75,7 @@ function loadEjs() {
 const ejs = loadEjs();
 const ejsSource = fs.readFileSync(path.join(__dirname, '任务助手-世界书.ejs'), 'utf8');
 const builtScriptPath = path.join(__dirname, '⭐粘这个-任务助手脚本.js');
+const builtScriptTxtPath = path.join(__dirname, '⭐粘这个-任务助手脚本.txt');
 
 function renderEjs(statData, { chat = [], lastUserMessageId = 0, geoData = {}, systemCore = '', destinyImmersiveMode } = {}) {
   const ctx = {
@@ -1470,18 +1479,198 @@ test('限时 Buff 词条：解析、常驻3+限时2共存、过期隐藏/0注入
   assert.equal(Object.prototype.hasOwnProperty.call(sweptAll.stat.事件.任务情报板, '余波'), false);
 });
 
+test('入口模式配置：默认悬浮框、读写归一化与持久化', () => {
+  const mem = new Map();
+  const read = (k) => mem.get(k) || '';
+  const write = (k, v) => mem.set(k, v);
+
+  assert.equal(readEntryMode(read), ENTRY_MODES.FAB);
+  assert.equal(normalizeEntryMode('WAND'), ENTRY_MODES.WAND);
+  assert.equal(normalizeEntryMode('invalid'), ENTRY_MODES.FAB);
+
+  assert.equal(writeEntryMode(write, 'wand'), ENTRY_MODES.WAND);
+  assert.equal(mem.get(ENTRY_MODE_KEY), 'wand');
+  assert.equal(readEntryMode(read), ENTRY_MODES.WAND);
+
+  assert.equal(writeEntryMode(write, 'anything-else'), ENTRY_MODES.FAB);
+  assert.equal(mem.get(ENTRY_MODE_KEY), 'fab');
+  assert.equal(readEntryMode(read), ENTRY_MODES.FAB);
+});
+
+function createMiniDom() {
+  const byId = new Map();
+  const docListeners = new Map();
+  const makeClassList = (el) => ({
+    contains: (c) => el._classes.has(c),
+    add: (...cs) => cs.forEach((c) => el._classes.add(c)),
+    remove: (...cs) => cs.forEach((c) => el._classes.delete(c)),
+    toggle: (c, force) => {
+      const next = force === undefined ? !el._classes.has(c) : !!force;
+      if (next) el._classes.add(c);
+      else el._classes.delete(c);
+      return next;
+    },
+  });
+  const createEl = (tag) => {
+    const node = {
+      tagName: String(tag).toUpperCase(),
+      _id: '',
+      _classes: new Set(),
+      _attrs: new Map(),
+      _listeners: new Map(),
+      children: [],
+      parentElement: null,
+      style: {},
+      textContent: '',
+      set id(v) {
+        if (this._id && byId.get(this._id) === this) byId.delete(this._id);
+        this._id = String(v || '');
+        if (this._id && this.isConnected) byId.set(this._id, this);
+      },
+      get id() {
+        return this._id;
+      },
+      set className(v) {
+        this._classes = new Set(String(v || '').split(/\s+/).filter(Boolean));
+      },
+      get className() {
+        return Array.from(this._classes).join(' ');
+      },
+      get isConnected() {
+        let cur = this;
+        while (cur) {
+          if (cur === doc.documentElement) return true;
+          cur = cur.parentElement;
+        }
+        return false;
+      },
+      setAttribute(k, v) {
+        this._attrs.set(k, String(v));
+      },
+      getAttribute(k) {
+        return this._attrs.get(k) ?? null;
+      },
+      append(...nodes) {
+        for (const n of nodes) {
+          if (!n) continue;
+          n.parentElement = this;
+          this.children.push(n);
+          const registerTree = (cur) => {
+            if (cur._id && cur.isConnected) byId.set(cur._id, cur);
+            cur.children?.forEach(registerTree);
+          };
+          registerTree(n);
+        }
+      },
+      remove() {
+        const unregisterTree = (cur) => {
+          if (cur._id && byId.get(cur._id) === cur) byId.delete(cur._id);
+          cur.children?.forEach(unregisterTree);
+        };
+        unregisterTree(this);
+        if (this.parentElement) {
+          this.parentElement.children = this.parentElement.children.filter((c) => c !== this);
+          this.parentElement = null;
+        }
+      },
+      closest(sel) {
+        if (sel.startsWith('#') && this._id === sel.slice(1)) return this;
+        return null;
+      },
+      addEventListener(type, fn) {
+        if (!this._listeners.has(type)) this._listeners.set(type, []);
+        this._listeners.get(type).push(fn);
+      },
+      dispatchEvent(ev) {
+        const list = this._listeners.get(ev.type) || [];
+        for (const fn of list) fn(ev);
+      },
+    };
+    node.classList = makeClassList(node);
+    return node;
+  };
+  const doc = {
+    documentElement: null,
+    head: null,
+    body: null,
+    createElement: createEl,
+    getElementById: (id) => byId.get(id) || null,
+    addEventListener(type, fn) {
+      if (!docListeners.has(type)) docListeners.set(type, []);
+      docListeners.get(type).push(fn);
+    },
+    removeEventListener(type, fn) {
+      if (!docListeners.has(type)) return;
+      docListeners.set(type, docListeners.get(type).filter((x) => x !== fn));
+    },
+    dispatchDocClick(target) {
+      const list = docListeners.get('click') || [];
+      for (const fn of list) fn({ target });
+    },
+  };
+  doc.documentElement = createEl('html');
+  doc.head = createEl('head');
+  doc.body = createEl('body');
+  doc.documentElement.append(doc.head, doc.body);
+  return doc;
+}
+
+test('魔法棒菜单入口：挂载 #extensionsMenu、同步未读、点击收起并打开、销毁清理', () => {
+  const doc = createMiniDom();
+  const win = { getComputedStyle: (el) => ({ display: el.style.display || 'block' }) };
+
+  const menu = doc.createElement('div');
+  menu.id = 'extensionsMenu';
+  menu.style.display = 'block';
+  const triggerBtn = doc.createElement('div');
+  triggerBtn.id = 'extensionsMenuButton';
+  doc.body.append(menu, triggerBtn);
+
+  let opened = 0;
+  const wand = mountWand(doc, win, { onOpen: () => { opened += 1; } });
+
+  const item = doc.getElementById('quest-helper-wand-item');
+  assert.ok(item, '应挂载到 #extensionsMenu');
+  assert.equal(item.parentElement, menu);
+  assert.ok(doc.getElementById('quest-helper-wand-style'), '应注入样式节点');
+
+  wand.setUnread(true);
+  assert.equal(item.classList.contains('has-unread'), true);
+
+  item.dispatchEvent({ type: 'click', preventDefault() {}, stopPropagation() {} });
+  assert.equal(opened, 1);
+  assert.equal(menu.style.display, 'none', '点击后应顺手收起魔法棒菜单');
+
+  // 若 #extensionsMenu 晚于挂载出现，点击魔法棒触发按钮时自动补挂并保留未读状态
+  item.remove();
+  assert.equal(doc.getElementById('quest-helper-wand-item'), null);
+  doc.dispatchDocClick(triggerBtn);
+  const reattached = doc.getElementById('quest-helper-wand-item');
+  assert.ok(reattached, '点击魔法棒按钮时应自动补挂缺失菜单项');
+  assert.equal(reattached.classList.contains('has-unread'), true);
+
+  wand.destroy();
+  assert.equal(doc.getElementById('quest-helper-wand-item'), null);
+  assert.equal(doc.getElementById('quest-helper-wand-style'), null);
+});
+
 // ---------------------------------------------------------------------------
 // 4. 最终构建产物校验
 // ---------------------------------------------------------------------------
 
-test('构建产物 ⭐粘这个-任务助手脚本.js 语法合法且无未转义 </script> 或 UNN 冲突', () => {
+test('构建产物 ⭐粘这个-任务助手脚本.js 与 .txt 语法合法且无未转义 </script> 或 UNN 冲突', () => {
   assert.equal(fs.existsSync(builtScriptPath), true, '应先运行 build.mjs 生成最终脚本');
+  assert.equal(fs.existsSync(builtScriptTxtPath), true, '应同步生成 .txt 脚本产物');
   const code = fs.readFileSync(builtScriptPath, 'utf8');
+  const txtCode = fs.readFileSync(builtScriptTxtPath, 'utf8');
+  assert.equal(txtCode, code, '⭐粘这个-任务助手脚本.txt 应与 .js 产物完全一致');
   assert.ok(code.length > 5000, '产物内容过短');
   assert.doesNotMatch(code, /<\/script>/i, '产物不得包含未转义 </script>');
   assert.doesNotMatch(code, /UNNCore|unn-core-studio|unn-core-fab|unn_studio_fab_pos_v1|unn_qb_seen_progress/, '不得与 UNN 命名空间冲突');
   assert.match(code, /QuestHelperApp/);
   assert.match(code, /quest-helper-studio/);
   assert.match(code, /quest-helper-fab/);
+  assert.match(code, /quest-helper-wand-item/);
+  assert.match(code, /quest_helper_entry_mode_v1/);
   assert.doesNotThrow(() => new Function(code), '产物必须通过 new Function 语法校验');
 });

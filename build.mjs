@@ -43,6 +43,7 @@ function escapeInlineScript(code) {
 async function build() {
   const srcDir = path.join(__dirname, 'src');
   const outFile = path.join(__dirname, '⭐粘这个-任务助手脚本.js');
+  const outTxtFile = path.join(__dirname, '⭐粘这个-任务助手脚本.txt');
 
   // 1. 打包并压缩 iframe 面板 CSS 与 JS
   const rawCss = fs.readFileSync(path.join(srcDir, 'panel.css'), 'utf8');
@@ -97,8 +98,9 @@ async function build() {
   }
 
   fs.writeFileSync(outFile, finalCode, 'utf8');
+  fs.writeFileSync(outTxtFile, finalCode, 'utf8');
   const kb = (Buffer.byteLength(finalCode, 'utf8') / 1024).toFixed(1);
-  console.log(`构建完成：${outFile} (${kb} KB)`);
+  console.log(`构建完成：${outFile} & ${outTxtFile} (${kb} KB)`);
 }
 
 build().catch((err) => {

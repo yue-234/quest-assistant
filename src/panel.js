@@ -17,6 +17,7 @@ import {
 } from './actions.js';
 import { commit, generating } from './commit.js';
 import * as host from './host.js';
+import { ENTRY_MODES, readEntryMode, writeEntryMode } from './entryMode.js';
 
 const QUEST_SEEN_KEY = 'quest_helper_seen_progress_v1';
 
@@ -24,6 +25,8 @@ const ui = {
   questCategory: '全部',
   questEditRewards: false,
   confirmDeleteTrait: '',
+  settingsOpen: false,
+  entryMode: ENTRY_MODES.FAB,
   traitsExpanded: {
     local: false,
     world: false,
@@ -859,6 +862,127 @@ function render() {
 // 单页外壳与动画控制
 // ---------------------------------------------------------------------------
 
+function syncSettingsLayer() {
+  if (!root) return;
+  const layer = root.querySelector('.qh-settings-layer');
+  const toggleBtn = root.querySelector('.qh-top-settings');
+  if (layer) {
+    layer.classList.toggle('is-open', !!ui.settingsOpen);
+    layer.setAttribute('aria-hidden', ui.settingsOpen ? 'false' : 'true');
+  }
+  if (toggleBtn) {
+    toggleBtn.classList.toggle('is-active', !!ui.settingsOpen);
+    toggleBtn.setAttribute('aria-expanded', ui.settingsOpen ? 'true' : 'false');
+  }
+  const choices = root.querySelectorAll('.qh-setting-choice');
+  choices.forEach((btn) => {
+    const active = btn.dataset.mode === ui.entryMode;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-checked', active ? 'true' : 'false');
+  });
+}
+
+function setSettingsOpen(open) {
+  ui.settingsOpen = !!open;
+  syncSettingsLayer();
+}
+
+function switchEntryMode(nextMode) {
+  const normalized = writeEntryMode(host.writeStorage, nextMode);
+  const changed = normalized !== ui.entryMode;
+  ui.entryMode = normalized;
+  syncSettingsLayer();
+  if (changed && typeof app?.onEntryModeChange === 'function') {
+    app.onEntryModeChange(normalized);
+  }
+  if (changed) {
+    toast(
+      normalized === ENTRY_MODES.WAND
+        ? '已切换为「魔法棒（扩展程序）」入口，可在左下角魔法棒菜单中打开'
+        : '已切换为「悬浮框」入口',
+      'ok',
+    );
+  }
+}
+
+function buildSettingsLayer() {
+  const layer = el('div', 'qh-settings-layer', null, { 'aria-hidden': 'true' });
+  const backdrop = el('div', 'qh-settings-backdrop', null, null, {
+    click: () => setSettingsOpen(false),
+  });
+  const card = el('div', 'qh-settings-card', null, {
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': '任务助手设置',
+  });
+
+  const head = el('div', 'qh-settings-head', [
+    el('div', 'qh-settings-title', [
+      el('span', 'qh-settings-title-icon', '⚙'),
+      el('span', null, '任务助手设置'),
+    ]),
+    el(
+      'button',
+      'qh-settings-close',
+      '✕',
+      { type: 'button', title: '关闭设置', 'aria-label': '关闭设置' },
+      { click: () => setSettingsOpen(false) },
+    ),
+  ]);
+
+  const choices = el('div', 'qh-setting-choices', [
+    el(
+      'button',
+      'qh-setting-choice',
+      [
+        el('div', 'qh-setting-choice-top', [
+          el('span', 'qh-setting-choice-name', '悬浮框'),
+          el('span', 'qh-setting-choice-badge', '默认'),
+        ]),
+        el('div', 'qh-setting-choice-desc', '在屏幕边缘显示可拖动「任务」悬浮球'),
+      ],
+      {
+        type: 'button',
+        role: 'radio',
+        'aria-checked': 'true',
+        'data-mode': ENTRY_MODES.FAB,
+      },
+      { click: () => switchEntryMode(ENTRY_MODES.FAB) },
+    ),
+    el(
+      'button',
+      'qh-setting-choice',
+      [
+        el('div', 'qh-setting-choice-top', [
+          el('span', 'qh-setting-choice-name', '魔法棒（扩展程序）'),
+        ]),
+        el('div', 'qh-setting-choice-desc', '隐藏悬浮球，改由左下角魔法棒扩展菜单打开'),
+      ],
+      {
+        type: 'button',
+        role: 'radio',
+        'aria-checked': 'false',
+        'data-mode': ENTRY_MODES.WAND,
+      },
+      { click: () => switchEntryMode(ENTRY_MODES.WAND) },
+    ),
+  ]);
+
+  const group = el('div', 'qh-setting-group', [
+    el('div', 'qh-setting-label', '面板入口位置'),
+    choices,
+    el(
+      'div',
+      'qh-setting-hint',
+      '切换为「魔法棒」后不再显示悬浮框；点击聊天输入框左下角魔法棒图标中的「任务情报」即可重新打开面板并修改设置。',
+    ),
+  ]);
+
+  card.append(head, group);
+  layer.append(backdrop, card);
+  return layer;
+}
+
 function buildShell() {
   const shell = el('div', 'qh');
   const backdrop = el('div', 'qh-backdrop', null, null, { click: () => app.close() });
@@ -879,6 +1003,26 @@ function buildShell() {
       ]),
       el(
         'button',
+        'qh-top-settings',
+        [
+          el('span', 'qh-top-settings-icon', '⚙'),
+          el('span', 'qh-top-settings-text', '设置'),
+        ],
+        {
+          type: 'button',
+          title: '任务助手设置',
+          'aria-label': '任务助手设置',
+          'aria-expanded': 'false',
+        },
+        {
+          click: (e) => {
+            e.stopPropagation();
+            setSettingsOpen(!ui.settingsOpen);
+          },
+        },
+      ),
+      el(
+        'button',
         'qh-top-close',
         [
           el('span', 'qh-top-close-icon', '✕'),
@@ -891,10 +1035,11 @@ function buildShell() {
   ]);
 
   const body = el('main', 'qh-body');
+  const settingsLayer = buildSettingsLayer();
   const holoCorners = el('div', 'qh-holo-corners', null, { 'aria-hidden': 'true' });
   const holoVeil = el('div', 'qh-holo-veil', null, { 'aria-hidden': 'true' });
 
-  room.append(topbar, body, holoCorners, holoVeil);
+  room.append(topbar, body, settingsLayer, holoCorners, holoVeil);
 
   const toastNode = el('div', 'qh-toast');
   toastNode.style.position = 'absolute';
@@ -941,6 +1086,9 @@ app = {
     cancelClose();
     ui.questEditRewards = false;
     ui.confirmDeleteTrait = '';
+    ui.settingsOpen = false;
+    ui.entryMode = readEntryMode(host.readStorage);
+    syncSettingsLayer();
     root.classList.add('qh-open');
     const room = root.querySelector('.qh-room');
     room.classList.remove('enter', 'leave');
@@ -954,10 +1102,12 @@ app = {
   close() {
     if (!root || !root.classList.contains('qh-open') || root.classList.contains('qh-closing')) return;
     ui.confirmDeleteTrait = '';
+    setSettingsOpen(false);
     const finish = () => {
       cancelClose();
       ui.questEditRewards = false;
       ui.confirmDeleteTrait = '';
+      setSettingsOpen(false);
       root.classList.remove('qh-open');
       if (typeof app.onClose === 'function') app.onClose();
     };
@@ -989,6 +1139,7 @@ app = {
     cancelClose();
     ui.questEditRewards = false;
     ui.confirmDeleteTrait = '';
+    setSettingsOpen(false);
     root.classList.remove('qh-open');
   },
 };
@@ -1003,10 +1154,18 @@ export function mount(options = {}) {
   }
   const container = options.container || document.body;
   root = buildShell();
+  ui.entryMode = readEntryMode(host.readStorage);
+  syncSettingsLayer();
   container.append(root);
   if (!mounted) {
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && root && root.classList.contains('qh-open')) {
+        if (ui.settingsOpen) {
+          setSettingsOpen(false);
+          const settingsBtn = root.querySelector('.qh-top-settings');
+          if (settingsBtn && settingsBtn.focus) settingsBtn.focus();
+          return;
+        }
         app.close();
       }
     });
