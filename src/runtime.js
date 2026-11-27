@@ -247,6 +247,8 @@ export function start() {
   const switchSelfRef = async (nextRef, { reopen = false } = {}) => {
     const normalized = normalizeScriptRef(nextRef);
     const targetRef = normalized || DEFAULT_SCRIPT_REF;
+    const prevOverride = readScriptRef(host.readStorage);
+    const prevSelfBoot = win.__QuestHelperSelfBoot;
     const result = await fetchScriptByRef(targetRef, {
       fetchFn: win.fetch || globalThis.fetch,
       readStorage: host.readStorage,
@@ -257,9 +259,17 @@ export function start() {
     win.__QuestHelperSelfBoot = { ref: result.ref, origin: result.origin };
     win.__QuestHelperBootstrappedRef = result.ref;
     stop();
-    (0, eval)(result.code);
-    if (reopen && win.QuestHelperApp && typeof win.QuestHelperApp.open === 'function') {
-      void win.QuestHelperApp.open();
+    try {
+      (0, eval)(result.code);
+      if (reopen && win.QuestHelperApp && typeof win.QuestHelperApp.open === 'function') {
+        void win.QuestHelperApp.open();
+      }
+    } catch (error) {
+      writeScriptRef(host.writeStorage, prevOverride);
+      if (prevSelfBoot) win.__QuestHelperSelfBoot = prevSelfBoot;
+      else delete win.__QuestHelperSelfBoot;
+      start();
+      throw error;
     }
     return { ref: result.ref, origin: result.origin };
   };
@@ -311,16 +321,39 @@ export function start() {
   mountActiveEntry(entryMode);
   syncEntryUnread();
 
-  const events = win.tavern_events || (win.parent && win.parent.tavern_events);
-  const eventOn = win.eventOn || (win.parent && win.parent.eventOn);
+  // TavernHelper 的 eventOn / tavern_events 按脚本 iframe 注入在当前作用域 globalThis 上
+  const events = globalThis.tavern_events || win.tavern_events || (win.parent && win.parent.tavern_events);
+  const eventOn = typeof globalThis.eventOn === 'function'
+    ? globalThis.eventOn
+    : (typeof win.eventOn === 'function' ? win.eventOn : (win.parent && win.parent.eventOn));
+  const stCtx = (() => {
+    try { return win.SillyTavern?.getContext?.() || null; } catch { return null; }
+  })();
+  const stEvents = events || stCtx?.eventTypes || stCtx?.event_types;
+  const stEventSource = stCtx?.eventSource || stCtx?.event_source;
   const listen = (name, handler) => {
-    if (!name || typeof eventOn !== 'function') return;
-    try {
-      const handle = eventOn(name, handler);
-      if (typeof handle === 'function') stops.push(handle);
-      else if (handle && typeof handle.stop === 'function') stops.push(() => handle.stop());
-    } catch {
-      /* 忽略不存在的事件 */
+    if (!name) return;
+    if (typeof eventOn === 'function') {
+      try {
+        const handle = eventOn(name, handler);
+        if (typeof handle === 'function') stops.push(handle);
+        else if (handle && typeof handle.stop === 'function') stops.push(() => handle.stop());
+      } catch {
+        /* 忽略不存在的事件 */
+      }
+      return;
+    }
+    if (stEventSource && typeof stEventSource.on === 'function') {
+      try {
+        stEventSource.on(name, handler);
+        if (typeof stEventSource.removeListener === 'function') {
+          stops.push(() => stEventSource.removeListener(name, handler));
+        } else if (typeof stEventSource.off === 'function') {
+          stops.push(() => stEventSource.off(name, handler));
+        }
+      } catch {
+        /* 忽略 */
+      }
     }
   };
 
@@ -446,8 +479,15 @@ export function start() {
         { core: CORE_NAME, speaker: SPEAKER, redraw: false },
       );
       if (result && !result.error) {
-        if (extraFinished || !host.readStat?.()?.['事件']?.[BOARD_KEY]?.['待重扫']) {
+        const hasPendingRescan = !!host.readStat?.()?.['事件']?.[BOARD_KEY]?.['待重扫'];
+        if (extraFinished || !hasPendingRescan) {
           clearMvuUpdateEnded();
+        }
+        if (hasPendingRescan && waitGraceMs > 0) {
+          clearTimeout(bgTimer);
+          bgTimer = setTimeout(() => {
+            void runQuestBoardMaintenance();
+          }, Math.max(waitGraceMs, 1550));
         }
         if (!result.skipped) {
           syncEntryUnread();
@@ -479,8 +519,8 @@ export function start() {
     }, delay);
   };
 
-  if (events && events.CHAT_CHANGED) {
-    listen(events.CHAT_CHANGED, () => {
+  if (stEvents && stEvents.CHAT_CHANGED) {
+    listen(stEvents.CHAT_CHANGED, () => {
       clearTimeout(bgTimer);
       lastMsgRecvAt = 0;
       lastMsgRecvCount = null;
@@ -498,11 +538,17 @@ export function start() {
     clearMvuUpdateEnded();
     syncEntryUnread();
   };
-  listen(events && events.MESSAGE_RECEIVED ? events.MESSAGE_RECEIVED : 'message_received', () => scheduleMaintenance(false));
+  listen(stEvents && stEvents.MESSAGE_RECEIVED ? stEvents.MESSAGE_RECEIVED : 'message_received', () => scheduleMaintenance(false));
   listen('mag_variable_update_ended', () => scheduleMaintenance(true));
-  listen(events && events.MESSAGE_SWIPED ? events.MESSAGE_SWIPED : 'message_swiped', onPassiveRefresh);
-  listen(events && events.MESSAGE_EDITED ? events.MESSAGE_EDITED : 'message_edited', onPassiveRefresh);
-  listen(events && events.MESSAGE_DELETED ? events.MESSAGE_DELETED : 'message_deleted', onPassiveRefresh);
+  listen(stEvents && stEvents.MESSAGE_SWIPED ? stEvents.MESSAGE_SWIPED : 'message_swiped', onPassiveRefresh);
+  listen(stEvents && stEvents.MESSAGE_EDITED ? stEvents.MESSAGE_EDITED : 'message_edited', onPassiveRefresh);
+  listen(stEvents && stEvents.MESSAGE_DELETED ? stEvents.MESSAGE_DELETED : 'message_deleted', onPassiveRefresh);
+
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    const onPageHide = () => stop();
+    window.addEventListener('pagehide', onPageHide, { once: true });
+    stops.push(() => window.removeEventListener('pagehide', onPageHide));
+  }
 
   const stop = () => {
     stopped = true;

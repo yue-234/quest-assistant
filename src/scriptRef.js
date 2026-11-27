@@ -93,7 +93,7 @@ export function isQuestAssistantEntry(entry) {
   const title = String(entry.name ?? entry.comment ?? '').trim();
   if (title.includes('任务助手')) return true;
   const hasMvuRoleTag = /\[(?:mvu_plot|mvu_update)\]/i.test(title);
-  return hasMvuRoleTag && (title.includes('剧情引导') || title.includes('变量更新') || title.includes('任务情报板'));
+  return hasMvuRoleTag && title.includes('任务情报板');
 }
 
 function extractEntryContentVersion(content) {

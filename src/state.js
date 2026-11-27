@@ -379,7 +379,7 @@ export function extractHistoryStats(chatOrMessages, limit = 50) {
     const m = chatOrMessages[i];
     if (!m || typeof m !== 'object') continue;
     let hs = null;
-    if (Array.isArray(m.variables)) {
+    if (m.variables && typeof m.variables === 'object') {
       const v = m.variables[m.swipe_id ?? 0];
       if (v && typeof v === 'object' && v.stat_data && typeof v.stat_data === 'object') hs = v.stat_data;
     } else if (m.stat && typeof m.stat === 'object') {

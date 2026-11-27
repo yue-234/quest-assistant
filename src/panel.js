@@ -851,13 +851,23 @@ function render() {
   ) {
     sweeping = true;
     commit(
-      (statNow) => maintainQuestBoard(statNow, {
-        floor: curFloor,
-        chatCount: curCount,
-        chat: chatSnapshot,
-        extraFinished,
-        extraAnalyzing,
-      }),
+      (statNow) => {
+        const liveChat = chatArray();
+        const liveFloor = lastFloor();
+        const liveCount = chatCount();
+        const liveAnalyzing = extraAnalysisActive();
+        const liveExtraFinished = isMvuUpdateEndedFor({
+          chatCount: liveCount,
+          chatId: host.readChatId?.() || '',
+        });
+        return maintainQuestBoard(statNow, {
+          floor: liveFloor,
+          chatCount: liveCount,
+          chat: liveChat,
+          extraFinished: liveExtraFinished,
+          extraAnalyzing: liveAnalyzing,
+        });
+      },
       { core: CORE_NAME, speaker: SPEAKER, redraw: false },
     )
       .then((result) => {

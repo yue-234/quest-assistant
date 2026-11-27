@@ -50,6 +50,7 @@ export function readMessages(limit = Infinity) {
   if (!getChatMessages || !getLastMessageId) return [];
   try {
     const last = getLastMessageId();
+    if (typeof last !== 'number' || last < 0) return [];
     return getChatMessages(`${Math.max(0, last - limit + 1)}-${last}`)
       .filter((m) => m.role !== 'system')
       .map((m) => ({ id: m.message_id, role: m.role, text: m.message ?? '', stat: m.data?.stat_data }));
@@ -224,6 +225,15 @@ export async function readActiveWorldbookInfo() {
     }
   } catch {
     /* 忽略全局世界书读取异常 */
+  }
+
+  try {
+    const getPersona = helper('getPersona');
+    if (getPersona) {
+      pushName(getPersona('current')?.lorebook);
+    }
+  } catch {
+    /* 忽略人设世界书读取异常 */
   }
 
   if (names.length === 0) {

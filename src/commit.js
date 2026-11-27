@@ -75,6 +75,7 @@ export function commit(action, { core = '任务助手', speaker = '任务助手'
     if (!mvu?.getMvuData || !mvu?.replaceMvuData) return { error: '没有找到 MVU，变量写不进去' };
     if (generating()) return { error: '回复还在生成，等它写完再操作' };
     const option = { type: 'message', message_id: 'latest' };
+    const msgIdBefore = parentWindow.TavernHelper?.getLastMessageId?.();
     let data;
     try {
       data = JSON.parse(JSON.stringify(mvu.getMvuData(option) ?? {}));
@@ -88,6 +89,10 @@ export function commit(action, { core = '任务助手', speaker = '任务助手'
     const result = action(data.stat_data);
     if (!result || result.skip) return { skipped: true };
     if (result.error) return result;
+    const msgIdNow = parentWindow.TavernHelper?.getLastMessageId?.();
+    if (typeof msgIdBefore === 'number' && typeof msgIdNow === 'number' && msgIdNow !== msgIdBefore) {
+      return { error: '操作期间最新楼层已变化，请重试' };
+    }
     data.stat_data = result.stat;
     try {
       await mvu.replaceMvuData(data, option);

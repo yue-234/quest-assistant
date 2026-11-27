@@ -15,8 +15,9 @@ const _int = (v) => { const m = String(v ?? '').replace(/[,，]/g, '').match(/-?
 const _obj = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
 const _txt = (v) => String(v ?? '');
 const _escPtr = (s) => _txt(s).replace(/~/g, '~0').replace(/\//g, '~1');
-const _isNullCore = (typeof destinyImmersiveMode === 'function' && destinyImmersiveMode())
-  || _txt(typeof getvar === 'function' ? getvar('系统核心', { scope: 'local', defaults: '' }) : '').trim() === 'null核心';
+const _isNullCore = typeof destinyImmersiveMode === 'function'
+  ? !!destinyImmersiveMode()
+  : _txt(typeof getvar === 'function' ? getvar('系统核心', { scope: 'local', defaults: '' }) : '').trim() === 'null核心';
 
 let _sd = getvar('stat_data');
 if (typeof _sd === 'string') { try { _sd = JSON.parse(_sd); } catch (e) { _sd = {}; } }
@@ -553,7 +554,7 @@ const _histStats = [];
 for (let i = _chatList.length - 1; i >= 0 && _histStats.length < 50; i -= 1) {
   const m = _chatList[i];
   if (!m || typeof m !== 'object') continue;
-  const v = Array.isArray(m.variables) ? m.variables[m.swipe_id ?? 0] : null;
+  const v = m.variables && typeof m.variables === 'object' ? m.variables[m.swipe_id ?? 0] : null;
   const hs = (v && typeof v === 'object' ? v.stat_data : null) || (m.stat && typeof m.stat === 'object' ? m.stat : null);
   if (hs && typeof hs === 'object') _histStats.push(hs);
 }
@@ -695,14 +696,17 @@ const _qbItems = _qbRawList
   .filter(Boolean);
 
 const _qbRescan = _obj(_qb['待重扫']);
+const _nonSysMsgs = _chatList.filter((m) => m && !m.is_system);
 const _lastMsg = _chatList.length ? _chatList[_chatList.length - 1] : null;
+const _lastNonSysMsg = _nonSysMsgs.length ? _nonSysMsgs[_nonSysMsgs.length - 1] : null;
+const _prevNonSysMsg = _nonSysMsgs.length >= 2 ? _nonSysMsgs[_nonSysMsgs.length - 2] : null;
 const _genType = typeof generateType === 'string' ? generateType : '';
-const _extraRunning = typeof Mvu === 'object' && Mvu && typeof Mvu.isDuringExtraAnalysis === 'function'
-  ? !!Mvu.isDuringExtraAnalysis()
-  : false;
-const _inExtraUpdateTurn = (_wbRole === 'update' || _extraRunning)
+const _hasExtraApi = typeof Mvu === 'object' && Mvu && typeof Mvu.isDuringExtraAnalysis === 'function';
+const _extraRunning = _hasExtraApi ? !!Mvu.isDuringExtraAnalysis() : false;
+const _inExtraUpdateTurn = (_extraRunning
+  || (_wbRole === 'update' && !_hasExtraApi && !!_prevNonSysMsg && _prevNonSysMsg.is_user === true))
   && !['swipe', 'continue', 'append', 'appendFinal'].includes(_genType)
-  && !!_lastMsg && _lastMsg.is_user === false && !_lastMsg.is_system;
+  && !!_lastNonSysMsg && _lastNonSysMsg.is_user === false;
 const _qbRescanDue = (() => {
   if (!Object.keys(_qbRescan).length) return false;
   const rc = _txt(_qbRescan['消息数']).trim();
@@ -865,7 +869,7 @@ _%>
 任务情报板:
   当前环境: <%- _region.name || '未记录' %><% if (_worldTime) { %>｜<%- _worldTime %><% } %><% if (_qbMode === 'relocate') { %>（刚迁入新区域）<% } else if (_qbMode === 'rescan') { %>（已预约地区情报重扫，新本地情报待本轮变量更新后刷新）<% } %>
   推进规则:
-    通用: 正文不输出任务面板、不提前宣称接取；未接取任务不演进<%- _genHintRule %>
+    通用: 正文不打印任务情报板清单、不提前宣称接取；未接取任务不演进（接取或结算按 `<任务与委托规则>` 输出 `<task_info>` 时不受影响）<%- _genHintRule %>
 <% if (_qbNeedGen && !_qbHasStoryOrLocalActive) { _%>
     层级匹配: <%- _tierGuardRule %>；更高层级的人物与势力只作为背景存在、幕后授意者或线索来源，留作后续高阶任务引子
 <% } else if (!_qbHasAnyActive) { _%>

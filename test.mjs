@@ -72,6 +72,10 @@ import {
   clearMvuUpdateEnded,
   isMvuUpdateEndedFor,
 } from './src/commit.js';
+import {
+  readMessages,
+  readActiveWorldbookInfo,
+} from './src/host.js';
 import { buildWorldbookJson } from './build.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -113,7 +117,7 @@ const builtDistScriptPath = path.join(__dirname, 'dist', 'quest-assistant.js');
 const builtWorldbookPath = path.join(__dirname, '⭐导入这个-命定任务助手世界书.json');
 const remoteLoaderPath = path.join(__dirname, '⭐粘这个-远程自动更新脚本.js');
 
-function renderEjs(statData, { chat = [], lastUserMessageId = 0, geoData = {}, systemCore = '', destinyImmersiveMode, generateType = '', source = ejsSource } = {}) {
+function renderEjs(statData, { chat = [], lastUserMessageId = 0, geoData = {}, systemCore = '', destinyImmersiveMode, generateType = '', Mvu, source = ejsSource } = {}) {
   const ctx = {
     getvar: (k) => {
       if (k === 'stat_data') return statData;
@@ -125,6 +129,7 @@ function renderEjs(statData, { chat = [], lastUserMessageId = 0, geoData = {}, s
     lastUserMessageId,
     ...(typeof destinyImmersiveMode === 'function' ? { destinyImmersiveMode } : {}),
     ...(generateType ? { generateType } : {}),
+    ...(Mvu ? { Mvu } : {}),
   };
   return ejs.render(source, ctx);
 }
@@ -545,6 +550,28 @@ test('null核心 1 天 CD 免费重扫：不扣 FP、同日限 1 次、次日恢
   assert.match(out, /已启动今日免费地区情报重扫（每日 1 次）/);
   assert.match(out, /上次重扫日/);
   assert.doesNotMatch(out, /已支付 100 FP/);
+
+  // 当 destinyImmersiveMode() 明确返回 false 时，即使聊天变量残留 'null核心' 也不再误判为 null核心
+  const outOverridden = renderEjs(r1.stat, {
+    chat: new Array(6).fill({}),
+    lastUserMessageId: 5,
+    systemCore: 'null核心',
+    destinyImmersiveMode: () => false,
+  });
+  assert.match(outOverridden, /已支付 100 FP/);
+  assert.doesNotMatch(outOverridden, /今日免费地区情报重扫/);
+
+  // 兼容 SillyTavern variables 对象映射形态（Record<swipeId, vars>）
+  const objVarHist = extractHistoryStats([
+    {
+      swipe_id: 1,
+      variables: {
+        1: { stat_data: { 任务列表: { '旧委托': { 状态: '进行中' } } } },
+      },
+    },
+  ]);
+  assert.equal(objVarHist.length, 1);
+  assert.equal(objVarHist[0]['任务列表']['旧委托']['状态'], '进行中');
 
   // 清理 待重扫 后，同一天再次重扫应被 1 天 CD 拒绝
   const clearedSameDay = clearQuestRescan(r1.stat).stat;
@@ -2969,10 +2996,29 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   // 主世界书防误伤 & 版本提取边界（多数字标题取末段、主世界书书名不污染、缺 [mvu_*] 标签告警、多书合并、partial_disabled 指明角色）
   assert.equal(extractVersionFromText('2.0版 任务助手v1.4.8'), 'v1.4.8');
   assert.equal(isQuestAssistantEntry({ name: '事件链路与任务情报板适配说明', enabled: true, content: '请勿手改 /事件/任务情报板 字段。' }), false);
+  // 命定之诗原版主世界书自带的 [mvu_update] 条目（含"变量更新"字样）绝不能被误判为任务助手条目
+  assert.equal(
+    isQuestAssistantEntry({
+      name: '[本体][变量][mvu_update]变量更新规则',
+      enabled: true,
+      content: 'variables_update_rules: ...',
+    }),
+    false,
+  );
+  assert.equal(
+    isQuestAssistantEntry({
+      name: '[DLC][扩展][边陲之国][mvu_update]莉莉变量更新规则',
+      enabled: true,
+      content: 'variables_update_rules: ...',
+    }),
+    false,
+  );
   const wbMainBookSafe = inspectWorldbookEntries([
     {
       bookName: '命定之诗v4.3.4',
       entries: [
+        { name: '[本体][变量][mvu_update]变量更新规则', enabled: true, content: 'variables_update_rules: ...' },
+        { name: '[DLC][扩展][边陲之国][mvu_update]莉莉变量更新规则', enabled: true, content: 'variables_update_rules: ...' },
         { name: '事件适配备忘', enabled: true, content: '可参考 /事件/任务情报板 与 任务情报板 路径' },
         { name: '[mvu_plot]任务助手-剧情引导', enabled: true, content: '// @role plot\n<任务情报板>...</任务情报板>' },
       ],
@@ -2985,6 +3031,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
     },
   ]);
   assert.equal(wbMainBookSafe.version, '');
+  assert.equal(wbMainBookSafe.duplicateConflict, undefined);
   assert.equal(wbMainBookSafe.legacyDualMixed, undefined);
   assert.equal(wbMainBookSafe.bookName, '命定之诗v4.3.4 / 自建补充书');
 
@@ -3146,6 +3193,25 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
     assert.doesNotMatch(gatedUpdateOut, /启动地区情报重扫/, `${genType} 不应放宽 update 重扫窗口`);
   }
 
+  // Mvu.isDuringExtraAnalysis() 可用时：主 API 回合（false）下 update 条目不得放宽到 nc+2，避免与 plot 分裂；仅额外模型轮（true）放宽
+  const updateMainTurnOut = renderEjs(extraRescanStat, {
+    chat: extraChat12,
+    lastUserMessageId: 10,
+    Mvu: { isDuringExtraAnalysis: () => false },
+    source: updateSrc,
+  });
+  assert.doesNotMatch(updateMainTurnOut, /启动地区情报重扫/);
+  const updateExtraTurnOut = renderEjs(extraRescanStat, {
+    chat: extraChat12,
+    lastUserMessageId: 10,
+    Mvu: { isDuringExtraAnalysis: () => true },
+    source: updateSrc,
+  });
+  assert.match(updateExtraTurnOut, /启动地区情报重扫/);
+
+  // plot 通用规则兼容原版 <task_info> 单据
+  assert.match(plotOut, /正文不打印任务情报板清单/);
+
   // 下一轮玩家再发消息（消息数=13，末尾 is_user: true）时 rescan 正常过期，不重复触发
   const extraChat13 = [...extraChat12, { is_user: true, is_system: false, mes: '下一轮' }];
   const updateNextOut = renderEjs(extraRescanStat, { chat: extraChat13, lastUserMessageId: 12, source: updateSrc });
@@ -3154,6 +3220,56 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   // 语体红线回归：plot / update / all 输出均不得出现已清理的冗余防备或文言残余
   const allOut = renderEjs(extraRescanStat, { chat: extraChat12, lastUserMessageId: 10 });
   assert.doesNotMatch(`${plotOut}\n${updateOut}\n${allOut}`, /属于必执行的|另行额外|严禁|务必|切勿/);
+
+  // host 边界回归：空聊天（getLastMessageId=-1）不调用 0--1；readActiveWorldbookInfo 读取人设世界书且排除命定原版规则条目
+  const prevGetChat = globalThis.getChatMessages;
+  const prevGetLast = globalThis.getLastMessageId;
+  const prevGetCharBooks = globalThis.getCharWorldbookNames;
+  const prevGetGlobalBooks = globalThis.getGlobalWorldbookNames;
+  const prevGetPersona = globalThis.getPersona;
+  const prevGetWorldbook = globalThis.getWorldbook;
+  try {
+    globalThis.getLastMessageId = () => -1;
+    globalThis.getChatMessages = () => {
+      throw new Error('空聊天不得请求 getChatMessages');
+    };
+    assert.deepEqual(readMessages(10), []);
+
+    globalThis.getCharWorldbookNames = () => ({ primary: '命定之诗v4.3.4', additional: [] });
+    globalThis.getGlobalWorldbookNames = () => [];
+    globalThis.getPersona = () => ({ lorebook: '人设绑定任务书' });
+    globalThis.getWorldbook = async (name) => {
+      if (name === '命定之诗v4.3.4') {
+        return [{ name: '[本体][变量][mvu_update]变量更新规则', enabled: true, content: 'variables_update_rules: ...' }];
+      }
+      if (name === '人设绑定任务书') {
+        return [
+          { name: '[mvu_plot]任务助手-剧情引导v1.4.8', enabled: true, content: '// @role plot\n<任务情报板>...</任务情报板>' },
+          { name: '[mvu_update]任务助手-变量更新v1.4.8', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+        ];
+      }
+      return [];
+    };
+    const personaWbInfo = await readActiveWorldbookInfo();
+    assert.equal(personaWbInfo.found, true);
+    assert.equal(personaWbInfo.dualMode, true);
+    assert.equal(personaWbInfo.version, 'v1.4.8');
+    assert.equal(personaWbInfo.duplicateConflict, undefined);
+    assert.equal(personaWbInfo.bookName, '人设绑定任务书');
+  } finally {
+    if (prevGetChat === undefined) delete globalThis.getChatMessages;
+    else globalThis.getChatMessages = prevGetChat;
+    if (prevGetLast === undefined) delete globalThis.getLastMessageId;
+    else globalThis.getLastMessageId = prevGetLast;
+    if (prevGetCharBooks === undefined) delete globalThis.getCharWorldbookNames;
+    else globalThis.getCharWorldbookNames = prevGetCharBooks;
+    if (prevGetGlobalBooks === undefined) delete globalThis.getGlobalWorldbookNames;
+    else globalThis.getGlobalWorldbookNames = prevGetGlobalBooks;
+    if (prevGetPersona === undefined) delete globalThis.getPersona;
+    else globalThis.getPersona = prevGetPersona;
+    if (prevGetWorldbook === undefined) delete globalThis.getWorldbook;
+    else globalThis.getWorldbook = prevGetWorldbook;
+  }
 
   const mem = new Map();
   const read = (k) => mem.get(k) || '';
