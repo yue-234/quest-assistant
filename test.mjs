@@ -44,10 +44,12 @@ import { mountWand } from './src/wand.js';
 import {
   DEFAULT_SCRIPT_REF,
   SCRIPT_REF_KEY,
+  CDN_ORIGIN_KEY,
   normalizeScriptRef,
   readScriptRef,
   writeScriptRef,
   fetchAvailableScriptRefs,
+  fetchScriptByRef,
 } from './src/scriptRef.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1732,6 +1734,33 @@ test('脚本版本号配置与可用版本拉取：归一化、读写与 jsDeliv
     throw new Error('offline');
   });
   assert.deepEqual(fallbackRefs, ['main', 'v1.4.0']);
+});
+
+test('内置 fetchScriptByRef：四节点回退、内容校验与记住可用节点', async () => {
+  const mem = new Map([[CDN_ORIGIN_KEY, 'https://gcore.jsdelivr.net']]);
+  const urls = [];
+  const res = await fetchScriptByRef('@v1.4.0', {
+    readStorage: (k) => mem.get(k) || '',
+    writeStorage: (k, v) => mem.set(k, v),
+    fetchFn: async (url) => {
+      urls.push(url);
+      if (url.startsWith('https://gcore.jsdelivr.net')) {
+        return { ok: false, status: 502, text: async () => '' };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => 'window.QuestHelperApp = {};',
+      };
+    },
+  });
+  assert.equal(res.ref, 'v1.4.0');
+  assert.equal(res.origin, 'https://testingcf.jsdelivr.net');
+  assert.equal(mem.get(CDN_ORIGIN_KEY), 'https://testingcf.jsdelivr.net');
+  assert.deepEqual(urls, [
+    'https://gcore.jsdelivr.net/gh/yue-234/quest-assistant@v1.4.0/dist/quest-assistant.js',
+    'https://testingcf.jsdelivr.net/gh/yue-234/quest-assistant@v1.4.0/dist/quest-assistant.js',
+  ]);
 });
 
 test('jsDelivr 远程自动更新脚本：默认 main 追新、多节点回退、热切固定老版本与失效回退', async () => {

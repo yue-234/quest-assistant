@@ -17,7 +17,13 @@ import * as host from './host.js';
 import { mountFab } from './fab.js';
 import { mountWand } from './wand.js';
 import { ENTRY_MODES, normalizeEntryMode, readEntryMode, writeEntryMode } from './entryMode.js';
-import { DEFAULT_SCRIPT_REF, readScriptRef } from './scriptRef.js';
+import {
+  DEFAULT_SCRIPT_REF,
+  fetchScriptByRef,
+  normalizeScriptRef,
+  readScriptRef,
+  writeScriptRef,
+} from './scriptRef.js';
 
 const QUEST_SEEN_KEY = 'quest_helper_seen_progress_v1';
 const FRAME_ID = 'quest-helper-studio';
@@ -187,10 +193,10 @@ export function start() {
       panel.getScriptMeta = getScriptMeta;
       panel.onScriptRefChange = async (nextRef) => {
         const loader = win.__QuestHelperRemoteLoader;
-        if (!loader || typeof loader.switchRef !== 'function') {
-          throw new Error('当前为离线或单行 import 版，请改用远程加载脚本或在脚本中修改 @版本号');
+        if (loader && typeof loader.switchRef === 'function') {
+          return loader.switchRef(nextRef, { reopen: true });
         }
-        return loader.switchRef(nextRef, { reopen: true });
+        return switchSelfRef(nextRef, { reopen: true });
       };
       panelOpened = true;
       panel.open();
@@ -217,14 +223,38 @@ export function start() {
 
   const getScriptMeta = () => {
     const loader = win.__QuestHelperRemoteLoader;
+    const selfBoot = win.__QuestHelperSelfBoot;
+    const remoteManaged = !!(loader && typeof loader.switchRef === 'function');
     return {
-      remoteManaged: !!(loader && typeof loader.switchRef === 'function'),
+      remoteManaged,
+      canSwitchVersion: true,
       scriptVersion: SCRIPT_VERSION,
       defaultRef: loader?.defaultRef || DEFAULT_SCRIPT_REF,
-      loadedRef: loader?.loadedRef || SCRIPT_VERSION,
-      loadedOrigin: loader?.loadedOrigin || '',
+      loadedRef: loader?.loadedRef || selfBoot?.ref || SCRIPT_VERSION,
+      loadedOrigin: loader?.loadedOrigin || selfBoot?.origin || '',
       overrideRef: readScriptRef(host.readStorage),
+      selfBooted: !remoteManaged && !!selfBoot?.ref,
     };
+  };
+
+  const switchSelfRef = async (nextRef, { reopen = false } = {}) => {
+    const normalized = normalizeScriptRef(nextRef);
+    const targetRef = normalized || DEFAULT_SCRIPT_REF;
+    const result = await fetchScriptByRef(targetRef, {
+      fetchFn: win.fetch || globalThis.fetch,
+      readStorage: host.readStorage,
+      writeStorage: host.writeStorage,
+    });
+    if (stopped) return { ref: result.ref, origin: result.origin };
+    writeScriptRef(host.writeStorage, normalized);
+    win.__QuestHelperSelfBoot = { ref: result.ref, origin: result.origin };
+    win.__QuestHelperBootstrappedRef = result.ref;
+    stop();
+    (0, eval)(result.code);
+    if (reopen && win.QuestHelperApp && typeof win.QuestHelperApp.open === 'function') {
+      void win.QuestHelperApp.open();
+    }
+    return { ref: result.ref, origin: result.origin };
   };
 
   const mountActiveEntry = (mode = entryMode) => {
@@ -382,6 +412,34 @@ export function start() {
   };
   win.QuestHelperApp = surface;
   api = surface;
+
+  // 若使用单行 import 或离线脚本启动且曾切换固定版本，后台自动拉取目标版本接管（单会话防循环）
+  const overrideRef = readScriptRef(host.readStorage);
+  if (!win.__QuestHelperRemoteLoader && overrideRef && win.__QuestHelperBootstrappedRef !== overrideRef) {
+    win.__QuestHelperBootstrappedRef = overrideRef;
+    void fetchScriptByRef(overrideRef, {
+      fetchFn: win.fetch || globalThis.fetch,
+      readStorage: host.readStorage,
+      writeStorage: host.writeStorage,
+    })
+      .then((result) => {
+        if (stopped || win.__QuestHelperRemoteLoader) return;
+        const wasOpen = panelOpened;
+        win.__QuestHelperSelfBoot = { ref: result.ref, origin: result.origin };
+        stop();
+        (0, eval)(result.code);
+        if (wasOpen && win.QuestHelperApp && typeof win.QuestHelperApp.open === 'function') {
+          void win.QuestHelperApp.open();
+        }
+      })
+      .catch(() => {
+        /* 拉取失败时保持当前脚本运行，并清除失效覆盖避免下次继续失败 */
+        if (readScriptRef(host.readStorage) === overrideRef) {
+          writeScriptRef(host.writeStorage, '');
+        }
+      });
+  }
+
   return api;
 }
 

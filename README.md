@@ -25,7 +25,7 @@
 
 1. **安装前端脚本（三选一）**：
    - **方式 A · 远程自动更新版（推荐）**：复制 [`⭐粘这个-远程自动更新脚本.js`](./⭐粘这个-远程自动更新脚本.js) 的全部内容，在酒馆脚本助手（TavernHelper）中新建脚本粘贴并启用。默认跟随 `main` 最新构建（推送清缓存后自动同步，按 `testingcf` / `cdn` / `fastly` / `gcore` 四个 jsDelivr 节点自动回退），也可在面板「⚙ 设置」中随时切换并固定为老版本（如基准版 `v1.4.0`）。
-   - **方式 B · 单行 `import` 直链版**：在酒馆脚本助手中写入下面一行（使用 `@main` 追新，或改成 `@v1.4.0` 等 Tag 固定老版本）：
+   - **方式 B · 单行 `import` 直链版**：在酒馆脚本助手中写入下面一行（使用 `@main` 追新，或改成 `@v1.4.0` 等 Tag 固定老版本；进入面板「⚙ 设置」同样支持直接切换版本热重载）：
      ```js
      import 'https://testingcf.jsdelivr.net/gh/yue-234/quest-assistant@main/dist/quest-assistant.js'
      ```

@@ -3,7 +3,15 @@
 export const DEFAULT_SCRIPT_REF = 'main';
 export const BASELINE_SCRIPT_TAG = 'v1.4.0';
 export const SCRIPT_REF_KEY = 'quest_helper_script_ref_v1';
+export const CDN_ORIGIN_KEY = 'quest_helper_cdn_origin_v1';
 export const SCRIPT_REPO = 'yue-234/quest-assistant';
+export const SCRIPT_ASSET_PATH = 'dist/quest-assistant.js';
+export const CDN_ORIGINS = [
+  'https://testingcf.jsdelivr.net',
+  'https://cdn.jsdelivr.net',
+  'https://fastly.jsdelivr.net',
+  'https://gcore.jsdelivr.net',
+];
 export const JSDELIVR_VERSIONS_URL = `https://data.jsdelivr.net/v1/packages/gh/${SCRIPT_REPO}`;
 export const GITHUB_TAGS_URL = `https://api.github.com/repos/${SCRIPT_REPO}/tags?per_page=30`;
 
@@ -88,4 +96,64 @@ export async function fetchAvailableScriptRefs(fetchFn = globalThis.fetch, defau
   pushUnique('main');
   pushUnique(BASELINE_SCRIPT_TAG);
   return list;
+}
+
+/** 从 jsDelivr 四节点依次拉取指定 ref 的脚本并校验内容，记住可用节点。 */
+export async function fetchScriptByRef(
+  ref,
+  {
+    fetchFn = globalThis.fetch,
+    readStorage = null,
+    writeStorage = null,
+    timeoutMs = 8000,
+  } = {},
+) {
+  const targetRef = normalizeScriptRef(ref) || DEFAULT_SCRIPT_REF;
+  if (typeof fetchFn !== 'function') {
+    throw new Error('当前环境不支持网络请求');
+  }
+  let savedOrigin = '';
+  if (typeof readStorage === 'function') {
+    try {
+      savedOrigin = String(readStorage(CDN_ORIGIN_KEY) || '');
+    } catch {
+      savedOrigin = '';
+    }
+  }
+  const origins = savedOrigin && CDN_ORIGINS.includes(savedOrigin)
+    ? [savedOrigin, ...CDN_ORIGINS.filter((o) => o !== savedOrigin)]
+    : CDN_ORIGINS.slice();
+
+  const errors = [];
+  for (const origin of origins) {
+    const url = `${origin}/gh/${SCRIPT_REPO}@${targetRef}/${SCRIPT_ASSET_PATH}`;
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+    try {
+      const res = await fetchFn(url, {
+        cache: 'no-cache',
+        signal: ctrl ? ctrl.signal : undefined,
+      });
+      if (!res || !res.ok) {
+        throw new Error(`HTTP ${res ? res.status : 'ERR'}`);
+      }
+      const code = await res.text();
+      if (!code || !code.includes('QuestHelperApp')) {
+        throw new Error('返回内容不是有效的任务助手脚本');
+      }
+      if (typeof writeStorage === 'function') {
+        try {
+          writeStorage(CDN_ORIGIN_KEY, origin);
+        } catch {
+          /* 忽略 */
+        }
+      }
+      return { code, origin, ref: targetRef };
+    } catch (err) {
+      errors.push(`${origin}: ${err && err.message ? err.message : err}`);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  throw new Error(errors.join(' | '));
 }

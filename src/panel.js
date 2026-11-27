@@ -874,11 +874,13 @@ function render() {
 function getVersionMeta() {
   const fallback = {
     remoteManaged: false,
+    canSwitchVersion: true,
     scriptVersion: SCRIPT_VERSION,
     defaultRef: DEFAULT_SCRIPT_REF,
     loadedRef: SCRIPT_VERSION,
     loadedOrigin: '',
     overrideRef: readScriptRef(host.readStorage),
+    selfBooted: false,
   };
   if (typeof app?.getScriptMeta === 'function') {
     try {
@@ -894,14 +896,15 @@ function getVersionMeta() {
 function syncVersionControls() {
   if (!root) return;
   const meta = getVersionMeta();
+  const canSwitch = meta.canSwitchVersion !== false;
   const metaEl = root.querySelector('.qh-setting-ver-meta');
   if (metaEl) {
-    if (meta.remoteManaged) {
+    if (meta.remoteManaged || meta.selfBooted) {
       const originLabel = meta.loadedOrigin ? meta.loadedOrigin.replace(/^https?:\/\//, '') : 'jsDelivr';
       const customTag = meta.overrideRef ? ` · 已固定版本` : ` · 默认同步最新`;
       metaEl.textContent = `当前加载：${meta.loadedRef}${customTag}（${originLabel}）`;
     } else {
-      metaEl.textContent = `当前版本：${meta.scriptVersion}（离线 / 单行 import 版）`;
+      metaEl.textContent = `当前版本：${meta.scriptVersion}（直链 / 本地脚本）`;
     }
   }
 
@@ -913,13 +916,13 @@ function syncVersionControls() {
 
   const applyBtn = root.querySelector('.qh-setting-ver-apply');
   if (applyBtn) {
-    applyBtn.disabled = !!ui.switchingRef || !meta.remoteManaged;
+    applyBtn.disabled = !!ui.switchingRef || !canSwitch;
     applyBtn.textContent = ui.switchingRef ? '切换中…' : '切换版本';
   }
 
   const resetBtn = root.querySelector('.qh-setting-ver-reset');
   if (resetBtn) {
-    resetBtn.disabled = !!ui.switchingRef || !meta.remoteManaged || (!meta.overrideRef && meta.loadedRef === meta.defaultRef);
+    resetBtn.disabled = !!ui.switchingRef || !canSwitch || (!meta.overrideRef && meta.loadedRef === meta.defaultRef);
     resetBtn.textContent = `恢复默认 (${meta.defaultRef})`;
   }
 
@@ -927,7 +930,7 @@ function syncVersionControls() {
   if (hintEl) {
     hintEl.textContent = meta.remoteManaged
       ? `默认追随 ${meta.defaultRef} 最新版（作者推送后刷新即可同步）；选择或输入旧 Tag（如 ${BASELINE_SCRIPT_TAG}）并点击「切换版本」即可固定老版本。`
-      : `离线或单行 import 版请在脚本中修改 @版本号（如 @main 追新或 @${BASELINE_SCRIPT_TAG} 固定版本）；使用「⭐粘这个-远程自动更新脚本.js」即可在此直接切版本。`;
+      : `可直接输入或点选 Tag（如 ${BASELINE_SCRIPT_TAG} 或 ${meta.defaultRef}）点击「切换版本」实时热重载并记住偏好；若版本不存在将自动保持当前版本。`;
   }
 
   const tagsBox = root.querySelector('.qh-setting-ver-tags');
@@ -972,8 +975,8 @@ async function refreshAvailableRefs() {
 async function applyScriptRef(rawRef) {
   if (ui.switchingRef) return;
   const meta = getVersionMeta();
-  if (!meta.remoteManaged || typeof app?.onScriptRefChange !== 'function') {
-    toast('当前为离线或单行 import 版，请改用「⭐粘这个-远程自动更新脚本.js」或直接修改脚本中的 @版本号', 'warn');
+  if (meta.canSwitchVersion === false || typeof app?.onScriptRefChange !== 'function') {
+    toast('当前运行环境暂不支持热切换版本', 'warn');
     return;
   }
   const normalized = normalizeScriptRef(rawRef);
