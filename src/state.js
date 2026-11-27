@@ -635,8 +635,12 @@ export function questBoardState(stat, current = {}) {
       const guide = text(r['引导'] || r['切入'] || r['接取方式']).trim();
       const deadline = text(r['时限']).trim();
       const summary = text(r['摘要']).trim();
-      const boardProgress = text(r['进展'] || r['动态'] || r['最新进展']).trim();
-      const progress = accepted ? (formal.progress || boardProgress) : boardProgress;
+      const boardProgressRaw = text(r['进展'] || r['动态'] || r['最新进展']).trim();
+      const boardProgress = /^(?:尚未接取|未接取|暂未接取|未开始|尚未开始|待接取|待开启|暂无进展|暂无|无|待定|未知|待更新|冻结|—|-+|none|n\/a)$/i.test(boardProgressRaw)
+        ? ''
+        : boardProgressRaw;
+      // 未接取任务处于冻结态，即使模型误填了占位进展也不展示「局势变动 / 最新进展」
+      const progress = accepted ? (formal.progress || boardProgress) : '';
       const itemUpdatedDay = normalizeDay(r['更新日']);
       const rawRewards = normalizeQuestRewards(r['预期收益']);
       const claimedInfo = parseClaimedSet(mergeRewardMapEntries(claimedMap, id, title));

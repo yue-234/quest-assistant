@@ -289,7 +289,10 @@ test('EJS rescan 模式：100 FP 地区情报重扫（仅保留剧情/已接取/
   assert.match(out, /已锁定支线/);
   assert.match(out, /进行中主线/);
   assert.doesNotMatch(out, /旧委托/);
+  assert.match(out, /保持原 `id`\/等级\/内容\/更新日不变，不重编、不添 `进展`/);
   assert.match(out, /未列出的旧未接取未锁定本地任务不保留，整表 `replace` 写入 `列表`/);
+  assert.match(out, /未接取时不写 `进展` 字段/);
+  assert.doesNotMatch(out, /进展（接取后演进填写）/);
   assert.match(out, /OTHER SPECIFIC REQUIREMENTS/);
 
   // 无任何需保留旧任务 + 同回合提及待淘汰旧支线：plot/update 同步不展示，状态栏注明 需保留：0 条，指令直接全新生成
@@ -685,6 +688,30 @@ test('收紧 matchFormalTask 防误杀 & 历史空板不误杀', () => {
     },
   ];
   assert.equal(wasInHistoryFormalTasks(histEmptyBoard, 'q1', '护送商队'), false);
+
+  // 未接取任务即使携带 进展:"尚未接取" 等占位/残留字段，前端也不得渲染「局势变动 / 最新进展」或触发红点
+  const fakeProgStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-24日' },
+    任务列表: {
+      '已接主线': { 状态: '进行中', 进展: '[6月-24日] 已取得港口日志' },
+    },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        列表: [
+          { id: 'q_story', 类别: '剧情任务', 等级: 'B', 标题: '失踪的紫雾匣', 方式: '悬赏', 进展: '尚未接取', 更新日: '复兴纪元488年-6月-24日' },
+          { id: 'q_main', 类别: '本地主线', 等级: 'C', 标题: '已接主线', 方式: '调查' },
+        ],
+      },
+    },
+  };
+  const fakeProgBoard = questBoardState(fakeProgStat);
+  assert.equal(fakeProgBoard.items[0].accepted, false);
+  assert.equal(fakeProgBoard.items[0].progress, '');
+  assert.equal(fakeProgBoard.items[1].accepted, true);
+  assert.equal(fakeProgBoard.items[1].progress, '[6月-24日] 已取得港口日志');
+  assert.doesNotMatch(fakeProgBoard.progressSignature, /尚未接取/);
 });
 
 test('EJS 日期解析：支持无年份/无连字符中文日期，拒绝版本号与无效月日', () => {
