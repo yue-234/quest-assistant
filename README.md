@@ -24,10 +24,10 @@
 ## 快速安装（SillyTavern）
 
 1. **安装前端脚本（三选一）**：
-   - **方式 A · 远程版本切换版（推荐）**：复制 [`⭐粘这个-远程自动更新脚本.js`](./⭐粘这个-远程自动更新脚本.js) 的全部内容，在酒馆脚本助手（TavernHelper）中新建脚本粘贴并启用。默认基准版本为 `v1.4.0`，按 `testingcf` / `cdn` / `fastly` / `gcore` 四个 jsDelivr 节点自动回退，且可在面板「⚙ 设置」或脚本顶部 `DEFAULT_REF` 随时切换指定版本或 `main`。
-   - **方式 B · 单行 `import` 直链版**：在酒馆脚本助手中写入下面一行（把 `@v1.4.0` 改成目标版本 Tag 或 `@main` 即可切换）：
+   - **方式 A · 远程自动更新版（推荐）**：复制 [`⭐粘这个-远程自动更新脚本.js`](./⭐粘这个-远程自动更新脚本.js) 的全部内容，在酒馆脚本助手（TavernHelper）中新建脚本粘贴并启用。默认跟随 `main` 最新构建（推送清缓存后自动同步，按 `testingcf` / `cdn` / `fastly` / `gcore` 四个 jsDelivr 节点自动回退），也可在面板「⚙ 设置」中随时切换并固定为老版本（如基准版 `v1.4.0`）。
+   - **方式 B · 单行 `import` 直链版**：在酒馆脚本助手中写入下面一行（使用 `@main` 追新，或改成 `@v1.4.0` 等 Tag 固定老版本）：
      ```js
-     import 'https://testingcf.jsdelivr.net/gh/yue-234/quest-assistant@v1.4.0/dist/quest-assistant.js'
+     import 'https://testingcf.jsdelivr.net/gh/yue-234/quest-assistant@main/dist/quest-assistant.js'
      ```
      （也可将域名替换为 `cdn.jsdelivr.net`、`fastly.jsdelivr.net` 或 `gcore.jsdelivr.net`。）
    - **方式 C · 离线单文件版**：复制 [`⭐粘这个-任务助手脚本.js`](./⭐粘这个-任务助手脚本.js)（或 [`.txt`](./⭐粘这个-任务助手脚本.txt)）的全部内容粘贴并启用，不依赖外网访问。

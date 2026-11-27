@@ -19,6 +19,7 @@ import { commit, generating } from './commit.js';
 import * as host from './host.js';
 import { ENTRY_MODES, readEntryMode, writeEntryMode } from './entryMode.js';
 import {
+  BASELINE_SCRIPT_TAG,
   DEFAULT_SCRIPT_REF,
   fetchAvailableScriptRefs,
   normalizeScriptRef,
@@ -897,7 +898,7 @@ function syncVersionControls() {
   if (metaEl) {
     if (meta.remoteManaged) {
       const originLabel = meta.loadedOrigin ? meta.loadedOrigin.replace(/^https?:\/\//, '') : 'jsDelivr';
-      const customTag = meta.overrideRef ? ` · 已固定自选` : ` · 默认基准`;
+      const customTag = meta.overrideRef ? ` · 已固定版本` : ` · 默认同步最新`;
       metaEl.textContent = `当前加载：${meta.loadedRef}${customTag}（${originLabel}）`;
     } else {
       metaEl.textContent = `当前版本：${meta.scriptVersion}（离线 / 单行 import 版）`;
@@ -925,21 +926,21 @@ function syncVersionControls() {
   const hintEl = root.querySelector('.qh-setting-ver-hint');
   if (hintEl) {
     hintEl.textContent = meta.remoteManaged
-      ? '输入或点选已发布 Tag（如 v1.4.0）或 main 后点击「切换版本」即可热重载；若版本不存在将自动保持当前版本。'
-      : `离线或单行 import 版请在脚本中修改 @版本号（如 import 'https://testingcf.jsdelivr.net/gh/yue-234/quest-assistant@${meta.defaultRef}/dist/quest-assistant.js'）；使用「⭐粘这个-远程自动更新脚本.js」即可在此直接切版本。`;
+      ? `默认追随 ${meta.defaultRef} 最新版（作者推送后刷新即可同步）；选择或输入旧 Tag（如 ${BASELINE_SCRIPT_TAG}）并点击「切换版本」即可固定老版本。`
+      : `离线或单行 import 版请在脚本中修改 @版本号（如 @main 追新或 @${BASELINE_SCRIPT_TAG} 固定版本）；使用「⭐粘这个-远程自动更新脚本.js」即可在此直接切版本。`;
   }
 
   const tagsBox = root.querySelector('.qh-setting-ver-tags');
   if (tagsBox) {
     const refs = Array.isArray(ui.availableRefs) && ui.availableRefs.length > 0
       ? ui.availableRefs
-      : [meta.defaultRef, 'main'].filter((v, i, arr) => v && arr.indexOf(v) === i);
+      : [meta.defaultRef, BASELINE_SCRIPT_TAG, 'main'].filter((v, i, arr) => v && arr.indexOf(v) === i);
     tagsBox.innerHTML = '';
     refs.forEach((refName) => {
       const isCurrent = refName === meta.loadedRef;
-      const label = refName === meta.defaultRef
-        ? `${refName} (默认)`
-        : (refName === 'main' ? 'main (最新)' : refName);
+      const label = refName === 'main'
+        ? (meta.defaultRef === 'main' ? 'main (默认·最新)' : 'main (最新)')
+        : (refName === meta.defaultRef ? `${refName} (默认)` : refName);
       tagsBox.append(
         el(
           'button',
@@ -1124,7 +1125,7 @@ function buildSettingsLayer() {
     'input',
     'qh-setting-ver-input',
     null,
-    { type: 'text', placeholder: `${DEFAULT_SCRIPT_REF} 或 main`, 'aria-label': '输入脚本版本号' },
+    { type: 'text', placeholder: `${DEFAULT_SCRIPT_REF} 或 ${BASELINE_SCRIPT_TAG}`, 'aria-label': '输入脚本版本号' },
     {
       keydown: (e) => {
         if (e.key === 'Enter') {

@@ -1,9 +1,11 @@
 // 远程脚本版本号（Git Ref）配置与可用版本查询工具。
 
-export const DEFAULT_SCRIPT_REF = 'v1.4.0';
+export const DEFAULT_SCRIPT_REF = 'main';
+export const BASELINE_SCRIPT_TAG = 'v1.4.0';
 export const SCRIPT_REF_KEY = 'quest_helper_script_ref_v1';
 export const SCRIPT_REPO = 'yue-234/quest-assistant';
 export const JSDELIVR_VERSIONS_URL = `https://data.jsdelivr.net/v1/packages/gh/${SCRIPT_REPO}`;
+export const GITHUB_TAGS_URL = `https://api.github.com/repos/${SCRIPT_REPO}/tags?per_page=30`;
 
 /** 校验并归一化版本号/分支名（支持去掉前导 @；空或非法输入返回空字符串）。 */
 export function normalizeScriptRef(raw) {
@@ -15,7 +17,7 @@ export function normalizeScriptRef(raw) {
   return /^[A-Za-z0-9._/-]+$/.test(cleaned) ? cleaned : '';
 }
 
-/** 读取玩家自定义覆盖的版本号；未设置时返回空字符串（由加载器采用默认基准版本）。 */
+/** 读取玩家自定义覆盖的版本号；未设置时返回空字符串（由加载器采用默认 main 最新分支）。 */
 export function readScriptRef(readStorage) {
   if (typeof readStorage !== 'function') return '';
   try {
@@ -25,7 +27,7 @@ export function readScriptRef(readStorage) {
   }
 }
 
-/** 保存玩家自定义覆盖的版本号；传入空值时恢复跟随加载器默认版本。 */
+/** 保存玩家自定义覆盖的版本号；传入空值时恢复跟随加载器默认版本（main）。 */
 export function writeScriptRef(writeStorage, ref) {
   const normalized = normalizeScriptRef(ref);
   if (typeof writeStorage === 'function') {
@@ -38,7 +40,24 @@ export function writeScriptRef(writeStorage, ref) {
   return normalized;
 }
 
-/** 从 jsDelivr 元数据接口拉取已发布的版本列表，自动补齐默认版本与 main 分支。 */
+async function fetchJsonWithTimeout(fetchFn, url, timeoutMs = 5000) {
+  const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  try {
+    const res = await fetchFn(url, {
+      cache: 'no-cache',
+      signal: ctrl ? ctrl.signal : undefined,
+    });
+    if (!res || !res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** 拉取已发布版本列表（优先 jsDelivr，未返回 Tag 时回退 GitHub Tags API），并补齐 main 与基准版本。 */
 export async function fetchAvailableScriptRefs(fetchFn = globalThis.fetch, defaultRef = DEFAULT_SCRIPT_REF) {
   const list = [];
   const pushUnique = (val) => {
@@ -46,30 +65,27 @@ export async function fetchAvailableScriptRefs(fetchFn = globalThis.fetch, defau
     if (n && !list.includes(n)) list.push(n);
   };
 
+  pushUnique(defaultRef || DEFAULT_SCRIPT_REF);
+
   if (typeof fetchFn === 'function') {
-    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-    const timer = ctrl ? setTimeout(() => ctrl.abort(), 5000) : null;
-    try {
-      const res = await fetchFn(JSDELIVR_VERSIONS_URL, {
-        cache: 'no-cache',
-        signal: ctrl ? ctrl.signal : undefined,
-      });
-      if (res && res.ok) {
-        const payload = await res.json();
-        const rawVersions = Array.isArray(payload?.versions) ? payload.versions : [];
-        for (const entry of rawVersions) {
-          if (typeof entry === 'string') pushUnique(entry);
-          else if (entry && typeof entry.version === 'string') pushUnique(entry.version);
+    const jsdPayload = await fetchJsonWithTimeout(fetchFn, JSDELIVR_VERSIONS_URL);
+    const jsdVersions = Array.isArray(jsdPayload?.versions) ? jsdPayload.versions : [];
+    for (const entry of jsdVersions) {
+      if (typeof entry === 'string') pushUnique(entry);
+      else if (entry && typeof entry.version === 'string') pushUnique(entry.version);
+    }
+
+    if (jsdVersions.length === 0) {
+      const ghTags = await fetchJsonWithTimeout(fetchFn, GITHUB_TAGS_URL);
+      if (Array.isArray(ghTags)) {
+        for (const tag of ghTags) {
+          if (tag && typeof tag.name === 'string') pushUnique(tag.name);
         }
       }
-    } catch {
-      /* 拉取失败时退回内置基础选项 */
-    } finally {
-      if (timer) clearTimeout(timer);
     }
   }
 
-  pushUnique(defaultRef || DEFAULT_SCRIPT_REF);
   pushUnique('main');
+  pushUnique(BASELINE_SCRIPT_TAG);
   return list;
 }
