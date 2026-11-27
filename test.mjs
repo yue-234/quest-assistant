@@ -715,6 +715,7 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
   assert.match(outNone, /区域与世界词条:/);
   assert.match(outNone, /\[绿\/黄\/红\]【2~6字短标签】30~50字客观现状/);
   assert.match(outNone, /默认写入 3 条词条/);
+  assert.match(outNone, /分属不同维度.*彼此逻辑自洽，不重复、不自相矛盾/);
   assert.match(outNone, /禁止 3 绿、3 黄、3 红/);
   assert.match(outNone, /不得每区机械套用 1 绿 1 黄 1 红/);
   assert.match(outNone, /离开满 14 天/);
