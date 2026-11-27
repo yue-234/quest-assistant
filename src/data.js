@@ -1,7 +1,7 @@
 // 独立任务助手配置数据。与「任务助手-世界书.ejs」开头的 _data 保持同一份口径。
 
 export const DATA_VERSION = 1;
-export const SCRIPT_VERSION = 'v1.4.6';
+export const SCRIPT_VERSION = 'v1.4.7';
 
 export const DATA = {
   questBoard: {

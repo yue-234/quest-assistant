@@ -2659,7 +2659,7 @@ test('构建产物 ⭐粘这个-任务助手脚本.js、.txt、dist/quest-assist
   const wbJson = JSON.parse(fs.readFileSync(builtWorldbookPath, 'utf8'));
   assert.equal(txtCode, code, '⭐粘这个-任务助手脚本.txt 应与 .js 产物完全一致');
   assert.equal(distCode, code, 'dist/quest-assistant.js 应与 .js 产物完全一致');
-  assert.equal(wbJson?.entries?.['0']?.comment, '任务助手v1.4.6');
+  assert.equal(wbJson?.entries?.['0']?.comment, '任务助手v1.4.7');
   assert.equal(wbJson?.entries?.['0']?.constant, true);
   assert.equal(wbJson?.entries?.['0']?.disable, false);
   assert.equal(wbJson?.entries?.['0']?.content, ejsSource.replace(/\r\n/g, '\n'));
@@ -2673,7 +2673,7 @@ test('构建产物 ⭐粘这个-任务助手脚本.js、.txt、dist/quest-assist
   assert.match(code, /quest_helper_entry_mode_v1/);
   assert.match(code, /quest_helper_script_ref_v1/);
   assert.match(code, /v1\.4\.0/);
-  assert.match(code, /v1\.4\.6/);
+  assert.match(code, /v1\.4\.7/);
   assert.doesNotThrow(() => new Function(code), '产物必须通过 new Function 语法校验');
   assert.doesNotThrow(() => new Function(`"use strict";\n${code}`), '产物必须兼容严格模式 / ES Module import');
 });
