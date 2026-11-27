@@ -15,7 +15,7 @@ import {
   needsQuestAcceptedRecord,
   maintainQuestBoard,
 } from './actions.js';
-import { commit, extraAnalysisActive, generating } from './commit.js';
+import { commit, extraAnalysisActive, generating, isMvuUpdateEndedFor } from './commit.js';
 import * as host from './host.js';
 import { ENTRY_MODES, readEntryMode, writeEntryMode } from './entryMode.js';
 import {
@@ -837,17 +837,27 @@ function render() {
   const chatSnapshot = chatArray();
 
   const extraAnalyzing = extraAnalysisActive();
+  const extraFinished = isMvuUpdateEndedFor({
+    chatCount: curCount,
+    chatId: host.readChatId?.() || '',
+  });
   if (
     !sweeping &&
     !generating() &&
-    (questRescanDone(stat, curFloor, curCount, { extraAnalyzing })
+    (questRescanDone(stat, curFloor, curCount, { extraFinished, extraAnalyzing, chat: chatSnapshot })
       || hasClosedQuestLeftovers(stat, { chat: chatSnapshot })
       || needsQuestAcceptedRecord(stat)
       || hasExpiredAftermath(stat))
   ) {
     sweeping = true;
     commit(
-      (statNow) => maintainQuestBoard(statNow, { floor: curFloor, chatCount: curCount, chat: chatSnapshot, extraAnalyzing }),
+      (statNow) => maintainQuestBoard(statNow, {
+        floor: curFloor,
+        chatCount: curCount,
+        chat: chatSnapshot,
+        extraFinished,
+        extraAnalyzing,
+      }),
       { core: CORE_NAME, speaker: SPEAKER, redraw: false },
     )
       .then((result) => {
@@ -983,6 +993,7 @@ function syncVersionControls() {
       else if (wbCheck.status === 'partial_disabled') wbBadgeEl.textContent = '双条目未全开';
       else if (wbCheck.status === 'duplicate_role') wbBadgeEl.textContent = '同角色条目重复';
       else if (wbCheck.status === 'legacy_dual_mixed') wbBadgeEl.textContent = '新旧条目混用';
+      else if (wbCheck.status === 'missing_mvu_tag') wbBadgeEl.textContent = '缺少 [mvu_*] 标签';
       else if (wbCheck.status === 'version_unannotated') wbBadgeEl.textContent = '部分未标版本';
       else if (ui.worldbookInfo?.versionConflict) wbBadgeEl.textContent = '双条目版本不一致';
       else wbBadgeEl.textContent = '版本不匹配 · 建议更新';
@@ -1439,6 +1450,10 @@ app = {
     room.addEventListener('animationend', onEnd);
     closeCleanup = () => room.removeEventListener('animationend', onEnd);
     closeTimer = setTimeout(finish, 340);
+  },
+
+  refresh() {
+    if (root && root.classList.contains('qh-open')) render();
   },
 
   hide() {

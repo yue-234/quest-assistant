@@ -6,10 +6,11 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
 
-import { DATA } from './src/data.js';
+import { DATA, SCRIPT_VERSION } from './src/data.js';
 import {
   questBoardState,
   rescanFresh,
+  lastNonSystemIsAssistant,
   readState,
   parseAftermathEntry,
   isAftermathEntryExpired,
@@ -60,11 +61,17 @@ import {
   fetchLatestScriptTag,
   hasNewerScriptVersion,
   extractVersionFromText,
+  isQuestAssistantEntry,
   inspectWorldbookEntries,
   checkWorldbookCompatibility,
   fetchAvailableScriptRefs,
   fetchScriptByRef,
 } from './src/scriptRef.js';
+import {
+  recordMvuUpdateEnded,
+  clearMvuUpdateEnded,
+  isMvuUpdateEndedFor,
+} from './src/commit.js';
 import { buildWorldbookJson } from './build.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -404,14 +411,37 @@ test('actions 全流程：锁定、忽略、100 FP 重扫、修改模式打勾',
   const dup = requestQuestRescan(stat, 10, 12);
   assert.ok(dup.error);
 
-  // 主回复刚落楼（chatCount = 12 + 2 = 14）：额外模型仍在分析时需保留待重扫；额外模型结束或继续下一轮（>= 15）时清理
+  // 主回复刚落楼（chatCount = 12 + 2 = 14）：额外模型仍在分析时需保留待重扫；额外模型结束或宽限期满或进入下一轮（>= 15）时清理
   assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { floor: 12, chatCount: 14, extraAnalyzing: true }), true);
   assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { floor: 12, chatCount: 14, extraAnalyzing: false }), false);
   assert.equal(questRescanDone(stat, 12, 14, { extraAnalyzing: true }), false);
   assert.equal(questRescanDone(stat, 12, 14, { extraAnalyzing: false }), false);
   assert.equal(questRescanDone(stat, 12, 14, { extraFinished: true, extraAnalyzing: false }), true);
+  assert.equal(questRescanDone(stat, 12, 14, { allowGrace: true, extraAnalyzing: false }), true);
   assert.equal(questRescanDone(stat, 12, 15, { extraAnalyzing: true }), false);
   assert.equal(questRescanDone(stat, 12, 15, { extraAnalyzing: false }), true);
+
+  // 用户消息之后点重扫再 Regenerate（atCount = 12 → AI 回复落楼 chatCount = 13，末尾 is_user: false）同样可结束与清理
+  const waitUserChat13 = [{ is_user: true, is_system: false, mes: '用户刚发消息等AI' }];
+  const aiTailChat13 = [{ is_user: true, is_system: false, mes: '问' }, { is_user: false, is_system: false, mes: 'AI已恢复' }];
+  assert.equal(lastNonSystemIsAssistant(waitUserChat13), false);
+  assert.equal(lastNonSystemIsAssistant(aiTailChat13), true);
+  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { chatCount: 13, chat: waitUserChat13, extraAnalyzing: false }), true);
+  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { chatCount: 13, chat: aiTailChat13, extraAnalyzing: true }), true);
+  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { chatCount: 13, chat: aiTailChat13, extraAnalyzing: false }), false);
+  assert.equal(questRescanDone(stat, 11, 13, { extraFinished: true, chat: waitUserChat13 }), false);
+  assert.equal(questRescanDone(stat, 11, 13, { extraFinished: true, chat: aiTailChat13 }), true);
+  assert.equal(questRescanDone(stat, 11, 13, { allowGrace: true, chat: aiTailChat13 }), true);
+
+  // 宿主共享 MVU 变量更新完成信号按 chatId 与 chatCount 隔离
+  clearMvuUpdateEnded();
+  assert.equal(isMvuUpdateEndedFor({ chatCount: 14, chatId: 'c1' }), false);
+  recordMvuUpdateEnded(14, 'c1');
+  assert.equal(isMvuUpdateEndedFor({ chatCount: 14, chatId: 'c1' }), true);
+  assert.equal(isMvuUpdateEndedFor({ chatCount: 15, chatId: 'c1' }), false);
+  assert.equal(isMvuUpdateEndedFor({ chatCount: 14, chatId: 'c2' }), false);
+  clearMvuUpdateEnded();
+
   stat = clearQuestRescan(stat).stat;
   assert.equal(stat['事件']['任务情报板']['待重扫'], undefined);
 });
@@ -871,7 +901,7 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
   const outLocal = renderEjs(localAndWorldStat);
   assertCleanOutput(outLocal, 'aftermath-local-world');
   assert.match(outLocal, /当前词条（持续生效的客观现状）:/);
-  assert.match(outLocal, /本区词条（铁炉堡）:/);
+  assert.match(outLocal, /本区词条（键: `铁炉堡`，已存在）:/);
   assert.match(outLocal, /世界词条:/);
   assert.match(outLocal, /南门高炉重启后黑烟终日不散/);
   assert.match(outLocal, /北境商路因霜潮封冻中断/);
@@ -2936,12 +2966,50 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.equal(compatConflict.status, 'mismatch');
   assert.equal(compatConflict.mismatch, true);
 
-  // buildWorldbookJson 双条目派生、角色隔离、额外模型重扫时序（nc+2）与标准协议校验
-  assert.throws(() => buildWorldbookJson('no role marker', 'v1.4.9'), /_wbRole/);
-  const dualJson = buildWorldbookJson(ejsSource, 'v1.4.9');
-  assert.equal(dualJson.entries['0'].comment, '[mvu_plot]任务助手-剧情引导v1.4.9');
+  // 主世界书防误伤 & 版本提取边界（多数字标题取末段、主世界书书名不污染、缺 [mvu_*] 标签告警、多书合并、partial_disabled 指明角色）
+  assert.equal(extractVersionFromText('2.0版 任务助手v1.4.8'), 'v1.4.8');
+  assert.equal(isQuestAssistantEntry({ name: '事件链路与任务情报板适配说明', enabled: true, content: '请勿手改 /事件/任务情报板 字段。' }), false);
+  const wbMainBookSafe = inspectWorldbookEntries([
+    {
+      bookName: '命定之诗v4.3.4',
+      entries: [
+        { name: '事件适配备忘', enabled: true, content: '可参考 /事件/任务情报板 与 任务情报板 路径' },
+        { name: '[mvu_plot]任务助手-剧情引导', enabled: true, content: '// @role plot\n<任务情报板>...</任务情报板>' },
+      ],
+    },
+    {
+      bookName: '自建补充书',
+      entries: [
+        { name: '[mvu_update]任务助手-变量更新', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+      ],
+    },
+  ]);
+  assert.equal(wbMainBookSafe.version, '');
+  assert.equal(wbMainBookSafe.legacyDualMixed, undefined);
+  assert.equal(wbMainBookSafe.bookName, '命定之诗v4.3.4 / 自建补充书');
+
+  const wbMissingMvuTag = inspectWorldbookEntries([
+    {
+      bookName: '主世界书',
+      entries: [
+        { name: '剧情引导v1.4.8', enabled: true, content: '// @role plot\n<任务情报板>...</任务情报板>' },
+        { name: '[mvu_update]任务助手-变量更新v1.4.8', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+      ],
+    },
+  ]);
+  assert.equal(wbMissingMvuTag.missingMvuTag, true);
+  const compatMissingTag = checkWorldbookCompatibility(wbMissingMvuTag, { loadedRef: 'v1.4.8', scriptVersion: 'v1.4.8' });
+  assert.equal(compatMissingTag.status, 'missing_mvu_tag');
+  assert.equal(compatMissingTag.mismatch, true);
+  assert.match(compatPartial.message, /变量更新 \[mvu_update\]/);
+
+  // buildWorldbookJson 双条目派生、版本一致性校验、角色隔离、额外模型重扫时序与标准协议校验
+  assert.throws(() => buildWorldbookJson('no role marker', SCRIPT_VERSION), /_wbRole/);
+  assert.throws(() => buildWorldbookJson(ejsSource, 'v9.9.9'), /@version/);
+  const dualJson = buildWorldbookJson(ejsSource, SCRIPT_VERSION);
+  assert.equal(dualJson.entries['0'].comment, `[mvu_plot]任务助手-剧情引导${SCRIPT_VERSION}`);
   assert.equal(dualJson.entries['0'].order, 1150);
-  assert.equal(dualJson.entries['1'].comment, '[mvu_update]任务助手-变量更新v1.4.9');
+  assert.equal(dualJson.entries['1'].comment, `[mvu_update]任务助手-变量更新${SCRIPT_VERSION}`);
   assert.equal(dualJson.entries['1'].order, 99999);
   const plotSrc = dualJson.entries['0'].content;
   const updateSrc = dualJson.entries['1'].content;
@@ -2994,6 +3062,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
             方式: '调查',
             摘要: '王庭深处魔力紊乱',
             真相: '旧日封印松动',
+            预期收益: ['传说王庭徽章 ×1', '金币 ×300'],
           },
         ],
       },
@@ -3002,16 +3071,19 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   const plotOut = renderEjs(storyRelocateStat, { chat: extraChat12, lastUserMessageId: 10, source: plotSrc });
   const updateOut = renderEjs(extraRescanStat, { chat: extraChat12, lastUserMessageId: 10, source: updateSrc });
 
-  // plot 零加粗、零 Patch、零变量协议，且在 relocate + 活跃剧情任务下仍保留波折节拍与当前环境
+  // plot 零加粗、零 Patch、零变量协议，且在 relocate + 活跃剧情任务下仍保留波折节拍、收益边界与当前环境
   assert.equal((plotOut.match(/\*\*[^*]+\*\*/g) || []).length, 0, 'plot 模式不得包含加粗红线');
   assert.doesNotMatch(plotOut, /variables_update_rules|任务情报板变量更新协议|兑现Patch|失效Patch|完结移出|生成规格|严禁/);
   assert.match(plotOut, /当前环境:/);
   assert.match(plotOut, /波折节拍:/);
+  assert.match(plotOut, /收益边界:/);
+  assert.match(plotOut, /支线限本区单点闭环直接推进，不设反转/);
 
   // update 严格 1 处加粗、含标准隐形节点变量更新协议、零纯剧情波折重复、能识别前置用户消息提及的锁定任务、精准命中 rescan 且补剧情与词条
   assert.equal((updateOut.match(/\*\*[^*]+\*\*/g) || []).length, 1, 'update 模式应严格保留 1 处加粗红线');
   assert.match(updateOut, /<任务情报板变量更新协议>/);
   assert.match(updateOut, /<任务情报板当前状态>/);
+  assert.match(updateOut, /当前区余波键：未建立/);
   assert.match(updateOut, /任务情报板变量更新规则（路径为 `事件\.任务情报板`）:/);
   assert.doesNotMatch(updateOut, /^variables_update_rules:/m);
   assert.doesNotMatch(updateOut, /波折节拍:|演化与完结:|层级与串联:|层级护栏:/);
@@ -3020,14 +3092,59 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.match(updateOut, /没有剧情任务时补 1 条剧情任务/);
   assert.match(updateOut, /为当前区域写入 3 条差异化色阶的初始常驻词条/);
 
-  // 续写（continue）不放宽待重扫窗口
-  const updateContinueOut = renderEjs(extraRescanStat, {
-    chat: extraChat12,
-    lastUserMessageId: 10,
-    generateType: 'continue',
+  // maintain 模式下正文未直呼锁定任务标题时，update 轮仍保留 ★已锁定 项与兑现Patch
+  const maintainLockedStat = {
+    世界: { 地点: '铁炉堡-北区', 时间: '复兴纪元488年-5月-26日' },
+    任务列表: {},
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        更新日: '复兴纪元488年-5月-26日',
+        意向: ['q_locked'],
+        余波: { 铁炉堡: ['[绿]【矿炉稳产】高炉运转稳定，武器工坊供应充足。'] },
+        列表: [
+          { id: 'q_locked', 类别: '支线任务', 等级: 'D', 标题: '潮汐后续', 方式: '调查', 摘要: '港务官密报异常', 预期收益: ['金币 ×60'] },
+          { id: 'q2', 类别: '本地主线', 等级: 'C', 标题: '北区巡防', 方式: '委托', 摘要: '核查夜巡班次' },
+          { id: 'q3', 类别: '支线任务', 等级: 'D', 标题: '修理风箱', 方式: '委托', 摘要: '铁匠铺需要修风箱' },
+          { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '核对矿单', 方式: '委托', 摘要: '清点今日运矿清单' },
+          { id: 'q5', 类别: '支线任务', 等级: 'D', 标题: '清理炉灰', 方式: '委托', 摘要: '清理炉膛积灰' },
+        ],
+      },
+    },
+  };
+  const maintainLockedUpdateOut = renderEjs(maintainLockedStat, {
+    chat: [{ is_user: true, is_system: false, mes: '我去港务官办公室直接看一眼情况。' }],
+    lastUserMessageId: 0,
     source: updateSrc,
   });
-  assert.doesNotMatch(updateContinueOut, /启动地区情报重扫/);
+  assert.match(maintainLockedUpdateOut, /潮汐后续/);
+  assert.match(maintainLockedUpdateOut, /兑现Patch/);
+  assert.match(maintainLockedUpdateOut, /当前区余波键：已存在（铁炉堡）/);
+  assert.match(maintainLockedUpdateOut, /本区词条（键: `铁炉堡`，已存在）:/);
+
+  // init 模式下将首批余波并入整板 insert 示例，不重复要求独立 insert 余波
+  const initUpdateOut = renderEjs({ 世界: { 地点: '雾晶港', 时间: '复兴纪元488年-5月-26日' }, 事件: {} }, { source: updateSrc });
+  assert.match(initUpdateOut, /"余波": \{ "雾晶港": /);
+  assert.match(initUpdateOut, /不另行重复 `insert \/事件\/任务情报板\/余波`/);
+
+  // 续写（continue）与重Roll（swipe）均不放宽待重扫窗口，避免 plot/update 同一轮模式分裂
+  for (const genType of ['continue', 'swipe']) {
+    const gatedPlotOut = renderEjs(extraRescanStat, {
+      chat: extraChat12,
+      lastUserMessageId: 10,
+      generateType: genType,
+      source: plotSrc,
+    });
+    const gatedUpdateOut = renderEjs(extraRescanStat, {
+      chat: extraChat12,
+      lastUserMessageId: 10,
+      generateType: genType,
+      source: updateSrc,
+    });
+    assert.doesNotMatch(gatedPlotOut, /已预约地区情报重扫/, `${genType} 不应误触发 plot 重扫提示`);
+    assert.doesNotMatch(gatedUpdateOut, /启动地区情报重扫/, `${genType} 不应放宽 update 重扫窗口`);
+  }
 
   // 下一轮玩家再发消息（消息数=13，末尾 is_user: true）时 rescan 正常过期，不重复触发
   const extraChat13 = [...extraChat12, { is_user: true, is_system: false, mes: '下一轮' }];

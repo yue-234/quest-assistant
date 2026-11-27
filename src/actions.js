@@ -3,7 +3,7 @@
 
 import { DATA } from './data.js';
 import {
-  BOARD_KEY, CORE_NAME, SPEAKER, fpOf, boardNode, rescanFresh,
+  BOARD_KEY, CORE_NAME, SPEAKER, fpOf, boardNode, rescanFresh, lastNonSystemIsAssistant,
   normalizeDay, worldDay, cleanRewardText, parseClaimedSet, parseLostSet,
   mergeRewardMapEntries, normalizeQuestRewards,
   CLAIMED_MARK_RE, LOST_MARK_RE,
@@ -432,7 +432,12 @@ export function requestQuestRescan(stat, floor, chatCount, { nullCore = false } 
 }
 
 /** 重扫请求是否已过完额外模型结算窗口，可由界面或后台维护安全清理。 */
-export function questRescanDone(stat, currentFloor, currentCount, { extraFinished = false, extraAnalyzing = false } = {}) {
+export function questRescanDone(
+  stat,
+  currentFloor,
+  currentCount,
+  { extraFinished = false, extraAnalyzing = false, allowGrace = false, chat, lastIsAssistant } = {},
+) {
   if (extraAnalyzing) return false;
   const pending = obj(boardNode(stat)['待重扫']);
   if (!Object.keys(pending).length) return false;
@@ -441,16 +446,26 @@ export function questRescanDone(stat, currentFloor, currentCount, { extraFinishe
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   };
+  const isAssistantTail = typeof lastIsAssistant === 'boolean'
+    ? lastIsAssistant
+    : lastNonSystemIsAssistant(chat);
+  const settled = extraFinished || allowGrace;
   const atCount = num(pending['消息数']);
   const nowCount = num(currentCount);
-  // 额外模型在主回复落楼（nowCount === atCount + 2）后才排队执行，需等到变量更新结束事件或超过该窗口后再清理
+  // 额外模型在主回复落楼后才排队执行，需等到变量更新结束事件、落楼宽限期满或进入下一轮后再清理
   if (atCount !== null && nowCount !== null) {
-    return nowCount > atCount + 2 || (extraFinished && nowCount === atCount + 2);
+    if (nowCount > atCount + 2) return true;
+    if (nowCount === atCount + 2) return settled;
+    if (nowCount === atCount + 1 && isAssistantTail === true) return settled;
+    return false;
   }
   const atFloor = num(pending['楼层']);
   const nowFloor = num(currentFloor);
   if (atFloor !== null && nowFloor !== null) {
-    return nowFloor > atFloor + 2 || (extraFinished && nowFloor === atFloor + 2);
+    if (nowFloor > atFloor + 2) return true;
+    if (nowFloor === atFloor + 2) return settled;
+    if (nowFloor === atFloor + 1 && isAssistantTail === true) return settled;
+    return false;
   }
   return atCount === null && atFloor === null;
 }
@@ -734,10 +749,13 @@ export function sweepClosedQuests(stat, current = {}) {
 }
 
 /** 合并后台维护：单次顺序执行清重扫 → 扫完结残留 → 登记曾接取 → 清全地图过期词条，无改动时返回 { skip: true }。 */
-export function maintainQuestBoard(stat, { floor, chatCount, chat, historyStats, extraFinished = false, extraAnalyzing = false } = {}) {
+export function maintainQuestBoard(
+  stat,
+  { floor, chatCount, chat, historyStats, extraFinished = false, extraAnalyzing = false, allowGrace = false, lastIsAssistant } = {},
+) {
   let cur = stat;
   let changed = false;
-  if (questRescanDone(cur, floor, chatCount, { extraFinished, extraAnalyzing })) {
+  if (questRescanDone(cur, floor, chatCount, { extraFinished, extraAnalyzing, allowGrace, chat, lastIsAssistant })) {
     cur = clearQuestRescan(cur).stat;
     changed = true;
   }

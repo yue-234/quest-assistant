@@ -2,6 +2,45 @@
 import { parentWindow } from './host.js';
 
 const QUEUE_KEY = '__questHelperCommitQueue';
+const MVU_END_KEY = '__questHelperMvuEnd';
+
+/** 记录宿主页最近一次 MVU 变量更新完成信号（供 runtime 与 panel 共享）。 */
+export function recordMvuUpdateEnded(chatCount = null, chatId = '') {
+  try {
+    parentWindow[MVU_END_KEY] = {
+      chatCount: typeof chatCount === 'number' && Number.isFinite(chatCount) ? chatCount : null,
+      chatId: chatId ? String(chatId) : '',
+      at: Date.now(),
+    };
+  } catch {
+    /* 忽略宿主环境写入异常 */
+  }
+}
+
+/** 清除宿主页上的 MVU 变量更新完成信号。 */
+export function clearMvuUpdateEnded() {
+  try {
+    delete parentWindow[MVU_END_KEY];
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 判断宿主页记录的 MVU 更新结束事件是否匹配当前聊天与消息数。 */
+export function isMvuUpdateEndedFor({ chatCount = null, chatId = '' } = {}) {
+  try {
+    const rec = parentWindow[MVU_END_KEY];
+    if (!rec || typeof rec !== 'object') return false;
+    const curId = chatId ? String(chatId) : '';
+    if (curId && rec.chatId && rec.chatId !== curId) return false;
+    if (rec.chatCount !== null && typeof chatCount === 'number' && Number.isFinite(chatCount) && rec.chatCount !== chatCount) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** 当前宿主是否正在运行 MVU 额外模型变量解析。 */
 export function extraAnalysisActive() {

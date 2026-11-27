@@ -90,15 +90,24 @@ function createWorldbookEntry({ uid, comment, order, content }) {
 export function buildWorldbookJson(ejsContent, version = SCRIPT_VERSION) {
   const normalized = String(ejsContent ?? '').replace(/\r\n/g, '\n');
   const roleConstRe = /const\s+_wbRole\s*=\s*['"]all['"]\s*;/;
-  if (!roleConstRe.test(normalized)) {
-    throw new Error("世界书源码缺少角色声明 `const _wbRole = 'all';`，无法导出双条目世界书");
+  const roleMetaRe = /\/\/\s*@role\s+all\b/;
+  if (!roleConstRe.test(normalized) || !roleMetaRe.test(normalized)) {
+    throw new Error("世界书源码缺少角色声明（`// @role all` 与 `const _wbRole = 'all';`），无法导出双条目世界书");
   }
   const ver = String(version ?? '').trim();
+  const verMetaMatch = normalized.match(/\/\/\s*@version\s+([^\s\r\n]+)/i);
+  if (verMetaMatch && /^v?\d+\.\d+\.\d+/i.test(ver)) {
+    const srcVer = verMetaMatch[1].replace(/^v/i, '');
+    const targetVer = ver.replace(/^v/i, '');
+    if (srcVer !== targetVer) {
+      throw new Error(`世界书源码 @version（v${srcVer}）与目标版本（v${targetVer}）不一致`);
+    }
+  }
   const renderRole = (role) => {
     const out = normalized
-      .replace(/\/\/\s*@role\s+all\b/, `// @role ${role}`)
+      .replace(roleMetaRe, `// @role ${role}`)
       .replace(roleConstRe, `const _wbRole = '${role}';`);
-    if (out === normalized || !out.includes(`const _wbRole = '${role}';`)) {
+    if (out === normalized || !out.includes(`// @role ${role}`) || !out.includes(`const _wbRole = '${role}';`)) {
       throw new Error(`世界书角色派生失败（目标角色：${role}）`);
     }
     return out;

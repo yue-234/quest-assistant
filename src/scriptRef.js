@@ -70,25 +70,30 @@ export function hasNewerScriptVersion(latestTag, meta = {}) {
 
 /** 从文本（如世界书子标题 "任务助手v1.4.4"）中提取并归一化版本号（vX.Y.Z）。 */
 export function extractVersionFromText(text) {
-  const m = String(text ?? '').match(/(?:^|[^a-zA-Z0-9_.])v?(\d+\.\d+(?:\.\d+)?)(?=$|[^a-zA-Z0-9_.])/i);
-  if (!m) return '';
-  return `v${m[1]}`;
+  const matches = [...String(text ?? '').matchAll(/(?:^|[^a-zA-Z0-9_.])v?(\d+\.\d+(?:\.\d+)?)(?=$|[^a-zA-Z0-9_.])/gi)];
+  if (!matches.length) return '';
+  return `v${matches[matches.length - 1][1]}`;
 }
 
-/** 判断一条世界书条目是否属于「任务助手」。 */
+/** 判断一条世界书条目是否属于「任务助手」（避免主世界书中普通说明/备忘误判）。 */
 export function isQuestAssistantEntry(entry) {
   if (!entry || typeof entry !== 'object') return false;
   const content = String(entry.content ?? '');
   if (
-    content.includes('/事件/任务情报板')
-    || content.includes('<任务情报板>')
-    || content.includes('<任务情报板变量更新协议>')
+    content.includes('<任务情报板变量更新协议>')
+    || content.includes('<任务情报板当前状态>')
     || content.includes('yue-234/quest-assistant')
+    || /\/\/\s*@role\s+(?:plot|update|all)\b/i.test(content)
+    || /const\s+_wbRole\s*=\s*['"](?:plot|update|all)['"]/.test(content)
+    || (/\/\/\s*@version\b/i.test(content) && content.includes('/事件/任务情报板'))
+    || (content.includes('<任务情报板>') && content.includes('</任务情报板>'))
   ) {
     return true;
   }
   const title = String(entry.name ?? entry.comment ?? '').trim();
-  return title.includes('任务助手') || title.includes('任务情报板');
+  if (title.includes('任务助手')) return true;
+  const hasMvuRoleTag = /\[(?:mvu_plot|mvu_update)\]/i.test(title);
+  return hasMvuRoleTag && (title.includes('剧情引导') || title.includes('变量更新') || title.includes('任务情报板'));
 }
 
 function extractEntryContentVersion(content) {
@@ -101,22 +106,22 @@ function detectEntryRole(entry) {
   const content = String(entry?.content ?? '');
   const hasPlotTag = /\[mvu_plot\]/i.test(title);
   const hasUpdateTag = /\[mvu_update\]/i.test(title);
-  if (hasPlotTag && hasUpdateTag) return 'all';
-  if (hasPlotTag) return 'plot';
-  if (hasUpdateTag) return 'update';
+  if (hasPlotTag && hasUpdateTag) return { role: 'all', hasMvuTag: true };
+  if (hasPlotTag) return { role: 'plot', hasMvuTag: true };
+  if (hasUpdateTag) return { role: 'update', hasMvuTag: true };
   const roleMeta = content.match(/\/\/\s*@role\s+(plot|update|all)\b/i);
   if (roleMeta) {
     const r = roleMeta[1].toLowerCase();
-    return r === 'plot' || r === 'update' ? r : 'all';
+    return { role: r === 'plot' || r === 'update' ? r : 'all', hasMvuTag: false };
   }
   const roleConst = content.match(/const\s+_wbRole\s*=\s*['"](plot|update|all)['"]/);
   if (roleConst) {
     const r = roleConst[1];
-    return r === 'plot' || r === 'update' ? r : 'all';
+    return { role: r === 'plot' || r === 'update' ? r : 'all', hasMvuTag: false };
   }
-  if (title.includes('剧情引导')) return 'plot';
-  if (title.includes('变量更新')) return 'update';
-  return 'all';
+  if (title.includes('剧情引导')) return { role: 'plot', hasMvuTag: false };
+  if (title.includes('变量更新')) return { role: 'update', hasMvuTag: false };
+  return { role: 'all', hasMvuTag: false };
 }
 
 /** 从当前启用的世界书集合中定位任务助手条目，并优先从其子标题提取版本号。 */
@@ -131,10 +136,10 @@ export function inspectWorldbookEntries(bookEntriesList = []) {
       const enabled = entry.enabled !== false && entry.disable !== true;
       const titleVer = extractVersionFromText(title);
       const contentVer = extractEntryContentVersion(entry.content);
-      const bookVer = extractVersionFromText(bookName);
+      const bookVer = bookName.includes('任务助手') ? extractVersionFromText(bookName) : '';
       const version = titleVer || contentVer || bookVer;
-      const role = detectEntryRole(entry);
-      candidates.push({ bookName, title, enabled, version, role });
+      const { role, hasMvuTag } = detectEntryRole(entry);
+      candidates.push({ bookName, title, enabled, version, role, hasMvuTag });
     }
   }
 
@@ -191,7 +196,11 @@ export function inspectWorldbookEntries(bookEntriesList = []) {
   const missingRoleVersion = hasVersioned && hasUnversioned;
   const versionConflict = distinctVersions.length > 1;
 
+  const missingMvuTag = hasDualEnabled
+    && enabledCandidates.some((c) => (c.role === 'plot' || c.role === 'update') && !c.hasMvuTag);
+
   const primary = enabledPlot[0] || enabledUpdate[0] || enabledCandidates[0];
+  const bookNames = [...new Set(enabledCandidates.map((c) => c.bookName).filter(Boolean))];
   const resolvedVersion = versionConflict
     ? (distinctVersions[distinctVersions.length - 1] || primary.version)
     : (distinctVersions[0] || primary.version);
@@ -202,7 +211,7 @@ export function inspectWorldbookEntries(bookEntriesList = []) {
     enabled: true,
     version: resolvedVersion,
     title: primary.title,
-    bookName: primary.bookName,
+    bookName: bookNames.join(' / ') || primary.bookName,
   };
   if (hasDualEnabled) {
     result.dualMode = true;
@@ -214,6 +223,7 @@ export function inspectWorldbookEntries(bookEntriesList = []) {
   }
   if (legacyDualMixed) result.legacyDualMixed = true;
   if (duplicateConflict) result.duplicateConflict = true;
+  if (missingMvuTag) result.missingMvuTag = true;
   if (missingRoleVersion) result.missingRoleVersion = true;
   if (versionConflict) {
     result.versionConflict = true;
@@ -274,12 +284,24 @@ export function checkWorldbookCompatibility(wbInfo, scriptMeta = {}) {
     };
   }
   if (wbInfo.partialDisabled) {
+    const missingLabel = wbInfo.missingRole === 'plot'
+      ? '「剧情引导 [mvu_plot]」'
+      : (wbInfo.missingRole === 'update' ? '「变量更新 [mvu_update]」' : '另一半');
     return {
       status: 'partial_disabled',
       mismatch: true,
       worldbookVersion: wbInfo.version || '',
       scriptVersion: scriptVer,
-      message: '任务助手双条目世界书仅启用了部分条目，请同时启用「剧情引导」与「变量更新」条目',
+      message: `任务助手双条目世界书仅启用了部分条目，缺少${missingLabel}，请同时启用两个条目`,
+    };
+  }
+  if (wbInfo.missingMvuTag) {
+    return {
+      status: 'missing_mvu_tag',
+      mismatch: true,
+      worldbookVersion: wbInfo.version || '',
+      scriptVersion: scriptVer,
+      message: '分拆条目标题缺少 [mvu_plot] 或 [mvu_update] 前缀，MVU 无法自动分流，请补上标签或重新导入世界书',
     };
   }
   if (wbInfo.versionConflict) {

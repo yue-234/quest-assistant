@@ -291,6 +291,17 @@ export function normalizeQuestRewards(raw) {
     .filter(Boolean);
 }
 
+/** 提取聊天列表中最后一条非系统消息是否属于 AI 回复。 */
+export function lastNonSystemIsAssistant(chat) {
+  if (!Array.isArray(chat) || !chat.length) return null;
+  for (let i = chat.length - 1; i >= 0; i -= 1) {
+    const m = chat[i];
+    if (!m || m.is_system) continue;
+    return m.is_user === false;
+  }
+  return null;
+}
+
 /** 一次重扫请求是否仍然新鲜（尚未经过下一回合消费；额外模型解析期间仍保持锁定）。 */
 export function rescanFresh(pending, current = {}) {
   if (!pending || !Object.keys(pending).length) return false;
@@ -299,15 +310,29 @@ export function rescanFresh(pending, current = {}) {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   };
+  const isAssistantTail = typeof current.lastIsAssistant === 'boolean'
+    ? current.lastIsAssistant
+    : lastNonSystemIsAssistant(current.chat);
   const atCount = num(pending['消息数']);
   const nowCount = num(current.chatCount);
   if (atCount !== null && nowCount !== null) {
-    if (nowCount <= atCount + 1) return true;
-    return !!current.extraAnalyzing && nowCount === atCount + 2;
+    if (nowCount <= atCount) return true;
+    if (nowCount === atCount + 1) {
+      return isAssistantTail === true ? !!current.extraAnalyzing : true;
+    }
+    if (nowCount === atCount + 2) return !!current.extraAnalyzing;
+    return false;
   }
   const atFloor = num(pending['楼层']);
   const nowFloor = num(current.floor);
-  if (atFloor !== null && nowFloor !== null) return nowFloor <= atFloor + 2;
+  if (atFloor !== null && nowFloor !== null) {
+    if (nowFloor <= atFloor) return true;
+    if (nowFloor === atFloor + 1) {
+      return isAssistantTail === true ? !!current.extraAnalyzing : true;
+    }
+    if (nowFloor === atFloor + 2) return !!current.extraAnalyzing;
+    return false;
+  }
   return false;
 }
 

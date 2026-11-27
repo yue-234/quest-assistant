@@ -11,7 +11,14 @@ import {
   questRescanDone,
   maintainQuestBoard,
 } from './actions.js';
-import { commit, extraAnalysisActive, generating } from './commit.js';
+import {
+  clearMvuUpdateEnded,
+  commit,
+  extraAnalysisActive,
+  generating,
+  isMvuUpdateEndedFor,
+  recordMvuUpdateEnded,
+} from './commit.js';
 import { SCRIPT_VERSION } from './data.js';
 import * as host from './host.js';
 import { mountFab } from './fab.js';
@@ -320,11 +327,43 @@ export function start() {
   let bgTimer = 0;
   let bgSweeping = false;
   let bgCooldownUntil = 0;
-  let mvuEndSeen = false;
-  let mvuEndChatCount = null;
+  let lastMsgRecvAt = 0;
+  let lastMsgRecvCount = null;
+  let graceRetry = 0;
+
+  const RESCAN_GRACE_MS = 1800;
+
+  const refreshOpenPanel = () => {
+    if (!panelOpened || !frame) return;
+    try {
+      frame.contentWindow?.questHelperPanel?.refresh?.();
+    } catch {
+      /* 忽略跨域或卸载态 */
+    }
+  };
+
+  const evalGrace = (curCount, extraFinished, extraAnalyzing) => {
+    if (extraAnalyzing || extraFinished) return { allowGrace: false, waitGraceMs: 0 };
+    if (lastMsgRecvAt && (lastMsgRecvCount === null || lastMsgRecvCount === curCount)) {
+      const elapsed = Date.now() - lastMsgRecvAt;
+      if (elapsed < RESCAN_GRACE_MS) {
+        return { allowGrace: false, waitGraceMs: RESCAN_GRACE_MS - elapsed + 50 };
+      }
+    }
+    return { allowGrace: true, waitGraceMs: 0 };
+  };
 
   const runQuestBoardMaintenance = async () => {
-    if (generating()) return;
+    if (generating()) {
+      if (graceRetry < 20) {
+        graceRetry += 1;
+        clearTimeout(bgTimer);
+        bgTimer = setTimeout(() => {
+          void runQuestBoardMaintenance();
+        }, 1500);
+      }
+      return;
+    }
     if (bgSweeping) {
       clearTimeout(bgTimer);
       bgTimer = setTimeout(() => {
@@ -340,6 +379,7 @@ export function start() {
       }, waitMs + 50);
       return;
     }
+    graceRetry = 0;
     let stat;
     try {
       stat = host.readStat();
@@ -355,16 +395,29 @@ export function start() {
     const chatSnapshot = readHostChat();
     const curFloor = readHostFloor();
     const curCount = chatSnapshot ? chatSnapshot.length : null;
+    const curChatId = host.readChatId();
     const extraAnalyzing = extraAnalysisActive();
-    const extraFinished = mvuEndSeen && (mvuEndChatCount === null || mvuEndChatCount === curCount);
-    const needClearRescan = questRescanDone(stat, curFloor, curCount, { extraFinished, extraAnalyzing });
+    const extraFinished = isMvuUpdateEndedFor({ chatCount: curCount, chatId: curChatId });
+    const { allowGrace, waitGraceMs } = evalGrace(curCount, extraFinished, extraAnalyzing);
+
+    const needClearRescan = questRescanDone(stat, curFloor, curCount, {
+      extraFinished,
+      extraAnalyzing,
+      allowGrace,
+      chat: chatSnapshot,
+    });
     const needSweep = !!board['列表'] && hasClosedQuestLeftovers(stat, { chat: chatSnapshot });
     const needRecord = !!board['列表'] && needsQuestAcceptedRecord(stat);
     const needSweepExpired = hasExpiredAftermath(stat);
+
     if (!needClearRescan && !needSweep && !needRecord && !needSweepExpired) {
-      if (extraFinished && !board['待重扫']) {
-        mvuEndSeen = false;
-        mvuEndChatCount = null;
+      if (board['待重扫'] && waitGraceMs > 0) {
+        clearTimeout(bgTimer);
+        bgTimer = setTimeout(() => {
+          void runQuestBoardMaintenance();
+        }, waitGraceMs);
+      } else if (extraFinished && !board['待重扫']) {
+        clearMvuUpdateEnded();
       }
       return;
     }
@@ -372,18 +425,34 @@ export function start() {
     bgSweeping = true;
     try {
       const result = await commit(
-        (statNow) => maintainQuestBoard(statNow, {
-          floor: curFloor,
-          chatCount: curCount,
-          chat: chatSnapshot,
-          extraFinished,
-          extraAnalyzing,
-        }),
+        (statNow) => {
+          // 在写锁回调内重读最新宿主页快照，防止排队期间聊天与分析状态变化
+          const liveChat = readHostChat();
+          const liveFloor = readHostFloor();
+          const liveCount = liveChat ? liveChat.length : null;
+          const liveChatId = host.readChatId();
+          const liveAnalyzing = extraAnalysisActive();
+          const liveExtraFinished = isMvuUpdateEndedFor({ chatCount: liveCount, chatId: liveChatId });
+          const liveGrace = evalGrace(liveCount, liveExtraFinished, liveAnalyzing).allowGrace;
+          return maintainQuestBoard(statNow, {
+            floor: liveFloor,
+            chatCount: liveCount,
+            chat: liveChat,
+            extraFinished: liveExtraFinished,
+            extraAnalyzing: liveAnalyzing,
+            allowGrace: liveGrace,
+          });
+        },
         { core: CORE_NAME, speaker: SPEAKER, redraw: false },
       );
-      if (extraFinished && result && !result.error) {
-        mvuEndSeen = false;
-        mvuEndChatCount = null;
+      if (result && !result.error) {
+        if (extraFinished || !host.readStat?.()?.['事件']?.[BOARD_KEY]?.['待重扫']) {
+          clearMvuUpdateEnded();
+        }
+        if (!result.skipped) {
+          syncEntryUnread();
+          refreshOpenPanel();
+        }
       }
       bgCooldownUntil = Date.now() + 1500;
     } catch {
@@ -394,10 +463,14 @@ export function start() {
   };
 
   const scheduleMaintenance = (fromMvuEnd = false) => {
+    const snap = readHostChat();
+    const curCount = snap ? snap.length : null;
     if (fromMvuEnd) {
-      mvuEndSeen = true;
-      const snap = readHostChat();
-      mvuEndChatCount = snap ? snap.length : null;
+      recordMvuUpdateEnded(curCount, host.readChatId());
+    } else {
+      lastMsgRecvAt = Date.now();
+      lastMsgRecvCount = curCount;
+      graceRetry = 0;
     }
     const delay = bgSweeping ? 500 : Math.max(600, bgCooldownUntil - Date.now() + 50);
     clearTimeout(bgTimer);
@@ -409,16 +482,20 @@ export function start() {
   if (events && events.CHAT_CHANGED) {
     listen(events.CHAT_CHANGED, () => {
       clearTimeout(bgTimer);
-      mvuEndSeen = false;
-      mvuEndChatCount = null;
+      lastMsgRecvAt = 0;
+      lastMsgRecvCount = null;
+      graceRetry = 0;
+      clearMvuUpdateEnded();
       close();
       syncEntryUnread();
     });
   }
   const onPassiveRefresh = () => {
     clearTimeout(bgTimer);
-    mvuEndSeen = false;
-    mvuEndChatCount = null;
+    lastMsgRecvAt = 0;
+    lastMsgRecvCount = null;
+    graceRetry = 0;
+    clearMvuUpdateEnded();
     syncEntryUnread();
   };
   listen(events && events.MESSAGE_RECEIVED ? events.MESSAGE_RECEIVED : 'message_received', () => scheduleMaintenance(false));
