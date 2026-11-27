@@ -1,13 +1,14 @@
-// 命定之诗 · 独立任务助手（jsDelivr 远程自动更新加载器）
+// 命定之诗 · 独立任务助手（jsDelivr 远程版本切换加载器）
 // 项目地址：https://github.com/yue-234/quest-assistant
 // 使用方式：将本文件全文粘贴至酒馆脚本助手（TavernHelper）新建脚本并启用即可。
-// 默认跟随 @main 分支最新构建；如需锁定版本，可将 REF 改为具体 Git Tag（例如 'v1.0.0'）。
+// 默认基准版本：v1.4.0；可直接修改下方 DEFAULT_REF，或在面板「⚙ 设置」中随时切换版本号。
 
 (function () {
+  const DEFAULT_REF = 'v1.4.0';
   const REPO = 'yue-234/quest-assistant';
-  const REF = 'main';
   const ASSET_PATH = 'dist/quest-assistant.js';
-  const STORAGE_KEY = 'quest_helper_cdn_origin_v1';
+  const ORIGIN_STORAGE_KEY = 'quest_helper_cdn_origin_v1';
+  const REF_STORAGE_KEY = 'quest_helper_script_ref_v1';
   const TIMEOUT_MS = 8000;
   const CDN_ORIGINS = [
     'https://testingcf.jsdelivr.net',
@@ -25,10 +26,10 @@
     return window;
   }
 
-  function readSavedOrigin() {
+  function readStorage(key) {
     for (const win of [parentWindow(), window]) {
       try {
-        const val = win?.localStorage?.getItem(STORAGE_KEY) || '';
+        const val = win?.localStorage?.getItem(key) || '';
         if (val) return val;
       } catch {
         /* 忽略 */
@@ -37,17 +38,25 @@
     return '';
   }
 
-  function saveOrigin(origin) {
+  function writeStorage(key, val) {
     for (const win of [parentWindow(), window]) {
       try {
         if (win?.localStorage) {
-          win.localStorage.setItem(STORAGE_KEY, origin);
+          win.localStorage.setItem(key, val);
           return;
         }
       } catch {
         /* 忽略 */
       }
     }
+  }
+
+  function normalizeRef(raw) {
+    const cleaned = String(raw ?? '').trim().replace(/^@+/, '');
+    if (!cleaned || cleaned.length > 64 || cleaned.includes('..') || cleaned.startsWith('/') || cleaned.endsWith('/')) {
+      return '';
+    }
+    return /^[A-Za-z0-9._/-]+$/.test(cleaned) ? cleaned : '';
   }
 
   function notifyError(message) {
@@ -57,7 +66,7 @@
   }
 
   function buildCandidateOrigins() {
-    const saved = readSavedOrigin();
+    const saved = readStorage(ORIGIN_STORAGE_KEY);
     if (!saved || !CDN_ORIGINS.includes(saved)) return CDN_ORIGINS.slice();
     return [saved, ...CDN_ORIGINS.filter((item) => item !== saved)];
   }
@@ -81,23 +90,89 @@
     }
   }
 
-  async function boot() {
+  async function fetchByRef(ref) {
     const origins = buildCandidateOrigins();
     const errors = [];
     for (const origin of origins) {
-      const url = `${origin}/gh/${REPO}@${REF}/${ASSET_PATH}`;
+      const url = `${origin}/gh/${REPO}@${ref}/${ASSET_PATH}`;
       try {
         const code = await fetchScript(url);
-        saveOrigin(origin);
-        (0, eval)(code);
-        return;
+        writeStorage(ORIGIN_STORAGE_KEY, origin);
+        return { code, origin, ref };
       } catch (err) {
         errors.push(`${origin}: ${err && err.message ? err.message : err}`);
       }
     }
-    notifyError(
-      `任务助手远程脚本加载失败（所有 jsDelivr 节点均不可达），请检查网络或改用离线版「⭐粘这个-任务助手脚本.js」。详情：${errors.join(' | ')}`,
-    );
+    throw new Error(errors.join(' | '));
+  }
+
+  const remoteState = {
+    defaultRef: DEFAULT_REF,
+    loadedRef: DEFAULT_REF,
+    loadedOrigin: '',
+    async switchRef(nextRef, { reopen = false } = {}) {
+      const normalized = normalizeRef(nextRef);
+      const targetRef = normalized || DEFAULT_REF;
+      const prevOverride = readStorage(REF_STORAGE_KEY);
+      const result = await fetchByRef(targetRef);
+      writeStorage(REF_STORAGE_KEY, normalized);
+      remoteState.loadedRef = result.ref;
+      remoteState.loadedOrigin = result.origin;
+      const win = parentWindow();
+      try {
+        if (win?.QuestHelperApp && typeof win.QuestHelperApp.stop === 'function') {
+          win.QuestHelperApp.stop();
+        }
+        (0, eval)(result.code);
+        if (reopen && win?.QuestHelperApp && typeof win.QuestHelperApp.open === 'function') {
+          void win.QuestHelperApp.open();
+        }
+        return { ref: result.ref, origin: result.origin };
+      } catch (err) {
+        writeStorage(REF_STORAGE_KEY, prevOverride);
+        throw err;
+      }
+    },
+  };
+
+  function exposeRemoteHandle() {
+    const win = parentWindow();
+    if (win) win.__QuestHelperRemoteLoader = remoteState;
+    globalThis.__QuestHelperRemoteLoader = remoteState;
+  }
+
+  async function boot() {
+    exposeRemoteHandle();
+    const customRef = normalizeRef(readStorage(REF_STORAGE_KEY));
+    const preferredRef = customRef || DEFAULT_REF;
+
+    try {
+      const result = await fetchByRef(preferredRef);
+      remoteState.loadedRef = result.ref;
+      remoteState.loadedOrigin = result.origin;
+      (0, eval)(result.code);
+      return;
+    } catch (firstErr) {
+      if (customRef && customRef !== DEFAULT_REF) {
+        writeStorage(REF_STORAGE_KEY, '');
+        try {
+          const fallback = await fetchByRef(DEFAULT_REF);
+          remoteState.loadedRef = fallback.ref;
+          remoteState.loadedOrigin = fallback.origin;
+          (0, eval)(fallback.code);
+          notifyError(`自定义版本 ${customRef} 加载失败，已自动回退到默认版本 ${DEFAULT_REF}`);
+          return;
+        } catch (fallbackErr) {
+          notifyError(
+            `任务助手远程脚本加载失败（${customRef} 与默认 ${DEFAULT_REF} 均不可达），请检查网络或改用离线版「⭐粘这个-任务助手脚本.js」。详情：${fallbackErr?.message || fallbackErr}`,
+          );
+          return;
+        }
+      }
+      notifyError(
+        `任务助手远程脚本加载失败（版本 ${preferredRef} 所有 jsDelivr 节点均不可达），请检查网络或改用离线版「⭐粘这个-任务助手脚本.js」。详情：${firstErr?.message || firstErr}`,
+      );
+    }
   }
 
   void boot();

@@ -41,6 +41,14 @@ import {
   writeEntryMode,
 } from './src/entryMode.js';
 import { mountWand } from './src/wand.js';
+import {
+  DEFAULT_SCRIPT_REF,
+  SCRIPT_REF_KEY,
+  normalizeScriptRef,
+  readScriptRef,
+  writeScriptRef,
+  fetchAvailableScriptRefs,
+} from './src/scriptRef.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -1678,24 +1686,60 @@ test('构建产物 ⭐粘这个-任务助手脚本.js、.txt 与 dist/quest-assi
   assert.match(code, /quest-helper-fab/);
   assert.match(code, /quest-helper-wand-item/);
   assert.match(code, /quest_helper_entry_mode_v1/);
+  assert.match(code, /quest_helper_script_ref_v1/);
+  assert.match(code, /v1\.4\.0/);
   assert.doesNotThrow(() => new Function(code), '产物必须通过 new Function 语法校验');
+  assert.doesNotThrow(() => new Function(`"use strict";\n${code}`), '产物必须兼容严格模式 / ES Module import');
 });
 
-test('jsDelivr 远程自动更新脚本：多节点回退、内容校验、记住可用节点与失败提示', async () => {
+test('脚本版本号配置与可用版本拉取：归一化、读写与 jsDelivr 列表降级', async () => {
+  assert.equal(DEFAULT_SCRIPT_REF, 'v1.4.0');
+  assert.equal(normalizeScriptRef(' @v1.4.0 '), 'v1.4.0');
+  assert.equal(normalizeScriptRef('main'), 'main');
+  assert.equal(normalizeScriptRef('../evil'), '');
+  assert.equal(normalizeScriptRef('/v1.4.0'), '');
+  assert.equal(normalizeScriptRef('v1.4.0?x=1'), '');
+
+  const mem = new Map();
+  const read = (k) => mem.get(k) || '';
+  const write = (k, v) => mem.set(k, v);
+  assert.equal(readScriptRef(read), '');
+  assert.equal(writeScriptRef(write, '@v1.4.2'), 'v1.4.2');
+  assert.equal(mem.get(SCRIPT_REF_KEY), 'v1.4.2');
+  assert.equal(readScriptRef(read), 'v1.4.2');
+  assert.equal(writeScriptRef(write, ''), '');
+  assert.equal(readScriptRef(read), '');
+
+  const refs = await fetchAvailableScriptRefs(async () => ({
+    ok: true,
+    json: async () => ({ versions: [{ version: 'v1.4.1' }, { version: 'v1.4.0' }] }),
+  }));
+  assert.deepEqual(refs, ['v1.4.1', 'v1.4.0', 'main']);
+
+  const fallbackRefs = await fetchAvailableScriptRefs(async () => {
+    throw new Error('offline');
+  });
+  assert.deepEqual(fallbackRefs, ['v1.4.0', 'main']);
+});
+
+test('jsDelivr 远程自动更新脚本：默认 v1.4.0、多节点回退、热切版本与失效自动回退', async () => {
   assert.equal(fs.existsSync(remoteLoaderPath), true, '应存在远程自动更新脚本');
   const loaderCode = fs.readFileSync(remoteLoaderPath, 'utf8');
   assert.doesNotThrow(() => new Function(loaderCode), '远程加载器必须语法合法');
+  assert.match(loaderCode, /DEFAULT_REF = 'v1\.4\.0'/);
   assert.match(loaderCode, /testingcf\.jsdelivr\.net/);
   assert.match(loaderCode, /cdn\.jsdelivr\.net/);
   assert.match(loaderCode, /fastly\.jsdelivr\.net/);
   assert.match(loaderCode, /gcore\.jsdelivr\.net/);
   assert.match(loaderCode, /dist\/quest-assistant\.js/);
 
-  // 场景 1：前两节点异常/返回伪装页面，自动回退第三节点并记住节点
+  // 场景 1：默认拉取 v1.4.0，前两节点异常/返回伪装页面，自动回退第三节点并支持 switchRef 热切换
   const storage = new Map();
   const requestedUrls = [];
   const errors = [];
-  let executedCount = 0;
+  let stopCalls = 0;
+  let openCalls = 0;
+  let loadedTags = [];
   const ctx1 = {
     console: { error: () => {} },
     setTimeout,
@@ -1710,39 +1754,95 @@ test('jsDelivr 远程自动更新脚本：多节点回退、内容校验、记�
     toastr: { error: (m) => errors.push(m) },
     fetch: async (url) => {
       requestedUrls.push(url);
-      if (url.startsWith('https://testingcf.jsdelivr.net')) {
+      if (url.includes('@v1.4.0/') && url.startsWith('https://testingcf.jsdelivr.net')) {
         return { ok: false, status: 503, text: async () => '' };
       }
-      if (url.startsWith('https://cdn.jsdelivr.net')) {
+      if (url.includes('@v1.4.0/') && url.startsWith('https://cdn.jsdelivr.net')) {
         return { ok: true, status: 200, text: async () => '<html>blocked</html>' };
       }
+      if (url.includes('@missing-tag/')) {
+        return { ok: false, status: 404, text: async () => '' };
+      }
+      const tagMatch = url.match(/@([^/]+)\//);
+      const tag = tagMatch ? tagMatch[1] : '';
       return {
         ok: true,
         status: 200,
-        text: async () => 'globalThis.QuestHelperApp = { ok: true }; __markExecuted();',
+        text: async () =>
+          `window.QuestHelperApp = { stop: () => __onStop(), open: () => __onOpen() }; __onLoad(${JSON.stringify(tag)});`,
       };
     },
-    __markExecuted: () => {
-      executedCount += 1;
-    },
+    __onStop: () => { stopCalls += 1; },
+    __onOpen: () => { openCalls += 1; },
+    __onLoad: (tag) => { loadedTags.push(tag); },
   };
   ctx1.globalThis = ctx1;
   ctx1.window.parent = ctx1.window;
   vm.runInNewContext(loaderCode, ctx1);
   await new Promise((r) => setTimeout(r, 30));
 
-  assert.equal(executedCount, 1);
+  assert.deepEqual(loadedTags, ['v1.4.0']);
   assert.equal(errors.length, 0);
   assert.deepEqual(requestedUrls, [
-    'https://testingcf.jsdelivr.net/gh/yue-234/quest-assistant@main/dist/quest-assistant.js',
-    'https://cdn.jsdelivr.net/gh/yue-234/quest-assistant@main/dist/quest-assistant.js',
-    'https://fastly.jsdelivr.net/gh/yue-234/quest-assistant@main/dist/quest-assistant.js',
+    'https://testingcf.jsdelivr.net/gh/yue-234/quest-assistant@v1.4.0/dist/quest-assistant.js',
+    'https://cdn.jsdelivr.net/gh/yue-234/quest-assistant@v1.4.0/dist/quest-assistant.js',
+    'https://fastly.jsdelivr.net/gh/yue-234/quest-assistant@v1.4.0/dist/quest-assistant.js',
   ]);
   assert.equal(storage.get('quest_helper_cdn_origin_v1'), 'https://fastly.jsdelivr.net');
+  assert.equal(ctx1.window.__QuestHelperRemoteLoader.loadedRef, 'v1.4.0');
 
-  // 场景 2：所有节点不可达时触发 toastr.error 提醒改用离线版
-  const failErrors = [];
+  // 热切换至 v1.4.2（应先拉取校验，停止旧实例并重新执行和打开）
+  const switched = await ctx1.window.__QuestHelperRemoteLoader.switchRef('v1.4.2', { reopen: true });
+  assert.equal(switched.ref, 'v1.4.2');
+  assert.equal(stopCalls, 1);
+  assert.equal(openCalls, 1);
+  assert.deepEqual(loadedTags, ['v1.4.0', 'v1.4.2']);
+  assert.equal(storage.get(SCRIPT_REF_KEY), 'v1.4.2');
+
+  // 切换到一个不存在的 tag 应抛错且保留原有运行版本与设置
+  await assert.rejects(() => ctx1.window.__QuestHelperRemoteLoader.switchRef('missing-tag'));
+  assert.equal(storage.get(SCRIPT_REF_KEY), 'v1.4.2');
+  assert.equal(ctx1.window.__QuestHelperRemoteLoader.loadedRef, 'v1.4.2');
+
+  // 场景 2：启动时保存的自定义版本失效（全节点 404），应自动清除并回退默认 v1.4.0
+  const fallbackStorage = new Map([[SCRIPT_REF_KEY, 'bad-tag']]);
+  const fallbackErrors = [];
+  const fallbackLoaded = [];
   const ctx2 = {
+    console: { error: () => {} },
+    setTimeout,
+    clearTimeout,
+    AbortController,
+    window: {
+      localStorage: {
+        getItem: (k) => fallbackStorage.get(k) ?? null,
+        setItem: (k, v) => fallbackStorage.set(k, String(v)),
+      },
+    },
+    toastr: { error: (m) => fallbackErrors.push(m) },
+    fetch: async (url) => {
+      if (url.includes('@bad-tag/')) return { ok: false, status: 404, text: async () => '' };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => 'window.QuestHelperApp = {}; __record("v1.4.0");',
+      };
+    },
+    __record: (v) => fallbackLoaded.push(v),
+  };
+  ctx2.globalThis = ctx2;
+  ctx2.window.parent = ctx2.window;
+  vm.runInNewContext(loaderCode, ctx2);
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.deepEqual(fallbackLoaded, ['v1.4.0']);
+  assert.equal(fallbackStorage.get(SCRIPT_REF_KEY), '');
+  assert.equal(fallbackErrors.length, 1);
+  assert.match(fallbackErrors[0], /v1\.4\.0/);
+
+  // 场景 3：所有节点彻底不可达时触发 toastr.error 提醒改用离线版
+  const failErrors = [];
+  const ctx3 = {
     console: { error: () => {} },
     setTimeout,
     clearTimeout,
@@ -1753,9 +1853,9 @@ test('jsDelivr 远程自动更新脚本：多节点回退、内容校验、记�
       throw new Error('network down');
     },
   };
-  ctx2.globalThis = ctx2;
-  ctx2.window.parent = ctx2.window;
-  vm.runInNewContext(loaderCode, ctx2);
+  ctx3.globalThis = ctx3;
+  ctx3.window.parent = ctx3.window;
+  vm.runInNewContext(loaderCode, ctx3);
   await new Promise((r) => setTimeout(r, 30));
 
   assert.equal(failErrors.length, 1);

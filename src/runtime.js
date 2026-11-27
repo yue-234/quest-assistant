@@ -12,10 +12,12 @@ import {
   maintainQuestBoard,
 } from './actions.js';
 import { commit, generating } from './commit.js';
+import { SCRIPT_VERSION } from './data.js';
 import * as host from './host.js';
 import { mountFab } from './fab.js';
 import { mountWand } from './wand.js';
 import { ENTRY_MODES, normalizeEntryMode, readEntryMode, writeEntryMode } from './entryMode.js';
+import { DEFAULT_SCRIPT_REF, readScriptRef } from './scriptRef.js';
 
 const QUEST_SEEN_KEY = 'quest_helper_seen_progress_v1';
 const FRAME_ID = 'quest-helper-studio';
@@ -182,6 +184,14 @@ export function start() {
       if (!panel) throw new Error('任务情报面板未初始化');
       panel.onClose = hide;
       panel.onEntryModeChange = (nextMode) => mountActiveEntry(nextMode);
+      panel.getScriptMeta = getScriptMeta;
+      panel.onScriptRefChange = async (nextRef) => {
+        const loader = win.__QuestHelperRemoteLoader;
+        if (!loader || typeof loader.switchRef !== 'function') {
+          throw new Error('当前为离线或单行 import 版，请改用远程加载脚本或在脚本中修改 @版本号');
+        }
+        return loader.switchRef(nextRef, { reopen: true });
+      };
       panelOpened = true;
       panel.open();
       el.style.display = 'block';
@@ -204,6 +214,18 @@ export function start() {
   };
 
   const close = () => hide();
+
+  const getScriptMeta = () => {
+    const loader = win.__QuestHelperRemoteLoader;
+    return {
+      remoteManaged: !!(loader && typeof loader.switchRef === 'function'),
+      scriptVersion: SCRIPT_VERSION,
+      defaultRef: loader?.defaultRef || DEFAULT_SCRIPT_REF,
+      loadedRef: loader?.loadedRef || SCRIPT_VERSION,
+      loadedOrigin: loader?.loadedOrigin || '',
+      overrideRef: readScriptRef(host.readStorage),
+    };
+  };
 
   const mountActiveEntry = (mode = entryMode) => {
     entryControl?.destroy();
@@ -356,6 +378,7 @@ export function start() {
       mountActiveEntry(next);
       return next;
     },
+    getScriptMeta,
   };
   win.QuestHelperApp = surface;
   api = surface;

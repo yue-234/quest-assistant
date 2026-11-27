@@ -1,7 +1,7 @@
 // 独立任务助手单页界面。运行在同源 iframe 中，通过 host.js 读写酒馆数据，
 // 点击操作经 commit.js 写回最新楼层 /事件/任务情报板。
 
-import { DATA } from './data.js';
+import { DATA, SCRIPT_VERSION } from './data.js';
 import { readState, CORE_NAME, SPEAKER } from './state.js';
 import {
   toggleQuestIntent,
@@ -18,6 +18,12 @@ import {
 import { commit, generating } from './commit.js';
 import * as host from './host.js';
 import { ENTRY_MODES, readEntryMode, writeEntryMode } from './entryMode.js';
+import {
+  DEFAULT_SCRIPT_REF,
+  fetchAvailableScriptRefs,
+  normalizeScriptRef,
+  readScriptRef,
+} from './scriptRef.js';
 
 const QUEST_SEEN_KEY = 'quest_helper_seen_progress_v1';
 
@@ -27,6 +33,8 @@ const ui = {
   confirmDeleteTrait: '',
   settingsOpen: false,
   entryMode: ENTRY_MODES.FAB,
+  availableRefs: null,
+  switchingRef: false,
   traitsExpanded: {
     local: false,
     world: false,
@@ -862,6 +870,136 @@ function render() {
 // 单页外壳与动画控制
 // ---------------------------------------------------------------------------
 
+function getVersionMeta() {
+  const fallback = {
+    remoteManaged: false,
+    scriptVersion: SCRIPT_VERSION,
+    defaultRef: DEFAULT_SCRIPT_REF,
+    loadedRef: SCRIPT_VERSION,
+    loadedOrigin: '',
+    overrideRef: readScriptRef(host.readStorage),
+  };
+  if (typeof app?.getScriptMeta === 'function') {
+    try {
+      const meta = app.getScriptMeta();
+      if (meta && typeof meta === 'object') return { ...fallback, ...meta };
+    } catch {
+      /* 退回默认元信息 */
+    }
+  }
+  return fallback;
+}
+
+function syncVersionControls() {
+  if (!root) return;
+  const meta = getVersionMeta();
+  const metaEl = root.querySelector('.qh-setting-ver-meta');
+  if (metaEl) {
+    if (meta.remoteManaged) {
+      const originLabel = meta.loadedOrigin ? meta.loadedOrigin.replace(/^https?:\/\//, '') : 'jsDelivr';
+      const customTag = meta.overrideRef ? ` · 已固定自选` : ` · 默认基准`;
+      metaEl.textContent = `当前加载：${meta.loadedRef}${customTag}（${originLabel}）`;
+    } else {
+      metaEl.textContent = `当前版本：${meta.scriptVersion}（离线 / 单行 import 版）`;
+    }
+  }
+
+  const input = root.querySelector('.qh-setting-ver-input');
+  if (input && !ui.switchingRef && root.ownerDocument.activeElement !== input) {
+    input.value = meta.overrideRef || meta.loadedRef || meta.defaultRef;
+  }
+  if (input) input.disabled = !!ui.switchingRef;
+
+  const applyBtn = root.querySelector('.qh-setting-ver-apply');
+  if (applyBtn) {
+    applyBtn.disabled = !!ui.switchingRef || !meta.remoteManaged;
+    applyBtn.textContent = ui.switchingRef ? '切换中…' : '切换版本';
+  }
+
+  const resetBtn = root.querySelector('.qh-setting-ver-reset');
+  if (resetBtn) {
+    resetBtn.disabled = !!ui.switchingRef || !meta.remoteManaged || (!meta.overrideRef && meta.loadedRef === meta.defaultRef);
+    resetBtn.textContent = `恢复默认 (${meta.defaultRef})`;
+  }
+
+  const hintEl = root.querySelector('.qh-setting-ver-hint');
+  if (hintEl) {
+    hintEl.textContent = meta.remoteManaged
+      ? '输入或点选已发布 Tag（如 v1.4.0）或 main 后点击「切换版本」即可热重载；若版本不存在将自动保持当前版本。'
+      : `离线或单行 import 版请在脚本中修改 @版本号（如 import 'https://testingcf.jsdelivr.net/gh/yue-234/quest-assistant@${meta.defaultRef}/dist/quest-assistant.js'）；使用「⭐粘这个-远程自动更新脚本.js」即可在此直接切版本。`;
+  }
+
+  const tagsBox = root.querySelector('.qh-setting-ver-tags');
+  if (tagsBox) {
+    const refs = Array.isArray(ui.availableRefs) && ui.availableRefs.length > 0
+      ? ui.availableRefs
+      : [meta.defaultRef, 'main'].filter((v, i, arr) => v && arr.indexOf(v) === i);
+    tagsBox.innerHTML = '';
+    refs.forEach((refName) => {
+      const isCurrent = refName === meta.loadedRef;
+      const label = refName === meta.defaultRef
+        ? `${refName} (默认)`
+        : (refName === 'main' ? 'main (最新)' : refName);
+      tagsBox.append(
+        el(
+          'button',
+          'qh-setting-ver-tag' + (isCurrent ? ' is-active' : ''),
+          label,
+          { type: 'button', disabled: !!ui.switchingRef, title: `填入版本号 ${refName}` },
+          {
+            click: () => {
+              const box = root?.querySelector('.qh-setting-ver-input');
+              if (box) {
+                box.value = refName;
+                box.focus();
+              }
+            },
+          },
+        ),
+      );
+    });
+  }
+}
+
+async function refreshAvailableRefs() {
+  const meta = getVersionMeta();
+  const refs = await fetchAvailableScriptRefs(globalThis.fetch, meta.defaultRef);
+  ui.availableRefs = refs;
+  if (ui.settingsOpen) syncVersionControls();
+}
+
+async function applyScriptRef(rawRef) {
+  if (ui.switchingRef) return;
+  const meta = getVersionMeta();
+  if (!meta.remoteManaged || typeof app?.onScriptRefChange !== 'function') {
+    toast('当前为离线或单行 import 版，请改用「⭐粘这个-远程自动更新脚本.js」或直接修改脚本中的 @版本号', 'warn');
+    return;
+  }
+  const normalized = normalizeScriptRef(rawRef);
+  if (String(rawRef ?? '').trim() && !normalized) {
+    toast('版本号格式无效，请输入如 v1.4.0 或 main', 'err');
+    return;
+  }
+  const targetRef = normalized || meta.defaultRef;
+  if (targetRef === meta.loadedRef && normalized === meta.overrideRef) {
+    toast(`当前已处于版本 ${targetRef}`, 'info');
+    return;
+  }
+
+  ui.switchingRef = true;
+  syncVersionControls();
+  try {
+    await app.onScriptRefChange(normalized);
+    toast(`已切换至版本 ${targetRef}`, 'ok');
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    toast(`切换版本 ${targetRef} 失败：${msg}`, 'err');
+  } finally {
+    ui.switchingRef = false;
+    syncVersionControls();
+  }
+}
+
 function syncSettingsLayer() {
   if (!root) return;
   const layer = root.querySelector('.qh-settings-layer');
@@ -880,11 +1018,15 @@ function syncSettingsLayer() {
     btn.classList.toggle('is-active', active);
     btn.setAttribute('aria-checked', active ? 'true' : 'false');
   });
+  syncVersionControls();
 }
 
 function setSettingsOpen(open) {
   ui.settingsOpen = !!open;
   syncSettingsLayer();
+  if (ui.settingsOpen && !ui.availableRefs) {
+    void refreshAvailableRefs();
+  }
 }
 
 function switchEntryMode(nextMode) {
@@ -968,7 +1110,7 @@ function buildSettingsLayer() {
     ),
   ]);
 
-  const group = el('div', 'qh-setting-group', [
+  const entryGroup = el('div', 'qh-setting-group', [
     el('div', 'qh-setting-label', '面板入口位置'),
     choices,
     el(
@@ -978,7 +1120,48 @@ function buildSettingsLayer() {
     ),
   ]);
 
-  card.append(head, group);
+  const verInput = el(
+    'input',
+    'qh-setting-ver-input',
+    null,
+    { type: 'text', placeholder: `${DEFAULT_SCRIPT_REF} 或 main`, 'aria-label': '输入脚本版本号' },
+    {
+      keydown: (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          void applyScriptRef(verInput.value);
+        }
+      },
+    },
+  );
+
+  const verGroup = el('div', 'qh-setting-group qh-setting-group--sep', [
+    el('div', 'qh-setting-label', '脚本版本（jsDelivr）'),
+    el('div', 'qh-setting-ver-meta', `当前版本：${SCRIPT_VERSION}`),
+    el('div', 'qh-setting-ver-tags'),
+    el('div', 'qh-setting-ver-row', [
+      verInput,
+      el(
+        'button',
+        'qh-btn qh-btn--sm qh-btn--primary qh-setting-ver-apply',
+        '切换版本',
+        { type: 'button' },
+        { click: () => void applyScriptRef(verInput.value) },
+      ),
+    ]),
+    el('div', 'qh-setting-ver-actions', [
+      el(
+        'button',
+        'qh-btn qh-btn--sm qh-btn--ghost qh-setting-ver-reset',
+        `恢复默认 (${DEFAULT_SCRIPT_REF})`,
+        { type: 'button' },
+        { click: () => void applyScriptRef('') },
+      ),
+    ]),
+    el('div', 'qh-setting-hint qh-setting-ver-hint'),
+  ]);
+
+  card.append(head, entryGroup, verGroup);
   layer.append(backdrop, card);
   return layer;
 }
