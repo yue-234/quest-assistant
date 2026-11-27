@@ -3,8 +3,18 @@ import { parentWindow } from './host.js';
 
 const QUEUE_KEY = '__questHelperCommitQueue';
 
-/** 回复正在生成时禁止写变量，避免被 MVU 覆盖。 */
+/** 当前宿主是否正在运行 MVU 额外模型变量解析。 */
+export function extraAnalysisActive() {
+  try {
+    return !!parentWindow.Mvu?.isDuringExtraAnalysis?.();
+  } catch {
+    return false;
+  }
+}
+
+/** 回复或 MVU 额外模型解析正在进行时禁止写变量，避免并发踩踏与覆盖。 */
 export function generating() {
+  if (extraAnalysisActive()) return true;
   try {
     const stop = parentWindow.document.getElementById('mes_stop');
     return !!stop && parentWindow.getComputedStyle(stop).display !== 'none';

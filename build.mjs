@@ -89,13 +89,20 @@ function createWorldbookEntry({ uid, comment, order, content }) {
 /** 从单一 EJS 源码导出双条目标准酒馆世界书 JSON（剧情引导 + 变量更新）。 */
 export function buildWorldbookJson(ejsContent, version = SCRIPT_VERSION) {
   const normalized = String(ejsContent ?? '').replace(/\r\n/g, '\n');
-  if (!normalized.includes("const _wbRole = 'all';")) {
+  const roleConstRe = /const\s+_wbRole\s*=\s*['"]all['"]\s*;/;
+  if (!roleConstRe.test(normalized)) {
     throw new Error("世界书源码缺少角色声明 `const _wbRole = 'all';`，无法导出双条目世界书");
   }
   const ver = String(version ?? '').trim();
-  const renderRole = (role) => normalized
-    .replace(/\/\/\s*@role\s+all\b/, `// @role ${role}`)
-    .replace("const _wbRole = 'all';", `const _wbRole = '${role}';`);
+  const renderRole = (role) => {
+    const out = normalized
+      .replace(/\/\/\s*@role\s+all\b/, `// @role ${role}`)
+      .replace(roleConstRe, `const _wbRole = '${role}';`);
+    if (out === normalized || !out.includes(`const _wbRole = '${role}';`)) {
+      throw new Error(`世界书角色派生失败（目标角色：${role}）`);
+    }
+    return out;
+  };
 
   return {
     entries: {
@@ -108,7 +115,7 @@ export function buildWorldbookJson(ejsContent, version = SCRIPT_VERSION) {
       '1': createWorldbookEntry({
         uid: 1,
         comment: `[mvu_update]任务助手-变量更新${ver}`,
-        order: 99990,
+        order: 99999,
         content: renderRole('update'),
       }),
     },

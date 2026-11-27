@@ -9,6 +9,7 @@ import vm from 'node:vm';
 import { DATA } from './src/data.js';
 import {
   questBoardState,
+  rescanFresh,
   readState,
   parseAftermathEntry,
   isAftermathEntryExpired,
@@ -105,7 +106,7 @@ const builtDistScriptPath = path.join(__dirname, 'dist', 'quest-assistant.js');
 const builtWorldbookPath = path.join(__dirname, '⭐导入这个-命定任务助手世界书.json');
 const remoteLoaderPath = path.join(__dirname, '⭐粘这个-远程自动更新脚本.js');
 
-function renderEjs(statData, { chat = [], lastUserMessageId = 0, geoData = {}, systemCore = '', destinyImmersiveMode, source = ejsSource } = {}) {
+function renderEjs(statData, { chat = [], lastUserMessageId = 0, geoData = {}, systemCore = '', destinyImmersiveMode, generateType = '', source = ejsSource } = {}) {
   const ctx = {
     getvar: (k) => {
       if (k === 'stat_data') return statData;
@@ -116,6 +117,7 @@ function renderEjs(statData, { chat = [], lastUserMessageId = 0, geoData = {}, s
     SillyTavern: { getContext: () => ({ chat }) },
     lastUserMessageId,
     ...(typeof destinyImmersiveMode === 'function' ? { destinyImmersiveMode } : {}),
+    ...(generateType ? { generateType } : {}),
   };
   return ejs.render(source, ctx);
 }
@@ -402,9 +404,14 @@ test('actions 全流程：锁定、忽略、100 FP 重扫、修改模式打勾',
   const dup = requestQuestRescan(stat, 10, 12);
   assert.ok(dup.error);
 
-  // 主回复刚落楼（chatCount = 12 + 2 = 14）时需保留 待重扫 给额外模型结算，超过窗口（>= 15）再清理
-  assert.equal(questRescanDone(stat, 12, 14), false);
-  assert.equal(questRescanDone(stat, 12, 15), true);
+  // 主回复刚落楼（chatCount = 12 + 2 = 14）：额外模型仍在分析时需保留待重扫；额外模型结束或继续下一轮（>= 15）时清理
+  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { floor: 12, chatCount: 14, extraAnalyzing: true }), true);
+  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { floor: 12, chatCount: 14, extraAnalyzing: false }), false);
+  assert.equal(questRescanDone(stat, 12, 14, { extraAnalyzing: true }), false);
+  assert.equal(questRescanDone(stat, 12, 14, { extraAnalyzing: false }), false);
+  assert.equal(questRescanDone(stat, 12, 14, { extraFinished: true, extraAnalyzing: false }), true);
+  assert.equal(questRescanDone(stat, 12, 15, { extraAnalyzing: true }), false);
+  assert.equal(questRescanDone(stat, 12, 15, { extraAnalyzing: false }), true);
   stat = clearQuestRescan(stat).stat;
   assert.equal(stat['事件']['任务情报板']['待重扫'], undefined);
 });
@@ -764,7 +771,7 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
   assert.match(outNone, /并随局势同步升降色阶（恶化转黄或升红，好转降黄或转绿/);
   assert.match(outNone, /发生重大剧情或事件链变故时按规则更新区域或世界词条/);
   assert.match(outNone, /`世界` 词条同样使用 `\[绿\/黄\/红\]` 色阶，不默认生成，仅剧情任务或重大剧情与事件链引发的跨大区或全大陆级重大后果允许写入或改写 `世界`/);
-  assert.match(outNone, /严禁整块覆写 `\/事件` 或 `\/事件\/任务情报板`/);
+  assert.match(outNone, /禁止整块覆写 `\/事件` 或 `\/事件\/任务情报板`/);
   assert.match(outNone, /"op": "insert", "path": "\/事件\/任务情报板\/余波"/);
 
   // 1.5) init 与 relocate 且当前区域无词条时，注入初始 3 条差异化色阶与叠加限时规则，并提示记录区域访问日
@@ -778,7 +785,7 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
   assert.match(outInit, /禁止 3 绿、3 黄、3 红/);
   assert.match(outInit, /不得每区机械套用 1 绿 1 黄 1 红/);
   assert.match(outInit, /当地正有短期活动时应先写满 3 条常驻词条，再额外追加 1~2 条限时词条/);
-  assert.match(outInit, /为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时另行额外叠加 1~2 条限时词条）并记录区域访问日/);
+  assert.match(outInit, /为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~2 条限时词条），并记录区域访问日/);
   assert.match(outInit, /"区域访问日": \{ "港口": "复兴纪元488年-3月-11日" \}/);
 
   // 1.6) relocate 返回旧区域时，保留字段清单与 14 天重返规则均应注入
@@ -802,7 +809,7 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
     事件: { 任务情报板: baseBoard },
   });
   assertCleanOutput(outRelocateNoTrait, 'aftermath-relocate-hint');
-  assert.match(outRelocateNoTrait, /为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时另行额外叠加 1~2 条限时词条）并记录区域访问日/);
+  assert.match(outRelocateNoTrait, /为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~2 条限时词条），并记录区域访问日/);
   assert.match(outRelocateNoTrait, /"op": "insert", "path": "\/事件\/任务情报板\/区域访问日"/);
 
   const outRelocateHasTrait = renderEjs({
@@ -981,7 +988,7 @@ test('返回旧区域 14 天演变防抖：离开 < 14 天保持稳定（保留�
     事件: { 任务情报板: baseBoard },
   });
   assertCleanOutput(outNewCity, 'revisit-new-city');
-  assert.match(outNewCity, /为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时另行额外叠加 1~2 条限时词条）并记录区域访问日/);
+  assert.match(outNewCity, /为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~2 条限时词条），并记录区域访问日/);
   assert.match(outNewCity, /"op": "replace", "path": "\/事件\/任务情报板\/区域访问日\/铁炉堡", "value": "复兴纪元488年-3月-26日"/);
   assert.match(outNewCity, /"op": "insert", "path": "\/事件\/任务情报板\/区域访问日\/雾晶港", "value": "复兴纪元488年-3月-26日"/);
 
@@ -1722,9 +1729,9 @@ test('EJS 收益高→低分层、4 档失败折损、追回边界与 [n✓]/[n�
   assert.match(maintainOut, /折损与失效: 剧情任务与本地主线（剧情 1~3 核心 \/ 4~7 中坚 \/ 8~10 基础，本地主线 1 \/ 2~3 \/ 4~5）/);
   assert.match(maintainOut, /已标记 `\[✓\]` 不转为失效/);
   assert.match(maintainOut, /轻度折损划除剧情 2 栏（中坚 1 \+ 基础 1）或本地主线 1 栏（中坚优先）/);
-  assert.match(maintainOut, /层级与串联: 任务中正面敌对、主动攻击或追杀 <user> 的角色，生命层级不得超过任务对应层级（D一层\/C二层\/B三层\/A四层\/S五层）/);
+  assert.match(maintainOut, /层级与串联: 任务中正面敌对、阻拦、主动攻击或追杀 <user> 的角色，生命层级不得超过任务对应层级（D一层\/C二层\/B三层\/A四层\/S五层）/);
   assert.match(maintainOut, /如果 <user> 主动挑衅、袭击或强闯高于本任务等级的人物与核心禁地，对方按真实生命层级反击/);
-  assert.match(maintainOut, /高于任务等级的人物与势力仅作为背景存在、幕后授意者或线索来源（不主动下场攻击），任务推进或完结时可借他们留下的动向或线索，按「剧情追加」引出高一级的新任务/);
+  assert.match(maintainOut, /高于任务等级的人物与势力只作为背景存在、幕后授意者或线索来源（不主动下场攻击），任务推进或完结时可借他们留下的动向或线索，按「剧情追加」引出高一级的新任务/);
   assert.match(maintainOut, /中度折损划除剧情 2~3 栏或本地主线 2 栏，跨层混合（核心层保留至少 1 栏，也不只划基础）/);
   assert.match(maintainOut, /重度折损（濒临失败转入止损）划至剧情仅留 2~3 栏、本地主线仅留 1~2 栏，优先剥离核心与大部中坚，仅留基础栏位或次要补给/);
   assert.match(maintainOut, /彻底失败将剩余 `\[□\]` 全部视为失效，零新收益结案、直接移出 `\/任务列表` 与任务情报板并写入 `\[黄\/红\]` 词条，无需更新进展或写 `失效Patch`/);
@@ -1876,7 +1883,7 @@ test('EJS 安全版日常条件门控：0 接取/仅支线/原版活跃任务护
   assertCleanOutput(outIdle, 'gating-idle');
   assert.ok(outIdle.length < 2200, `0 接取日常渲染应瘦身至 2200 字符以内，实际为 ${outIdle.length}`);
   assert.match(outIdle, /层级护栏:/);
-  assert.match(outIdle, /严禁整块覆写 `\/事件` 或 `\/事件\/任务情报板`/);
+  assert.match(outIdle, /禁止整块覆写 `\/事件` 或 `\/事件\/任务情报板`/);
   assert.match(outIdle, /剧情追加:/);
   assert.match(outIdle, /未接取支线单回合接取并完结时从 `\/事件\/任务情报板\/列表` 移除/);
   assert.doesNotMatch(outIdle, /波折节拍:|折损与失效:|默认写入 3 条常驻词条|离开满 14 天|锁定与换区:/);
@@ -2842,6 +2849,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.equal(wbDualOk.dualMode, true);
   assert.equal(wbDualOk.enabled, true);
   assert.equal(wbDualOk.version, 'v1.4.8');
+  assert.deepEqual(wbDualOk.titles, ['[mvu_plot]任务助手-剧情引导v1.4.8', '[mvu_update]任务助手-变量更新v1.4.8']);
   assert.equal(checkWorldbookCompatibility(wbDualOk, { loadedRef: 'v1.4.8', scriptVersion: 'v1.4.8' }).status, 'matched');
 
   const wbDualPartial = inspectWorldbookEntries([
@@ -2859,6 +2867,61 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.equal(compatPartial.status, 'partial_disabled');
   assert.equal(compatPartial.mismatch, true);
 
+  // 旧版已禁用 + 仅启用半边双条目时，仍应报 partial_disabled
+  const wbDisabledLegacyPlusHalfDual = inspectWorldbookEntries([
+    {
+      bookName: '主世界书',
+      entries: [
+        { name: '[mvu_plot][mvu_update]任务助手v1.4.8', enabled: false, content: '// @version v1.4.8\n/事件/任务情报板' },
+        { name: '[mvu_plot]任务助手-剧情引导v1.4.9', enabled: true, content: '// @role plot\n/事件/任务情报板' },
+      ],
+    },
+  ]);
+  assert.equal(wbDisabledLegacyPlusHalfDual.partialDisabled, true);
+  assert.equal(wbDisabledLegacyPlusHalfDual.missingRole, 'update');
+
+  // 旧版联合条目与分拆条目混开：报 legacy_dual_mixed
+  const wbLegacyMixed = inspectWorldbookEntries([
+    {
+      bookName: '主世界书',
+      entries: [
+        { name: '[mvu_plot][mvu_update]任务助手v1.4.8', enabled: true, content: '// @version v1.4.8\n/事件/任务情报板' },
+        { name: '[mvu_update]任务助手-变量更新v1.4.9', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+      ],
+    },
+  ]);
+  assert.equal(wbLegacyMixed.legacyDualMixed, true);
+  assert.equal(checkWorldbookCompatibility(wbLegacyMixed, { loadedRef: 'v1.4.9', scriptVersion: 'v1.4.9' }).status, 'legacy_dual_mixed');
+
+  // 同角色条目重复启用：报 duplicate_role
+  const wbDupRole = inspectWorldbookEntries([
+    {
+      bookName: '主世界书',
+      entries: [
+        { name: '[mvu_plot]任务助手-剧情引导v1.4.9', enabled: true, content: '// @role plot\n/事件/任务情报板' },
+        { name: '[mvu_update]任务助手-变量更新v1.4.9', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+        { name: '[mvu_update]任务助手-变量更新副本', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+      ],
+    },
+  ]);
+  assert.equal(wbDupRole.duplicateConflict, true);
+  assert.equal(checkWorldbookCompatibility(wbDupRole, { loadedRef: 'v1.4.9', scriptVersion: 'v1.4.9' }).status, 'duplicate_role');
+
+  // 双条目其中一条缺版本号：报 version_unannotated（不再误判 matched）
+  const wbMissingRoleVer = inspectWorldbookEntries([
+    {
+      bookName: '命定任务助手世界书',
+      entries: [
+        { name: '[mvu_plot]任务助手-剧情引导v1.4.9', enabled: true, content: '// @role plot\n/事件/任务情报板' },
+        { name: '[mvu_update]任务助手-变量更新', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+      ],
+    },
+  ]);
+  assert.equal(wbMissingRoleVer.missingRoleVersion, true);
+  const compatUnannotated = checkWorldbookCompatibility(wbMissingRoleVer, { loadedRef: 'v1.4.9', scriptVersion: 'v1.4.9' });
+  assert.equal(compatUnannotated.status, 'version_unannotated');
+  assert.equal(compatUnannotated.mismatch, true);
+
   const wbDualConflict = inspectWorldbookEntries([
     {
       bookName: '命定任务助手世界书',
@@ -2873,13 +2936,13 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.equal(compatConflict.status, 'mismatch');
   assert.equal(compatConflict.mismatch, true);
 
-  // buildWorldbookJson 双条目派生、角色隔离、额外模型重扫时序（nc+2）与空板强指令校验
+  // buildWorldbookJson 双条目派生、角色隔离、额外模型重扫时序（nc+2）与标准协议校验
   assert.throws(() => buildWorldbookJson('no role marker', 'v1.4.9'), /_wbRole/);
   const dualJson = buildWorldbookJson(ejsSource, 'v1.4.9');
   assert.equal(dualJson.entries['0'].comment, '[mvu_plot]任务助手-剧情引导v1.4.9');
   assert.equal(dualJson.entries['0'].order, 1150);
   assert.equal(dualJson.entries['1'].comment, '[mvu_update]任务助手-变量更新v1.4.9');
-  assert.equal(dualJson.entries['1'].order, 99990);
+  assert.equal(dualJson.entries['1'].order, 99999);
   const plotSrc = dualJson.entries['0'].content;
   const updateSrc = dualJson.entries['1'].content;
 
@@ -2887,7 +2950,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   const extraChat12 = Array.from({ length: 12 }, (_, idx) => ({
     is_user: idx % 2 === 0,
     is_system: false,
-    mes: idx === 11 ? 'AI 正文刚落地' : '对话',
+    mes: idx === 10 ? '我们先打听一下潮汐后续的情况。' : (idx === 11 ? 'AI 正文刚落地' : '对话'),
   }));
   const extraRescanStat = {
     世界: { 地点: '卡拉什利亚斯-巡天王庭', 时间: '复兴纪元488年-5月-26日' },
@@ -2898,29 +2961,82 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
         区域: '铁炉堡',
         更新日: '复兴纪元488年-5月-26日',
         待重扫: { 楼层: '9', 消息数: '10' },
-        列表: [],
+        列表: [
+          {
+            id: 'q_locked',
+            类别: '支线任务',
+            等级: 'B',
+            标题: '潮汐后续',
+            方式: '调查',
+            摘要: '港务官密报异常',
+            已锁定: true,
+          },
+        ],
       },
     },
   };
-  const plotOut = renderEjs(extraRescanStat, { chat: extraChat12, lastUserMessageId: 10, source: plotSrc });
+  const storyRelocateStat = {
+    世界: { 地点: '卡拉什利亚斯-巡天王庭', 时间: '复兴纪元488年-5月-26日' },
+    任务列表: {
+      '王庭裂隙': { 状态: '进行中', 进展: '[5月-25日] 收到王庭密函' },
+    },
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        更新日: '复兴纪元488年-5月-26日',
+        列表: [
+          {
+            id: 'q_story',
+            类别: '剧情任务',
+            等级: 'A',
+            标题: '王庭裂隙',
+            方式: '调查',
+            摘要: '王庭深处魔力紊乱',
+            真相: '旧日封印松动',
+          },
+        ],
+      },
+    },
+  };
+  const plotOut = renderEjs(storyRelocateStat, { chat: extraChat12, lastUserMessageId: 10, source: plotSrc });
   const updateOut = renderEjs(extraRescanStat, { chat: extraChat12, lastUserMessageId: 10, source: updateSrc });
 
-  // plot 零加粗、零 Patch、零变量协议
+  // plot 零加粗、零 Patch、零变量协议，且在 relocate + 活跃剧情任务下仍保留波折节拍与当前环境
   assert.equal((plotOut.match(/\*\*[^*]+\*\*/g) || []).length, 0, 'plot 模式不得包含加粗红线');
-  assert.doesNotMatch(plotOut, /variables_update_rules|兑现Patch|失效Patch|完结移出|生成规格|严禁/);
-  // update 严格 1 处加粗、含标准 variables_update_rules 协议、零纯剧情波折重复、精准命中 rescan 且补剧情与词条
+  assert.doesNotMatch(plotOut, /variables_update_rules|任务情报板变量更新协议|兑现Patch|失效Patch|完结移出|生成规格|严禁/);
+  assert.match(plotOut, /当前环境:/);
+  assert.match(plotOut, /波折节拍:/);
+
+  // update 严格 1 处加粗、含标准隐形节点变量更新协议、零纯剧情波折重复、能识别前置用户消息提及的锁定任务、精准命中 rescan 且补剧情与词条
   assert.equal((updateOut.match(/\*\*[^*]+\*\*/g) || []).length, 1, 'update 模式应严格保留 1 处加粗红线');
   assert.match(updateOut, /<任务情报板变量更新协议>/);
-  assert.match(updateOut, /variables_update_rules:/);
+  assert.match(updateOut, /<任务情报板当前状态>/);
+  assert.match(updateOut, /任务情报板变量更新规则（路径为 `事件\.任务情报板`）:/);
+  assert.doesNotMatch(updateOut, /^variables_update_rules:/m);
   assert.doesNotMatch(updateOut, /波折节拍:|演化与完结:|层级与串联:|层级护栏:/);
+  assert.match(updateOut, /潮汐后续/);
   assert.match(updateOut, /启动地区情报重扫：保留剧情任务、已接取与 `★已锁定` 项，按当前区域重新生成 1~2 条本地主线 \+ 2~3 条支线任务/);
   assert.match(updateOut, /没有剧情任务时补 1 条剧情任务/);
   assert.match(updateOut, /为当前区域写入 3 条差异化色阶的初始常驻词条/);
+
+  // 续写（continue）不放宽待重扫窗口
+  const updateContinueOut = renderEjs(extraRescanStat, {
+    chat: extraChat12,
+    lastUserMessageId: 10,
+    generateType: 'continue',
+    source: updateSrc,
+  });
+  assert.doesNotMatch(updateContinueOut, /启动地区情报重扫/);
 
   // 下一轮玩家再发消息（消息数=13，末尾 is_user: true）时 rescan 正常过期，不重复触发
   const extraChat13 = [...extraChat12, { is_user: true, is_system: false, mes: '下一轮' }];
   const updateNextOut = renderEjs(extraRescanStat, { chat: extraChat13, lastUserMessageId: 12, source: updateSrc });
   assert.doesNotMatch(updateNextOut, /启动地区情报重扫/);
+
+  // 语体红线回归：plot / update / all 输出均不得出现已清理的冗余防备或文言残余
+  const allOut = renderEjs(extraRescanStat, { chat: extraChat12, lastUserMessageId: 10 });
+  assert.doesNotMatch(`${plotOut}\n${updateOut}\n${allOut}`, /属于必执行的|另行额外|严禁|务必|切勿/);
 
   const mem = new Map();
   const read = (k) => mem.get(k) || '';

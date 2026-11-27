@@ -15,7 +15,7 @@ import {
   needsQuestAcceptedRecord,
   maintainQuestBoard,
 } from './actions.js';
-import { commit, generating } from './commit.js';
+import { commit, extraAnalysisActive, generating } from './commit.js';
 import * as host from './host.js';
 import { ENTRY_MODES, readEntryMode, writeEntryMode } from './entryMode.js';
 import {
@@ -836,16 +836,18 @@ function render() {
   const curCount = chatCount();
   const chatSnapshot = chatArray();
 
+  const extraAnalyzing = extraAnalysisActive();
   if (
     !sweeping &&
-    (questRescanDone(stat, curFloor, curCount)
+    !generating() &&
+    (questRescanDone(stat, curFloor, curCount, { extraAnalyzing })
       || hasClosedQuestLeftovers(stat, { chat: chatSnapshot })
       || needsQuestAcceptedRecord(stat)
       || hasExpiredAftermath(stat))
   ) {
     sweeping = true;
     commit(
-      (statNow) => maintainQuestBoard(statNow, { floor: curFloor, chatCount: curCount, chat: chatSnapshot }),
+      (statNow) => maintainQuestBoard(statNow, { floor: curFloor, chatCount: curCount, chat: chatSnapshot, extraAnalyzing }),
       { core: CORE_NAME, speaker: SPEAKER, redraw: false },
     )
       .then((result) => {
@@ -870,6 +872,7 @@ function render() {
       geoData: currentGeoData(),
       chat: chatSnapshot,
       nullCore: host.isNullCore(),
+      extraAnalyzing,
     });
     view = renderContent(stateNow);
   } catch (error) {
@@ -976,7 +979,13 @@ function syncVersionControls() {
       wbBadgeEl.textContent = '✓ 与脚本匹配';
       wbBadgeEl.classList.add('is-ok');
     } else if (wbCheck.mismatch) {
-      wbBadgeEl.textContent = wbCheck.status === 'disabled' ? '条目未启用' : '版本不匹配 · 建议更新';
+      if (wbCheck.status === 'disabled') wbBadgeEl.textContent = '条目未启用';
+      else if (wbCheck.status === 'partial_disabled') wbBadgeEl.textContent = '双条目未全开';
+      else if (wbCheck.status === 'duplicate_role') wbBadgeEl.textContent = '同角色条目重复';
+      else if (wbCheck.status === 'legacy_dual_mixed') wbBadgeEl.textContent = '新旧条目混用';
+      else if (wbCheck.status === 'version_unannotated') wbBadgeEl.textContent = '部分未标版本';
+      else if (ui.worldbookInfo?.versionConflict) wbBadgeEl.textContent = '双条目版本不一致';
+      else wbBadgeEl.textContent = '版本不匹配 · 建议更新';
       wbBadgeEl.classList.add('is-warn');
     } else {
       wbBadgeEl.textContent = wbCheck.status === 'unversioned' ? '无版本号' : '未识别';
@@ -984,14 +993,24 @@ function syncVersionControls() {
     }
   }
   if (wbSubEl) {
-    if (wbCheck.mismatch) {
+    if (wbCheck.mismatch || wbCheck.status === 'version_unannotated') {
       wbSubEl.textContent = wbCheck.message;
       wbSubEl.classList.add('is-warn');
     } else {
       wbSubEl.classList.remove('is-warn');
-      wbSubEl.textContent = ui.worldbookInfo?.found
-        ? `当前识别条目：${ui.worldbookInfo.title || '任务助手'}${ui.worldbookInfo.bookName ? `（${ui.worldbookInfo.bookName}）` : ''}`
-        : wbCheck.message;
+      if (ui.worldbookInfo?.found) {
+        const bookSuffix = ui.worldbookInfo.bookName ? `（${ui.worldbookInfo.bookName}）` : '';
+        if (ui.worldbookInfo.dualMode) {
+          const titleList = Array.isArray(ui.worldbookInfo.titles) && ui.worldbookInfo.titles.length
+            ? ui.worldbookInfo.titles.join(' + ')
+            : (ui.worldbookInfo.title || '任务助手');
+          wbSubEl.textContent = `当前识别双条目：${titleList}${bookSuffix}`;
+        } else {
+          wbSubEl.textContent = `当前识别条目：${ui.worldbookInfo.title || '任务助手'}${bookSuffix}`;
+        }
+      } else {
+        wbSubEl.textContent = wbCheck.message;
+      }
     }
   }
 

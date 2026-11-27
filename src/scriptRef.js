@@ -99,8 +99,11 @@ function extractEntryContentVersion(content) {
 function detectEntryRole(entry) {
   const title = String(entry?.name ?? entry?.comment ?? '').trim();
   const content = String(entry?.content ?? '');
-  if (/\[mvu_plot\]/i.test(title)) return 'plot';
-  if (/\[mvu_update\]/i.test(title)) return 'update';
+  const hasPlotTag = /\[mvu_plot\]/i.test(title);
+  const hasUpdateTag = /\[mvu_update\]/i.test(title);
+  if (hasPlotTag && hasUpdateTag) return 'all';
+  if (hasPlotTag) return 'plot';
+  if (hasUpdateTag) return 'update';
   const roleMeta = content.match(/\/\/\s*@role\s+(plot|update|all)\b/i);
   if (roleMeta) {
     const r = roleMeta[1].toLowerCase();
@@ -164,6 +167,8 @@ export function inspectWorldbookEntries(bookEntriesList = []) {
   const enabledUpdate = enabledCandidates.filter((c) => c.role === 'update');
   const enabledLegacy = enabledCandidates.filter((c) => c.role === 'all');
   const hasDualEnabled = enabledPlot.length > 0 || enabledUpdate.length > 0;
+  const legacyDualMixed = hasDualEnabled && enabledLegacy.length > 0;
+  const duplicateConflict = enabledPlot.length > 1 || enabledUpdate.length > 1 || enabledLegacy.length > 1;
 
   // 收集已启用条目的去重语义版本号（按 semver 降序，末尾为较低版本）
   const distinctVersions = [];
@@ -176,19 +181,15 @@ export function inspectWorldbookEntries(bookEntriesList = []) {
   distinctVersions.sort(compareSemverTags);
 
   const hasPartialDisabled = hasDualEnabled
-    && enabledLegacy.length === 0
     && (enabledPlot.length === 0 || enabledUpdate.length === 0);
   const missingRole = hasPartialDisabled
     ? (enabledPlot.length === 0 ? 'plot' : 'update')
     : '';
 
-  const hasRoleVersionMismatch = enabledPlot.length > 0
-    && enabledUpdate.length > 0
-    && (
-      distinctVersions.length > 1
-      || (enabledPlot.some((c) => !!c.version) !== enabledUpdate.some((c) => !!c.version))
-    );
-  const versionConflict = distinctVersions.length > 1 || hasRoleVersionMismatch;
+  const hasVersioned = enabledCandidates.some((c) => !!c.version);
+  const hasUnversioned = enabledCandidates.some((c) => !c.version);
+  const missingRoleVersion = hasVersioned && hasUnversioned;
+  const versionConflict = distinctVersions.length > 1;
 
   const primary = enabledPlot[0] || enabledUpdate[0] || enabledCandidates[0];
   const resolvedVersion = versionConflict
@@ -203,11 +204,17 @@ export function inspectWorldbookEntries(bookEntriesList = []) {
     title: primary.title,
     bookName: primary.bookName,
   };
-  if (hasDualEnabled) result.dualMode = true;
+  if (hasDualEnabled) {
+    result.dualMode = true;
+    result.titles = [enabledPlot[0]?.title, enabledUpdate[0]?.title].filter(Boolean);
+  }
   if (hasPartialDisabled) {
     result.partialDisabled = true;
     result.missingRole = missingRole;
   }
+  if (legacyDualMixed) result.legacyDualMixed = true;
+  if (duplicateConflict) result.duplicateConflict = true;
+  if (missingRoleVersion) result.missingRoleVersion = true;
   if (versionConflict) {
     result.versionConflict = true;
     result.versions = distinctVersions;
@@ -248,6 +255,24 @@ export function checkWorldbookCompatibility(wbInfo, scriptMeta = {}) {
       message: '世界书中的任务助手条目当前处于关闭状态，请启用并保持版本一致',
     };
   }
+  if (wbInfo.legacyDualMixed) {
+    return {
+      status: 'legacy_dual_mixed',
+      mismatch: true,
+      worldbookVersion: wbInfo.version || '',
+      scriptVersion: scriptVer,
+      message: '检测到旧版单条目与新版双条目同时启用，请关闭或删除旧条目仅保留一套',
+    };
+  }
+  if (wbInfo.duplicateConflict) {
+    return {
+      status: 'duplicate_role',
+      mismatch: true,
+      worldbookVersion: wbInfo.version || '',
+      scriptVersion: scriptVer,
+      message: '世界书中同时启用了多份同角色任务助手条目，请清理重复条目',
+    };
+  }
   if (wbInfo.partialDisabled) {
     return {
       status: 'partial_disabled',
@@ -264,6 +289,15 @@ export function checkWorldbookCompatibility(wbInfo, scriptMeta = {}) {
       worldbookVersion: wbInfo.version || '',
       scriptVersion: scriptVer,
       message: '世界书中存在多个不同版本的任务助手条目，请清理旧条目并保持版本一致',
+    };
+  }
+  if (wbInfo.missingRoleVersion) {
+    return {
+      status: 'version_unannotated',
+      mismatch: true,
+      worldbookVersion: wbInfo.version || '',
+      scriptVersion: scriptVer,
+      message: '已启用的任务助手条目中部分未标注版本号，请重新导入一致版本',
     };
   }
   if (!wbInfo.version) {

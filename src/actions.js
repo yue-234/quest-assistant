@@ -432,7 +432,8 @@ export function requestQuestRescan(stat, floor, chatCount, { nullCore = false } 
 }
 
 /** 重扫请求是否已过完额外模型结算窗口，可由界面或后台维护安全清理。 */
-export function questRescanDone(stat, currentFloor, currentCount) {
+export function questRescanDone(stat, currentFloor, currentCount, { extraFinished = false, extraAnalyzing = false } = {}) {
+  if (extraAnalyzing) return false;
   const pending = obj(boardNode(stat)['待重扫']);
   if (!Object.keys(pending).length) return false;
   const num = (v) => {
@@ -442,11 +443,15 @@ export function questRescanDone(stat, currentFloor, currentCount) {
   };
   const atCount = num(pending['消息数']);
   const nowCount = num(currentCount);
-  // 额外模型在主回复落楼（nowCount === atCount + 2）后才排队执行，需严格超过 atCount + 2 才可安全清理
-  if (atCount !== null && nowCount !== null) return nowCount > atCount + 2;
+  // 额外模型在主回复落楼（nowCount === atCount + 2）后才排队执行，需等到变量更新结束事件或超过该窗口后再清理
+  if (atCount !== null && nowCount !== null) {
+    return nowCount > atCount + 2 || (extraFinished && nowCount === atCount + 2);
+  }
   const atFloor = num(pending['楼层']);
   const nowFloor = num(currentFloor);
-  if (atFloor !== null && nowFloor !== null) return nowFloor > atFloor + 2;
+  if (atFloor !== null && nowFloor !== null) {
+    return nowFloor > atFloor + 2 || (extraFinished && nowFloor === atFloor + 2);
+  }
   return atCount === null && atFloor === null;
 }
 
@@ -729,10 +734,10 @@ export function sweepClosedQuests(stat, current = {}) {
 }
 
 /** 合并后台维护：单次顺序执行清重扫 → 扫完结残留 → 登记曾接取 → 清全地图过期词条，无改动时返回 { skip: true }。 */
-export function maintainQuestBoard(stat, { floor, chatCount, chat, historyStats } = {}) {
+export function maintainQuestBoard(stat, { floor, chatCount, chat, historyStats, extraFinished = false, extraAnalyzing = false } = {}) {
   let cur = stat;
   let changed = false;
-  if (questRescanDone(cur, floor, chatCount)) {
+  if (questRescanDone(cur, floor, chatCount, { extraFinished, extraAnalyzing })) {
     cur = clearQuestRescan(cur).stat;
     changed = true;
   }

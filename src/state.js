@@ -291,7 +291,7 @@ export function normalizeQuestRewards(raw) {
     .filter(Boolean);
 }
 
-/** 一次重扫请求是否仍然新鲜（尚未经过下一回合消费）。 */
+/** 一次重扫请求是否仍然新鲜（尚未经过下一回合消费；额外模型解析期间仍保持锁定）。 */
 export function rescanFresh(pending, current = {}) {
   if (!pending || !Object.keys(pending).length) return false;
   const num = (v) => {
@@ -301,7 +301,10 @@ export function rescanFresh(pending, current = {}) {
   };
   const atCount = num(pending['消息数']);
   const nowCount = num(current.chatCount);
-  if (atCount !== null && nowCount !== null) return nowCount <= atCount + 1;
+  if (atCount !== null && nowCount !== null) {
+    if (nowCount <= atCount + 1) return true;
+    return !!current.extraAnalyzing && nowCount === atCount + 2;
+  }
   const atFloor = num(pending['楼层']);
   const nowFloor = num(current.floor);
   if (atFloor !== null && nowFloor !== null) return nowFloor <= atFloor + 2;

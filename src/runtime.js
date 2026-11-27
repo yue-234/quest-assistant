@@ -11,7 +11,7 @@ import {
   questRescanDone,
   maintainQuestBoard,
 } from './actions.js';
-import { commit, generating } from './commit.js';
+import { commit, extraAnalysisActive, generating } from './commit.js';
 import { SCRIPT_VERSION } from './data.js';
 import * as host from './host.js';
 import { mountFab } from './fab.js';
@@ -289,6 +289,7 @@ export function start() {
         geoData: readHostGeoData(),
         chat,
         nullCore: host.isNullCore(),
+        extraAnalyzing: extraAnalysisActive(),
       });
       const sig = st && st.questBoard ? st.questBoard.progressSignature : '';
       const seen = host.readStorage(seenProgressKey());
@@ -319,9 +320,26 @@ export function start() {
   let bgTimer = 0;
   let bgSweeping = false;
   let bgCooldownUntil = 0;
+  let mvuEndSeen = false;
+  let mvuEndChatCount = null;
 
   const runQuestBoardMaintenance = async () => {
-    if (bgSweeping || Date.now() < bgCooldownUntil || generating()) return;
+    if (generating()) return;
+    if (bgSweeping) {
+      clearTimeout(bgTimer);
+      bgTimer = setTimeout(() => {
+        void runQuestBoardMaintenance();
+      }, 400);
+      return;
+    }
+    const waitMs = bgCooldownUntil - Date.now();
+    if (waitMs > 0) {
+      clearTimeout(bgTimer);
+      bgTimer = setTimeout(() => {
+        void runQuestBoardMaintenance();
+      }, waitMs + 50);
+      return;
+    }
     let stat;
     try {
       stat = host.readStat();
@@ -337,18 +355,36 @@ export function start() {
     const chatSnapshot = readHostChat();
     const curFloor = readHostFloor();
     const curCount = chatSnapshot ? chatSnapshot.length : null;
-    const needClearRescan = questRescanDone(stat, curFloor, curCount);
+    const extraAnalyzing = extraAnalysisActive();
+    const extraFinished = mvuEndSeen && (mvuEndChatCount === null || mvuEndChatCount === curCount);
+    const needClearRescan = questRescanDone(stat, curFloor, curCount, { extraFinished, extraAnalyzing });
     const needSweep = !!board['列表'] && hasClosedQuestLeftovers(stat, { chat: chatSnapshot });
     const needRecord = !!board['列表'] && needsQuestAcceptedRecord(stat);
     const needSweepExpired = hasExpiredAftermath(stat);
-    if (!needClearRescan && !needSweep && !needRecord && !needSweepExpired) return;
+    if (!needClearRescan && !needSweep && !needRecord && !needSweepExpired) {
+      if (extraFinished && !board['待重扫']) {
+        mvuEndSeen = false;
+        mvuEndChatCount = null;
+      }
+      return;
+    }
 
     bgSweeping = true;
     try {
-      await commit(
-        (statNow) => maintainQuestBoard(statNow, { floor: curFloor, chatCount: curCount, chat: chatSnapshot }),
+      const result = await commit(
+        (statNow) => maintainQuestBoard(statNow, {
+          floor: curFloor,
+          chatCount: curCount,
+          chat: chatSnapshot,
+          extraFinished,
+          extraAnalyzing,
+        }),
         { core: CORE_NAME, speaker: SPEAKER, redraw: false },
       );
+      if (extraFinished && result && !result.error) {
+        mvuEndSeen = false;
+        mvuEndChatCount = null;
+      }
       bgCooldownUntil = Date.now() + 1500;
     } catch {
       /* 静默失败，待下次机会重试 */
@@ -357,27 +393,36 @@ export function start() {
     }
   };
 
-  const scheduleMaintenance = () => {
-    if (bgSweeping || Date.now() < bgCooldownUntil) return;
+  const scheduleMaintenance = (fromMvuEnd = false) => {
+    if (fromMvuEnd) {
+      mvuEndSeen = true;
+      const snap = readHostChat();
+      mvuEndChatCount = snap ? snap.length : null;
+    }
+    const delay = bgSweeping ? 500 : Math.max(600, bgCooldownUntil - Date.now() + 50);
     clearTimeout(bgTimer);
     bgTimer = setTimeout(() => {
       void runQuestBoardMaintenance();
-    }, 600);
+    }, delay);
   };
 
   if (events && events.CHAT_CHANGED) {
     listen(events.CHAT_CHANGED, () => {
       clearTimeout(bgTimer);
+      mvuEndSeen = false;
+      mvuEndChatCount = null;
       close();
       syncEntryUnread();
     });
   }
   const onPassiveRefresh = () => {
     clearTimeout(bgTimer);
+    mvuEndSeen = false;
+    mvuEndChatCount = null;
     syncEntryUnread();
   };
-  listen(events && events.MESSAGE_RECEIVED ? events.MESSAGE_RECEIVED : 'message_received', scheduleMaintenance);
-  listen('mag_variable_update_ended', scheduleMaintenance);
+  listen(events && events.MESSAGE_RECEIVED ? events.MESSAGE_RECEIVED : 'message_received', () => scheduleMaintenance(false));
+  listen('mag_variable_update_ended', () => scheduleMaintenance(true));
   listen(events && events.MESSAGE_SWIPED ? events.MESSAGE_SWIPED : 'message_swiped', onPassiveRefresh);
   listen(events && events.MESSAGE_EDITED ? events.MESSAGE_EDITED : 'message_edited', onPassiveRefresh);
   listen(events && events.MESSAGE_DELETED ? events.MESSAGE_DELETED : 'message_deleted', onPassiveRefresh);
