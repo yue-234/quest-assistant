@@ -568,6 +568,65 @@
   border-top: 1px solid rgba(74, 128, 200, 0.2);
 }
 
+.qh-setting-wb-box {
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(74, 128, 200, 0.28);
+  background: rgba(14, 20, 32, 0.72);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.qh-setting-wb-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.qh-setting-wb-ver {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--qh-text);
+}
+
+.qh-setting-wb-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.qh-setting-wb-badge.is-ok {
+  color: #8cf0df;
+  background: rgba(47, 209, 159, 0.14);
+  border: 1px solid rgba(47, 209, 159, 0.45);
+}
+
+.qh-setting-wb-badge.is-warn {
+  color: #ffb199;
+  background: rgba(232, 84, 74, 0.16);
+  border: 1px solid rgba(232, 84, 74, 0.55);
+}
+
+.qh-setting-wb-badge.is-muted {
+  color: var(--qh-faint);
+  background: rgba(20, 31, 52, 0.72);
+  border: 1px solid rgba(74, 128, 200, 0.24);
+}
+
+.qh-setting-wb-sub {
+  font-size: 11px;
+  color: var(--qh-muted);
+  line-height: 1.4;
+}
+
+.qh-setting-wb-sub.is-warn {
+  color: #ffb199;
+}
+
 .qh-setting-label-row {
   display: flex;
   align-items: center;

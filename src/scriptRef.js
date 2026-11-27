@@ -68,6 +68,132 @@ export function hasNewerScriptVersion(latestTag, meta = {}) {
   return compareSemverTags(latest, current) < 0;
 }
 
+/** 从文本（如世界书子标题 "任务助手v1.4.4"）中提取并归一化版本号（vX.Y.Z）。 */
+export function extractVersionFromText(text) {
+  const m = String(text ?? '').match(/(?:^|[^a-zA-Z0-9_.])v?(\d+\.\d+(?:\.\d+)?)(?=$|[^a-zA-Z0-9_.])/i);
+  if (!m) return '';
+  return `v${m[1]}`;
+}
+
+/** 判断一条世界书条目是否属于「任务助手」。 */
+export function isQuestAssistantEntry(entry) {
+  if (!entry || typeof entry !== 'object') return false;
+  const content = String(entry.content ?? '');
+  if (
+    content.includes('/事件/任务情报板')
+    || content.includes('<任务情报板>')
+    || content.includes('yue-234/quest-assistant')
+  ) {
+    return true;
+  }
+  const title = String(entry.name ?? entry.comment ?? '').trim();
+  return title.includes('任务助手') || title.includes('任务情报板');
+}
+
+function extractEntryContentVersion(content) {
+  const m = String(content ?? '').match(/\/\/\s*@version\s+([^\s\r\n]+)/i);
+  return m ? extractVersionFromText(m[1]) : '';
+}
+
+/** 从当前启用的世界书集合中定位任务助手条目，并优先从其子标题提取版本号。 */
+export function inspectWorldbookEntries(bookEntriesList = []) {
+  const candidates = [];
+  for (const book of bookEntriesList) {
+    const bookName = String(book?.bookName ?? '').trim();
+    const entries = Array.isArray(book?.entries) ? book.entries : [];
+    for (const entry of entries) {
+      if (!isQuestAssistantEntry(entry)) continue;
+      const title = String(entry.name ?? entry.comment ?? '').trim();
+      const enabled = entry.enabled !== false && entry.disable !== true;
+      const titleVer = extractVersionFromText(title);
+      const contentVer = extractEntryContentVersion(entry.content);
+      const bookVer = extractVersionFromText(bookName);
+      const version = titleVer || contentVer || bookVer;
+      candidates.push({ bookName, title, enabled, version });
+    }
+  }
+
+  if (candidates.length === 0) {
+    return { supported: true, found: false, enabled: false, version: '', title: '', bookName: '' };
+  }
+
+  candidates.sort((a, b) => {
+    if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+    if (!!a.version !== !!b.version) return a.version ? -1 : 1;
+    return 0;
+  });
+
+  const best = candidates[0];
+  return {
+    supported: true,
+    found: true,
+    enabled: best.enabled,
+    version: best.version,
+    title: best.title,
+    bookName: best.bookName,
+  };
+}
+
+/** 校验世界书版本与当前脚本运行版本是否匹配（决定设置按钮是否显示红点提醒）。 */
+export function checkWorldbookCompatibility(wbInfo, scriptMeta = {}) {
+  const loadedRef = normalizeScriptRef(scriptMeta?.loadedRef);
+  const scriptRaw = (!loadedRef || loadedRef === 'main') ? scriptMeta?.scriptVersion : loadedRef;
+  const scriptVer = extractVersionFromText(scriptRaw) || normalizeScriptRef(scriptRaw);
+
+  if (!wbInfo || wbInfo.supported === false) {
+    return {
+      status: 'unsupported',
+      mismatch: false,
+      worldbookVersion: '',
+      scriptVersion: scriptVer,
+      message: '当前环境未提供世界书读取接口',
+    };
+  }
+  if (!wbInfo.found) {
+    return {
+      status: 'not_found',
+      mismatch: false,
+      worldbookVersion: '',
+      scriptVersion: scriptVer,
+      message: '未在当前启用世界书中检测到任务助手条目',
+    };
+  }
+  if (!wbInfo.enabled) {
+    return {
+      status: 'disabled',
+      mismatch: true,
+      worldbookVersion: wbInfo.version || '',
+      scriptVersion: scriptVer,
+      message: '世界书中的任务助手条目当前处于关闭状态，请启用并保持版本一致',
+    };
+  }
+  if (!wbInfo.version) {
+    return {
+      status: 'unversioned',
+      mismatch: false,
+      worldbookVersion: '',
+      scriptVersion: scriptVer,
+      message: `已检测到「${wbInfo.title || '任务助手'}」，但子标题未标注版本号`,
+    };
+  }
+  if (scriptVer && compareSemverTags(wbInfo.version, scriptVer) === 0) {
+    return {
+      status: 'matched',
+      mismatch: false,
+      worldbookVersion: wbInfo.version,
+      scriptVersion: scriptVer,
+      message: '世界书与脚本版本匹配',
+    };
+  }
+  return {
+    status: 'mismatch',
+    mismatch: true,
+    worldbookVersion: wbInfo.version,
+    scriptVersion: scriptVer,
+    message: `世界书版本 ${wbInfo.version} 与当前脚本 ${scriptVer || '未知'} 不匹配，建议更新至一致版本`,
+  };
+}
+
 /** 读取玩家自定义覆盖的版本号；未设置时返回空字符串（由加载器采用默认 main 最新分支）。 */
 export function readScriptRef(readStorage) {
   if (typeof readStorage !== 'function') return '';

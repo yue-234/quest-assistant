@@ -21,6 +21,7 @@ import { ENTRY_MODES, readEntryMode, writeEntryMode } from './entryMode.js';
 import {
   BASELINE_SCRIPT_TAG,
   DEFAULT_SCRIPT_REF,
+  checkWorldbookCompatibility,
   fetchLatestScriptTag,
   hasNewerScriptVersion,
   normalizeScriptRef,
@@ -39,6 +40,8 @@ const ui = {
   latestTag: '',
   latestTagState: 'idle',
   latestCheckedAt: 0,
+  worldbookInfo: null,
+  worldbookState: 'idle',
   switchingRef: false,
   traitsExpanded: {
     local: false,
@@ -47,6 +50,7 @@ const ui = {
 };
 
 let tagFetchPromise = null;
+let worldbookFetchPromise = null;
 
 let root = null;
 let app = null;
@@ -926,11 +930,57 @@ function syncVersionControls() {
     applyBtn.textContent = ui.switchingRef ? '切换中…' : '切换版本';
   }
 
+  const wbCheck = checkWorldbookCompatibility(ui.worldbookInfo, meta);
+  const wbVerEl = root.querySelector('.qh-setting-wb-ver');
+  const wbBadgeEl = root.querySelector('.qh-setting-wb-badge');
+  const wbSubEl = root.querySelector('.qh-setting-wb-sub');
+  if (wbVerEl) {
+    if (ui.worldbookState === 'loading' && !ui.worldbookInfo) {
+      wbVerEl.textContent = '世界书版本：检测中…';
+    } else if (wbCheck.worldbookVersion) {
+      wbVerEl.textContent = `世界书版本：${wbCheck.worldbookVersion}`;
+    } else if (ui.worldbookInfo?.found && !ui.worldbookInfo.enabled) {
+      wbVerEl.textContent = '世界书版本：未启用';
+    } else if (ui.worldbookInfo?.found) {
+      wbVerEl.textContent = '世界书版本：未标注';
+    } else {
+      wbVerEl.textContent = '世界书版本：未检测到';
+    }
+  }
+  if (wbBadgeEl) {
+    wbBadgeEl.classList.remove('is-ok', 'is-warn', 'is-muted');
+    if (ui.worldbookState === 'loading' && !ui.worldbookInfo) {
+      wbBadgeEl.textContent = '检测中';
+      wbBadgeEl.classList.add('is-muted');
+    } else if (wbCheck.status === 'matched') {
+      wbBadgeEl.textContent = '✓ 与脚本匹配';
+      wbBadgeEl.classList.add('is-ok');
+    } else if (wbCheck.mismatch) {
+      wbBadgeEl.textContent = wbCheck.status === 'disabled' ? '条目未启用' : '版本不匹配 · 建议更新';
+      wbBadgeEl.classList.add('is-warn');
+    } else {
+      wbBadgeEl.textContent = wbCheck.status === 'unversioned' ? '无版本号' : '未识别';
+      wbBadgeEl.classList.add('is-muted');
+    }
+  }
+  if (wbSubEl) {
+    if (wbCheck.mismatch) {
+      wbSubEl.textContent = wbCheck.message;
+      wbSubEl.classList.add('is-warn');
+    } else {
+      wbSubEl.classList.remove('is-warn');
+      wbSubEl.textContent = ui.worldbookInfo?.found
+        ? `当前识别条目：${ui.worldbookInfo.title || '任务助手'}${ui.worldbookInfo.bookName ? `（${ui.worldbookInfo.bookName}）` : ''}`
+        : wbCheck.message;
+    }
+  }
+
   const hasUpdate = hasNewerScriptVersion(ui.latestTag, meta);
+  const showDot = !!wbCheck.mismatch;
   const toggleBtn = root.querySelector('.qh-top-settings');
   if (toggleBtn) {
-    toggleBtn.classList.toggle('has-update', hasUpdate);
-    const tip = hasUpdate ? `任务助手设置（发现新版本 ${ui.latestTag}）` : '任务助手设置';
+    toggleBtn.classList.toggle('has-update', showDot);
+    const tip = showDot ? `任务助手设置（${wbCheck.message}）` : '任务助手设置';
     toggleBtn.setAttribute('title', tip);
     toggleBtn.setAttribute('aria-label', tip);
   }
@@ -954,9 +1004,28 @@ function syncVersionControls() {
 
   const hintEl = root.querySelector('.qh-setting-ver-hint');
   if (hintEl) {
-    const exampleRef = ui.latestTag || meta.scriptVersion || BASELINE_SCRIPT_TAG;
-    hintEl.textContent = `请对照上方「最新版本」手动输入目标版本号（如 ${exampleRef}）点击「切换版本」热重载；若版本不存在将自动保持当前版本。`;
+    const exampleRef = wbCheck.worldbookVersion || ui.latestTag || meta.scriptVersion || BASELINE_SCRIPT_TAG;
+    hintEl.textContent = `请保证世界书与脚本版本号一致；对照上方「世界书版本」或「最新版本」输入目标版本号（如 ${exampleRef}）点击「切换版本」热重载。`;
   }
+}
+
+async function refreshWorldbookStatus() {
+  if (worldbookFetchPromise) return worldbookFetchPromise;
+  ui.worldbookState = 'loading';
+  syncVersionControls();
+  worldbookFetchPromise = (async () => {
+    try {
+      ui.worldbookInfo = await host.readActiveWorldbookInfo();
+      ui.worldbookState = 'ready';
+    } catch {
+      ui.worldbookInfo = { supported: false, found: false, enabled: false, version: '', title: '', bookName: '' };
+      ui.worldbookState = 'ready';
+    } finally {
+      worldbookFetchPromise = null;
+      syncVersionControls();
+    }
+  })();
+  return worldbookFetchPromise;
 }
 
 async function refreshLatestTag({ force = false } = {}) {
@@ -1037,6 +1106,7 @@ function setSettingsOpen(open) {
   ui.settingsOpen = !!open;
   syncSettingsLayer();
   if (ui.settingsOpen) {
+    void refreshWorldbookStatus();
     void refreshLatestTag({ force: true });
   }
 }
@@ -1148,6 +1218,13 @@ function buildSettingsLayer() {
   );
 
   const verGroup = el('div', 'qh-setting-group qh-setting-group--sep', [
+    el('div', 'qh-setting-wb-box', [
+      el('div', 'qh-setting-wb-row', [
+        el('div', 'qh-setting-wb-ver', '世界书版本：检测中…'),
+        el('span', 'qh-setting-wb-badge is-muted', '检测中'),
+      ]),
+      el('div', 'qh-setting-wb-sub', '正在检查当前启用的世界书条目…'),
+    ]),
     el('div', 'qh-setting-label-row', [
       el('div', 'qh-setting-label', '脚本版本（jsDelivr）'),
       el('span', 'qh-setting-latest', `最新版本：${SCRIPT_VERSION}`),
@@ -1284,6 +1361,7 @@ app = {
     void room.offsetWidth;
     room.classList.add('enter');
     render();
+    void refreshWorldbookStatus();
     void refreshLatestTag();
     const closeBtn = root.querySelector('.qh-top-close');
     if (closeBtn && closeBtn.focus) closeBtn.focus();

@@ -1,6 +1,8 @@
 // 酒馆宿主接入：只读聊天记录与 MVU 变量，向输入框写入行动草稿。
 // 在酒馆助手脚本或同源 iframe 内运行；拿不到助手函数时退回到父页面 SillyTavern。
 
+import { inspectWorldbookEntries } from './scriptRef.js';
+
 const parentWindow = (() => {
   if (typeof window === 'undefined') return globalThis;
   try {
@@ -172,6 +174,74 @@ export function writeStorage(key, value) {
       /* 尝试下一个窗口 */
     }
   }
+}
+
+/** 读取当前激活世界书（角色绑定 / 聊天绑定 / 全局启用）中任务助手条目的版本信息。 */
+export async function readActiveWorldbookInfo() {
+  const getWorldbook = helper('getWorldbook') || helper('getLorebookEntries');
+  if (!getWorldbook) {
+    return { supported: false, found: false, enabled: false, version: '', title: '', bookName: '' };
+  }
+
+  const names = [];
+  const pushName = (val) => {
+    const s = String(val ?? '').trim();
+    if (s && !names.includes(s)) names.push(s);
+  };
+
+  try {
+    const getCharBooks = helper('getCharWorldbookNames');
+    if (getCharBooks) {
+      const cb = getCharBooks('current');
+      pushName(cb?.primary);
+      if (Array.isArray(cb?.additional)) cb.additional.forEach(pushName);
+    } else {
+      const getCharLorebooks = helper('getCharLorebooks');
+      const cb = getCharLorebooks ? getCharLorebooks({ type: 'all' }) : null;
+      pushName(cb?.primary);
+      if (Array.isArray(cb?.additional)) cb.additional.forEach(pushName);
+    }
+  } catch {
+    /* 忽略角色世界书读取异常 */
+  }
+
+  try {
+    const getChatBook = helper('getChatWorldbookName') || helper('getChatLorebook');
+    if (getChatBook) pushName(getChatBook('current'));
+  } catch {
+    /* 忽略聊天世界书读取异常 */
+  }
+
+  try {
+    const getGlobalBooks = helper('getGlobalWorldbookNames');
+    if (getGlobalBooks) {
+      const gb = getGlobalBooks();
+      if (Array.isArray(gb)) gb.forEach(pushName);
+    } else {
+      const getLoreSettings = helper('getLorebookSettings');
+      const gb = getLoreSettings ? getLoreSettings()?.selected_global_lorebooks : null;
+      if (Array.isArray(gb)) gb.forEach(pushName);
+    }
+  } catch {
+    /* 忽略全局世界书读取异常 */
+  }
+
+  if (names.length === 0) {
+    return { supported: true, found: false, enabled: false, version: '', title: '', bookName: '' };
+  }
+
+  const bookEntriesList = [];
+  for (const bookName of names) {
+    try {
+      const entries = await getWorldbook(bookName);
+      if (Array.isArray(entries)) {
+        bookEntriesList.push({ bookName, entries });
+      }
+    } catch {
+      /* 单本世界书读取失败跳过 */
+    }
+  }
+  return inspectWorldbookEntries(bookEntriesList);
 }
 
 export { parentWindow };

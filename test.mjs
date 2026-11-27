@@ -51,6 +51,9 @@ import {
   compareSemverTags,
   fetchLatestScriptTag,
   hasNewerScriptVersion,
+  extractVersionFromText,
+  inspectWorldbookEntries,
+  checkWorldbookCompatibility,
   fetchAvailableScriptRefs,
   fetchScriptByRef,
 } from './src/scriptRef.js';
@@ -91,6 +94,7 @@ const ejsSource = fs.readFileSync(path.join(__dirname, '任务助手-世界书.e
 const builtScriptPath = path.join(__dirname, '⭐粘这个-任务助手脚本.js');
 const builtScriptTxtPath = path.join(__dirname, '⭐粘这个-任务助手脚本.txt');
 const builtDistScriptPath = path.join(__dirname, 'dist', 'quest-assistant.js');
+const builtWorldbookPath = path.join(__dirname, '⭐导入这个-命定任务助手世界书.json');
 const remoteLoaderPath = path.join(__dirname, '⭐粘这个-远程自动更新脚本.js');
 
 function renderEjs(statData, { chat = [], lastUserMessageId = 0, geoData = {}, systemCore = '', destinyImmersiveMode } = {}) {
@@ -1674,15 +1678,21 @@ test('魔法棒菜单入口：挂载 #extensionsMenu、同步未读、点击收�
 // 4. 最终构建产物校验
 // ---------------------------------------------------------------------------
 
-test('构建产物 ⭐粘这个-任务助手脚本.js、.txt 与 dist/quest-assistant.js 语法合法且一致', () => {
+test('构建产物 ⭐粘这个-任务助手脚本.js、.txt、dist/quest-assistant.js 与世界书 JSON 合法且一致', () => {
   assert.equal(fs.existsSync(builtScriptPath), true, '应先运行 build.mjs 生成最终脚本');
   assert.equal(fs.existsSync(builtScriptTxtPath), true, '应同步生成 .txt 脚本产物');
   assert.equal(fs.existsSync(builtDistScriptPath), true, '应同步生成 dist/quest-assistant.js 供 jsDelivr 分发');
+  assert.equal(fs.existsSync(builtWorldbookPath), true, '应同步生成 ⭐导入这个-命定任务助手世界书.json 交付物');
   const code = fs.readFileSync(builtScriptPath, 'utf8');
   const txtCode = fs.readFileSync(builtScriptTxtPath, 'utf8');
   const distCode = fs.readFileSync(builtDistScriptPath, 'utf8');
+  const wbJson = JSON.parse(fs.readFileSync(builtWorldbookPath, 'utf8'));
   assert.equal(txtCode, code, '⭐粘这个-任务助手脚本.txt 应与 .js 产物完全一致');
   assert.equal(distCode, code, 'dist/quest-assistant.js 应与 .js 产物完全一致');
+  assert.equal(wbJson?.entries?.['0']?.comment, '任务助手v1.4.5');
+  assert.equal(wbJson?.entries?.['0']?.constant, true);
+  assert.equal(wbJson?.entries?.['0']?.disable, false);
+  assert.equal(wbJson?.entries?.['0']?.content, ejsSource.replace(/\r\n/g, '\n'));
   assert.ok(code.length > 5000, '产物内容过短');
   assert.doesNotMatch(code, /<\/script>/i, '产物不得包含未转义 </script>');
   assert.doesNotMatch(code, /UNNCore|unn-core-studio|unn-core-fab|unn_studio_fab_pos_v1|unn_qb_seen_progress/, '不得与 UNN 命名空间冲突');
@@ -1693,7 +1703,7 @@ test('构建产物 ⭐粘这个-任务助手脚本.js、.txt 与 dist/quest-assi
   assert.match(code, /quest_helper_entry_mode_v1/);
   assert.match(code, /quest_helper_script_ref_v1/);
   assert.match(code, /v1\.4\.0/);
-  assert.match(code, /v1\.4\.4/);
+  assert.match(code, /v1\.4\.5/);
   assert.doesNotThrow(() => new Function(code), '产物必须通过 new Function 语法校验');
   assert.doesNotThrow(() => new Function(`"use strict";\n${code}`), '产物必须兼容严格模式 / ES Module import');
 });
@@ -1714,6 +1724,59 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.equal(hasNewerScriptVersion('v1.4.4', { loadedRef: 'main', scriptVersion: 'v1.4.3' }), true);
   assert.equal(hasNewerScriptVersion('v1.4.4', { loadedRef: 'main', scriptVersion: 'v1.4.4' }), false);
   assert.equal(hasNewerScriptVersion('', { loadedRef: 'v1.4.3', scriptVersion: 'v1.4.3' }), false);
+
+  // 世界书子标题识别与脚本版本匹配校验（决定红点提醒）
+  assert.equal(extractVersionFromText('任务助手v1.4.4'), 'v1.4.4');
+  assert.equal(extractVersionFromText('任务助手 1.4.5'), 'v1.4.5');
+  assert.equal(extractVersionFromText('任务助手'), '');
+
+  const wbMatched = inspectWorldbookEntries([
+    {
+      bookName: '其他世界书',
+      entries: [{ name: '无关设定', enabled: true, content: '一些设定' }],
+    },
+    {
+      bookName: '命定任务助手v1.4.4',
+      entries: [
+        { name: '任务助手v1.4.3', enabled: false, content: '/事件/任务情报板' },
+        { name: '任务助手v1.4.4', enabled: true, content: '/事件/任务情报板' },
+      ],
+    },
+  ]);
+  assert.equal(wbMatched.found, true);
+  assert.equal(wbMatched.enabled, true);
+  assert.equal(wbMatched.version, 'v1.4.4');
+  assert.equal(wbMatched.title, '任务助手v1.4.4');
+
+  // 兜底从正文 @version 或世界书书名读取版本
+  const wbContentVer = inspectWorldbookEntries([
+    { bookName: '自定义世界书', entries: [{ name: '自定义标题', enabled: true, content: '// @version v1.4.5\n/事件/任务情报板' }] },
+  ]);
+  assert.equal(wbContentVer.version, 'v1.4.5');
+
+  // 匹配时不显示红点，不匹配时亮红点建议更新
+  assert.deepEqual(
+    checkWorldbookCompatibility(wbMatched, { loadedRef: '1.4.4', scriptVersion: 'v1.4.5' }).mismatch,
+    false,
+  );
+  assert.equal(
+    checkWorldbookCompatibility(wbMatched, { loadedRef: '1.4.4', scriptVersion: 'v1.4.5' }).status,
+    'matched',
+  );
+  const wbMismatch = checkWorldbookCompatibility(wbMatched, { loadedRef: 'v1.4.5', scriptVersion: 'v1.4.5' });
+  assert.equal(wbMismatch.status, 'mismatch');
+  assert.equal(wbMismatch.mismatch, true);
+  const wbMainMatched = checkWorldbookCompatibility(wbContentVer, { loadedRef: 'main', scriptVersion: 'v1.4.5' });
+  assert.equal(wbMainMatched.status, 'matched');
+  assert.equal(wbMainMatched.mismatch, false);
+  assert.equal(
+    checkWorldbookCompatibility({ supported: true, found: false }, { loadedRef: 'v1.4.5' }).mismatch,
+    false,
+  );
+  assert.equal(
+    checkWorldbookCompatibility({ supported: true, found: true, enabled: false, version: 'v1.4.5' }, { loadedRef: 'v1.4.5' }).mismatch,
+    true,
+  );
 
   const mem = new Map();
   const read = (k) => mem.get(k) || '';

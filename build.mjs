@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { SCRIPT_VERSION } from './src/data.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -102,8 +103,63 @@ async function build() {
   fs.writeFileSync(outFile, finalCode, 'utf8');
   fs.writeFileSync(outTxtFile, finalCode, 'utf8');
   fs.writeFileSync(outDistFile, finalCode, 'utf8');
+
+  // 3. 同步导出带版本号子标题的标准酒馆世界书 JSON
+  const ejsContent = fs.readFileSync(path.join(__dirname, '任务助手-世界书.ejs'), 'utf8').replace(/\r\n/g, '\n');
+  const worldbookComment = `任务助手${SCRIPT_VERSION}`;
+  const worldbookJson = {
+    entries: {
+      '0': {
+        uid: 0,
+        displayIndex: 0,
+        comment: worldbookComment,
+        disable: false,
+        constant: true,
+        selective: false,
+        key: [],
+        selectiveLogic: 0,
+        keysecondary: [],
+        scanDepth: null,
+        vectorized: false,
+        position: 4,
+        role: 0,
+        depth: 1,
+        order: 1150,
+        content: ejsContent,
+        useProbability: true,
+        probability: 100,
+        excludeRecursion: false,
+        preventRecursion: true,
+        delayUntilRecursion: false,
+        sticky: null,
+        cooldown: null,
+        delay: null,
+        addMemo: true,
+        matchPersonaDescription: false,
+        matchCharacterDescription: false,
+        matchCharacterPersonality: false,
+        matchCharacterDepthPrompt: false,
+        matchScenario: false,
+        matchCreatorNotes: false,
+        group: '',
+        groupOverride: false,
+        groupWeight: 100,
+        caseSensitive: null,
+        matchWholeWords: null,
+        useGroupScoring: null,
+        automationId: '',
+        ignoreBudget: false,
+        outletName: '',
+        triggers: [],
+        characterFilter: { isExclude: false, names: [], tags: [] },
+      },
+    },
+  };
+  const outWorldbookFile = path.join(__dirname, '⭐导入这个-命定任务助手世界书.json');
+  fs.writeFileSync(outWorldbookFile, JSON.stringify(worldbookJson), 'utf8');
+
   const kb = (Buffer.byteLength(finalCode, 'utf8') / 1024).toFixed(1);
-  console.log(`构建完成：${outFile} & ${outTxtFile} & ${outDistFile} (${kb} KB)`);
+  console.log(`构建完成：${outFile} & ${outTxtFile} & ${outDistFile} (${kb} KB) + ${outWorldbookFile} (${worldbookComment})`);
 }
 
 build().catch((err) => {
