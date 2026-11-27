@@ -1215,6 +1215,94 @@ test('剧情追加规则与参考配额非硬上限断言', () => {
   assert.match(out, /下列条数为自动生成与补缺的参考配额，非硬上限/);
 });
 
+test('EJS 长线波折结构（init）：分级波折、三要素暗牌真相与余波衍生任务', () => {
+  const stat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-10日-12:00' },
+    事件: {},
+  };
+  const out = renderEjs(stat);
+  assertCleanOutput(out, 'twist-init');
+  assert.match(out, /①表里落差/);
+  assert.match(out, /②多方筹码/);
+  assert.match(out, /③未解代价/);
+  assert.match(out, /采用三段式波折/);
+  assert.match(out, /多线轮换悬疑反转、多方竞价、危机倒计时等骨架/);
+  assert.match(out, /含 1 次认知偏差或利益取舍/);
+  assert.match(out, /直接推进不设反转/);
+  assert.match(out, /优先从本区与世界现有 `\[黄\]\/\[红\]` 词条矛盾中衍生委托或线索/);
+  assert.match(out, /可在对应区域同步写入 1 条 `\[黄\]` 隐患词条/);
+});
+
+test('EJS 长线波折结构（maintain）：波折节拍、失败前进、禁空降反派且不引入选择题', () => {
+  const stat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日-12:00' },
+    任务列表: {
+      '暗潮港湾': { 状态: '进行中', 进展: '[488年-6月-12日] 刚接触码头工团。' },
+    },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        更新日: '488年-6月-12日',
+        列表: [
+          { id: 'q1', 类别: '剧情任务', 等级: 'A', 标题: '暗潮港湾', 方式: '调查', 摘要: '港口账册失窃', 真相: '三方争夺潮闸钥匙', 更新日: '488年-6月-12日', 预期收益: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] },
+          { id: 'q2', 类别: '本地主线', 等级: 'B', 标题: '仓库暗影', 方式: '探索', 摘要: '旧仓库异响', 真相: '走私与商会共谋', 预期收益: ['1', '2', '3', '4', '5'] },
+          { id: 'q3', 类别: '支线任务', 等级: 'C', 标题: '找回商船日志', 方式: '委托', 摘要: '船长丢了日志', 预期收益: ['1', '2', '3'] },
+          { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '清理水鬼', 方式: '悬赏', 摘要: '南码头出现水鬼', 预期收益: ['1', '2', '3'] },
+          { id: 'q5', 类别: '支线任务', 等级: 'C', 标题: '运送灯油', 方式: '委托', 摘要: '灯塔缺油', 预期收益: ['1', '2', '3'] },
+        ],
+      },
+    },
+  };
+  const out = renderEjs(stat);
+  assertCleanOutput(out, 'twist-maintain');
+  assert.doesNotMatch(out, /生成规格/);
+  assert.match(out, /已接取的剧情任务按跨城\/跨大区三段式长线推进/);
+  assert.match(out, /波折节拍:/);
+  assert.match(out, /NPC 不首轮揭示 `真相`/);
+  assert.match(out, /中段（剧情第 3~6 栏、本地主线第 2~3 栏）触发旧线索重新解释或第三方争夺筹码/);
+  assert.match(out, /终局前（剧情第 7~9 栏、本地主线第 4 栏）触发不可逆代价取舍/);
+  assert.match(out, /以替代战利品置换约定尾款以守住收益底线/);
+  assert.match(out, /终局不空降无铺垫反派或万能解法/);
+  assert.match(out, /交涉破裂、潜入暴露或击杀关键 NPC 时不阻断推进/);
+  assert.match(out, /限时项拖过关键节点关闭最优窗口转入补救/);
+  assert.doesNotMatch(out, /选择题|决策卡|quest_choice/);
+});
+
+test('EJS 长线波折结构（advance）与全模式去古风/语体回归', () => {
+  const initOut = renderEjs({ 世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-10日' }, 事件: {} });
+  const advOut = renderEjs({
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-20日' },
+    任务列表: {
+      '暗潮港湾': { 状态: '进行中', 进展: '[488年-6月-10日] 刚拿到第一份证词。' },
+    },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        更新日: '488年-6月-10日',
+        列表: [
+          { id: 'q1', 类别: '剧情任务', 等级: 'A', 标题: '暗潮港湾', 方式: '调查', 摘要: '港口账册失窃', 真相: '三方争夺潮闸钥匙', 更新日: '488年-6月-10日', 预期收益: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] },
+          { id: 'q2', 类别: '本地主线', 等级: 'B', 标题: '仓库暗影', 方式: '探索', 摘要: '旧仓库异响', 真相: '走私与商会共谋', 预期收益: ['1', '2', '3', '4', '5'] },
+          { id: 'q3', 类别: '支线任务', 等级: 'C', 标题: '找回商船日志', 方式: '委托', 摘要: '船长丢了日志', 预期收益: ['1', '2', '3'] },
+          { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '清理水鬼', 方式: '悬赏', 摘要: '南码头出现水鬼', 预期收益: ['1', '2', '3'] },
+          { id: 'q5', 类别: '支线任务', 等级: 'C', 标题: '运送灯油', 方式: '委托', 摘要: '灯塔缺油', 预期收益: ['1', '2', '3'] },
+        ],
+      },
+    },
+  });
+  assertCleanOutput(advOut, 'twist-advance');
+  assert.match(advOut, /第 1 步筹码转移或原路失效；第 2 步冲突公开化、中间站恶化；第 3 步酿成不可逆后果/);
+  assert.match(advOut, /继续搁置则按失败结案并移出 `\/任务列表` 与任务情报板/);
+  assert.match(advOut, /静默同步至 `\/任务列表`（不双写任务情报板），需要时在正文中通过当地传闻或情报渠道自然带出一句/);
+
+  for (const sample of [initOut, advOut]) {
+    assert.doesNotMatch(sample, /玩家|白嫖|刷好感|一口气|找乐子/);
+    assert.doesNotMatch(sample, /皆|亦|乃|均可|血气|斗气|以太|灵气|渡劫|飞升/);
+    assert.doesNotMatch(sample, /选择题|决策卡|quest_choice/);
+  }
+});
+
 test('前端自动聚合未上墙的原版 /任务列表 进行中任务（去重、过滤已完结、只读标记）', () => {
   const stat = {
     世界: { 地点: '白石镇', 时间: '复兴纪元488年-3月-12日-10:00' },
@@ -1689,7 +1777,7 @@ test('构建产物 ⭐粘这个-任务助手脚本.js、.txt、dist/quest-assist
   const wbJson = JSON.parse(fs.readFileSync(builtWorldbookPath, 'utf8'));
   assert.equal(txtCode, code, '⭐粘这个-任务助手脚本.txt 应与 .js 产物完全一致');
   assert.equal(distCode, code, 'dist/quest-assistant.js 应与 .js 产物完全一致');
-  assert.equal(wbJson?.entries?.['0']?.comment, '任务助手v1.4.5');
+  assert.equal(wbJson?.entries?.['0']?.comment, '任务助手v1.4.6');
   assert.equal(wbJson?.entries?.['0']?.constant, true);
   assert.equal(wbJson?.entries?.['0']?.disable, false);
   assert.equal(wbJson?.entries?.['0']?.content, ejsSource.replace(/\r\n/g, '\n'));
@@ -1703,7 +1791,7 @@ test('构建产物 ⭐粘这个-任务助手脚本.js、.txt、dist/quest-assist
   assert.match(code, /quest_helper_entry_mode_v1/);
   assert.match(code, /quest_helper_script_ref_v1/);
   assert.match(code, /v1\.4\.0/);
-  assert.match(code, /v1\.4\.5/);
+  assert.match(code, /v1\.4\.6/);
   assert.doesNotThrow(() => new Function(code), '产物必须通过 new Function 语法校验');
   assert.doesNotThrow(() => new Function(`"use strict";\n${code}`), '产物必须兼容严格模式 / ES Module import');
 });
