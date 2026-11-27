@@ -57,6 +57,17 @@ export function compareSemverTags(a, b) {
   return String(b ?? '').localeCompare(String(a ?? ''));
 }
 
+/** 判断远端最新 Tag 是否严格高于当前运行版本。 */
+export function hasNewerScriptVersion(latestTag, meta = {}) {
+  const latest = normalizeScriptRef(latestTag);
+  if (!latest) return false;
+  const loadedRef = normalizeScriptRef(meta?.loadedRef);
+  const scriptVersion = normalizeScriptRef(meta?.scriptVersion);
+  const current = (!loadedRef || loadedRef === 'main') ? scriptVersion : loadedRef;
+  if (!current) return false;
+  return compareSemverTags(latest, current) < 0;
+}
+
 /** 读取玩家自定义覆盖的版本号；未设置时返回空字符串（由加载器采用默认 main 最新分支）。 */
 export function readScriptRef(readStorage) {
   if (typeof readStorage !== 'function') return '';

@@ -50,6 +50,7 @@ import {
   writeScriptRef,
   compareSemverTags,
   fetchLatestScriptTag,
+  hasNewerScriptVersion,
   fetchAvailableScriptRefs,
   fetchScriptByRef,
 } from './src/scriptRef.js';
@@ -1692,7 +1693,7 @@ test('构建产物 ⭐粘这个-任务助手脚本.js、.txt 与 dist/quest-assi
   assert.match(code, /quest_helper_entry_mode_v1/);
   assert.match(code, /quest_helper_script_ref_v1/);
   assert.match(code, /v1\.4\.0/);
-  assert.match(code, /v1\.4\.3/);
+  assert.match(code, /v1\.4\.4/);
   assert.doesNotThrow(() => new Function(code), '产物必须通过 new Function 语法校验');
   assert.doesNotThrow(() => new Function(`"use strict";\n${code}`), '产物必须兼容严格模式 / ES Module import');
 });
@@ -1706,6 +1707,13 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.equal(normalizeScriptRef('v1.4.0?x=1'), '');
   assert.ok(compareSemverTags('v1.10.0', 'v1.4.2') < 0);
   assert.ok(compareSemverTags('v1.4.2', 'v1.4.1') < 0);
+
+  // 更新红点判定边界
+  assert.equal(hasNewerScriptVersion('v1.4.4', { loadedRef: 'v1.4.3', scriptVersion: 'v1.4.3' }), true);
+  assert.equal(hasNewerScriptVersion('v1.4.4', { loadedRef: 'v1.4.4', scriptVersion: 'v1.4.4' }), false);
+  assert.equal(hasNewerScriptVersion('v1.4.4', { loadedRef: 'main', scriptVersion: 'v1.4.3' }), true);
+  assert.equal(hasNewerScriptVersion('v1.4.4', { loadedRef: 'main', scriptVersion: 'v1.4.4' }), false);
+  assert.equal(hasNewerScriptVersion('', { loadedRef: 'v1.4.3', scriptVersion: 'v1.4.3' }), false);
 
   const mem = new Map();
   const read = (k) => mem.get(k) || '';

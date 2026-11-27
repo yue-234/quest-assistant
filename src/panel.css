@@ -357,6 +357,7 @@
 }
 
 .qh-top-settings {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -369,6 +370,27 @@
   font-weight: 600;
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.qh-top-settings-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid #0a101c;
+  background: linear-gradient(135deg, #ff7a59 0%, #e02424 100%);
+  box-shadow: 0 0 6px rgba(255, 122, 89, 0.72);
+  opacity: 0;
+  transform: scale(0.5);
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.qh-top-settings.has-update .qh-top-settings-dot {
+  opacity: 1;
+  transform: scale(1);
 }
 
 .qh-top-settings:hover,

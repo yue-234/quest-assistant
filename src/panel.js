@@ -21,13 +21,14 @@ import { ENTRY_MODES, readEntryMode, writeEntryMode } from './entryMode.js';
 import {
   BASELINE_SCRIPT_TAG,
   DEFAULT_SCRIPT_REF,
-  compareSemverTags,
   fetchLatestScriptTag,
+  hasNewerScriptVersion,
   normalizeScriptRef,
   readScriptRef,
 } from './scriptRef.js';
 
 const QUEST_SEEN_KEY = 'quest_helper_seen_progress_v1';
+const TAG_CHECK_TTL_MS = 5 * 60 * 1000;
 
 const ui = {
   questCategory: '全部',
@@ -37,12 +38,15 @@ const ui = {
   entryMode: ENTRY_MODES.FAB,
   latestTag: '',
   latestTagState: 'idle',
+  latestCheckedAt: 0,
   switchingRef: false,
   traitsExpanded: {
     local: false,
     world: false,
   },
 };
+
+let tagFetchPromise = null;
 
 let root = null;
 let app = null;
@@ -922,6 +926,15 @@ function syncVersionControls() {
     applyBtn.textContent = ui.switchingRef ? '切换中…' : '切换版本';
   }
 
+  const hasUpdate = hasNewerScriptVersion(ui.latestTag, meta);
+  const toggleBtn = root.querySelector('.qh-top-settings');
+  if (toggleBtn) {
+    toggleBtn.classList.toggle('has-update', hasUpdate);
+    const tip = hasUpdate ? `任务助手设置（发现新版本 ${ui.latestTag}）` : '任务助手设置';
+    toggleBtn.setAttribute('title', tip);
+    toggleBtn.setAttribute('aria-label', tip);
+  }
+
   const latestEl = root.querySelector('.qh-setting-latest');
   if (latestEl) {
     latestEl.classList.remove('is-newer', 'is-muted');
@@ -929,10 +942,8 @@ function syncVersionControls() {
       latestEl.textContent = '最新版本：查询中…';
       latestEl.classList.add('is-muted');
     } else if (ui.latestTag) {
-      const currentCmpRef = meta.loadedRef === 'main' ? meta.scriptVersion : meta.loadedRef;
-      const hasNewer = compareSemverTags(ui.latestTag, currentCmpRef) < 0;
-      latestEl.textContent = hasNewer ? `最新版本：${ui.latestTag}（有更新）` : `最新版本：${ui.latestTag}`;
-      if (hasNewer) latestEl.classList.add('is-newer');
+      latestEl.textContent = hasUpdate ? `最新版本：${ui.latestTag}（有更新）` : `最新版本：${ui.latestTag}`;
+      if (hasUpdate) latestEl.classList.add('is-newer');
     } else if (ui.latestTagState === 'error') {
       latestEl.textContent = '最新版本：暂未获取';
       latestEl.classList.add('is-muted');
@@ -948,13 +959,25 @@ function syncVersionControls() {
   }
 }
 
-async function refreshLatestTag() {
+async function refreshLatestTag({ force = false } = {}) {
+  if (!force && ui.latestCheckedAt && Date.now() - ui.latestCheckedAt < TAG_CHECK_TTL_MS) {
+    return;
+  }
+  if (tagFetchPromise) return tagFetchPromise;
   ui.latestTagState = 'loading';
-  if (ui.settingsOpen) syncVersionControls();
-  const tag = await fetchLatestScriptTag(globalThis.fetch);
-  ui.latestTag = tag;
-  ui.latestTagState = tag ? 'ready' : 'error';
-  if (ui.settingsOpen) syncVersionControls();
+  syncVersionControls();
+  tagFetchPromise = (async () => {
+    try {
+      const tag = await fetchLatestScriptTag(globalThis.fetch);
+      ui.latestTag = tag;
+      ui.latestTagState = tag ? 'ready' : 'error';
+      ui.latestCheckedAt = Date.now();
+    } finally {
+      tagFetchPromise = null;
+      syncVersionControls();
+    }
+  })();
+  return tagFetchPromise;
 }
 
 async function applyScriptRef(rawRef) {
@@ -1014,7 +1037,7 @@ function setSettingsOpen(open) {
   ui.settingsOpen = !!open;
   syncSettingsLayer();
   if (ui.settingsOpen) {
-    void refreshLatestTag();
+    void refreshLatestTag({ force: true });
   }
 }
 
@@ -1172,6 +1195,7 @@ function buildShell() {
         [
           el('span', 'qh-top-settings-icon', '⚙'),
           el('span', 'qh-top-settings-text', '设置'),
+          el('span', 'qh-top-settings-dot', null, { 'aria-hidden': 'true' }),
         ],
         {
           type: 'button',
@@ -1260,6 +1284,7 @@ app = {
     void room.offsetWidth;
     room.classList.add('enter');
     render();
+    void refreshLatestTag();
     const closeBtn = root.querySelector('.qh-top-close');
     if (closeBtn && closeBtn.focus) closeBtn.focus();
   },
