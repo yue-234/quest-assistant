@@ -215,22 +215,44 @@ function normalizeQuestWay(raw) {
   return { way: '委托接取', wayKind: 'contact', guideLabel: '接取指引' };
 }
 
-const CLAIMED_MARK_RE = /(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)]|\[\d+\s*[✓✔☑]\])/;
+export const CLAIMED_MARK_RE = /(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)]|\[\d+\s*[✓✔☑]\])/;
+export const LOST_MARK_RE = /(?:[✕✗✘]|[\[【（(]\s*(?:已失效|已错失|已作废|[✕✗✘×])\s*[\]】）)]|\[\s*\d+\s*[✕✗✘×]\s*\]|^\s*×(?!\s*\d)|\s*×\s*$)/;
 
 export function cleanRewardText(raw) {
   return text(raw)
-    .replace(/^\s*\[\s*\d+\s*[✓✔☑□☐]?\s*\]\s*/g, '')
-    .replace(/\s*(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)])+\s*$/g, '')
-    .replace(/^\s*(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)])+\s*/g, '')
+    .replace(/^\s*\[\s*\d+\s*[✓✔☑✕✗✘×□☐]?\s*\]\s*/g, '')
+    .replace(/\s*(?:[✓✔☑✕✗✘×]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得|已失效|已错失|已作废|[✓✔☑✕✗✘×])\s*[\]】）)])+\s*$/g, '')
+    .replace(/^\s*(?:[✓✔☑✕✗✘]|×(?!\s*\d)|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得|已失效|已错失|已作废|[✓✔☑✕✗✘×])\s*[\]】）)])+\s*/g, '')
     .trim();
 }
 
-export function parseClaimedSet(raw) {
+function toRewardRawArray(raw) {
+  if (Array.isArray(raw)) return [...raw];
+  if (typeof raw === 'string' && raw.trim()) {
+    return raw.split(/[、，,;\n；|｜]+/).map((x) => x.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+/** 合并奖励状态 map 中同一任务通过 id 与 title 双键保存的条目，避免双键并存时丢数据。 */
+export function mergeRewardMapEntries(map, id, title = '') {
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return [];
+  const k1 = text(id).trim();
+  const k2 = text(title).trim();
+  const out = [];
+  if (k1 && Object.prototype.hasOwnProperty.call(map, k1)) {
+    out.push(...toRewardRawArray(map[k1]));
+  }
+  if (k2 && k2 !== k1 && Object.prototype.hasOwnProperty.call(map, k2)) {
+    out.push(...toRewardRawArray(map[k2]));
+  }
+  return out;
+}
+
+function parseRewardSlotSet(raw) {
   const slots = new Set();
   const texts = new Set();
-  const arr = Array.isArray(raw)
-    ? raw
-    : (typeof raw === 'string' && raw.trim() ? raw.split(/[、，,;\n；|｜]+/) : []);
+  const arr = toRewardRawArray(raw);
   for (const item of arr) {
     if (typeof item === 'number' && Number.isFinite(item) && item >= 1) {
       slots.add(Math.floor(item));
@@ -247,6 +269,14 @@ export function parseClaimedSet(raw) {
     }
   }
   return { slots, texts };
+}
+
+export function parseClaimedSet(raw) {
+  return parseRewardSlotSet(raw);
+}
+
+export function parseLostSet(raw) {
+  return parseRewardSlotSet(raw);
 }
 
 export function normalizeQuestRewards(raw) {
@@ -486,6 +516,7 @@ export function questBoardState(stat, current = {}) {
     ? current.historyStats
     : extractHistoryStats(current.chat || current.messages);
   const claimedMap = obj(board['已兑现']);
+  const lostMap = obj(board['已失效']);
 
   const formalList = Object.entries(obj(obj(stat)['任务列表']))
     .map(([k, v]) => {
@@ -580,7 +611,8 @@ export function questBoardState(stat, current = {}) {
       const progress = accepted ? (formal.progress || boardProgress) : boardProgress;
       const itemUpdatedDay = normalizeDay(r['更新日']);
       const rawRewards = normalizeQuestRewards(r['预期收益']);
-      const claimedInfo = parseClaimedSet(claimedMap[id] ?? claimedMap[title]);
+      const claimedInfo = parseClaimedSet(mergeRewardMapEntries(claimedMap, id, title));
+      const lostInfo = parseLostSet(mergeRewardMapEntries(lostMap, id, title));
       const rewardItems = rawRewards.map((rawRw, rwIdx) => {
         const slot = rwIdx + 1;
         const cleanText = cleanRewardText(rawRw) || rawRw;
@@ -588,10 +620,17 @@ export function questBoardState(stat, current = {}) {
         const claimed = CLAIMED_MARK_RE.test(rawRw)
           || claimedInfo.slots.has(slot)
           || claimedInfo.texts.has(compact);
-        return { slot, text: cleanText, claimed };
+        // 硬规则：已兑现优先于已失效（已拿到手的收益不倒扣）
+        const lost = !claimed && (
+          LOST_MARK_RE.test(rawRw)
+          || lostInfo.slots.has(slot)
+          || lostInfo.texts.has(compact)
+        );
+        return { slot, text: cleanText, claimed, lost };
       });
       const rewards = rewardItems.map((x) => x.text);
       const claimedCount = rewardItems.filter((x) => x.claimed).length;
+      const lostCount = rewardItems.filter((x) => x.lost).length;
       const normTitle = stripTaskTitle(title);
       const everAccepted = everAcceptedSet.has(id)
         || everAcceptedSet.has(title)
@@ -624,6 +663,7 @@ export function questBoardState(stat, current = {}) {
         rewards,
         rewardItems,
         claimedCount,
+        lostCount,
         expectedSlots: cfg.rewardSlots,
         intent,
         staleRegion,
@@ -644,10 +684,13 @@ export function questBoardState(stat, current = {}) {
       const rawRewards = normalizeQuestRewards(f.reward);
       const rewardItems = rawRewards.map((rawRw, rwIdx) => {
         const cleanText = cleanRewardText(rawRw) || rawRw;
-        return { slot: rwIdx + 1, text: cleanText, claimed: CLAIMED_MARK_RE.test(rawRw) };
+        const claimed = CLAIMED_MARK_RE.test(rawRw);
+        const lost = !claimed && LOST_MARK_RE.test(rawRw);
+        return { slot: rwIdx + 1, text: cleanText, claimed, lost };
       });
       const rewards = rewardItems.map((x) => x.text);
       const claimedCount = rewardItems.filter((x) => x.claimed).length;
+      const lostCount = rewardItems.filter((x) => x.lost).length;
       const cfg = DATA.questBoard.categories[category] || DATA.questBoard.categories['支线任务'];
       return {
         id: `formal:${f.key}`,
@@ -670,6 +713,7 @@ export function questBoardState(stat, current = {}) {
         rewards,
         rewardItems,
         claimedCount,
+        lostCount,
         expectedSlots: rewardItems.length || cfg.rewardSlots,
         intent: false,
         staleRegion: false,

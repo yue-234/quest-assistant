@@ -4,7 +4,9 @@
 import { DATA } from './data.js';
 import {
   BOARD_KEY, CORE_NAME, SPEAKER, fpOf, boardNode, rescanFresh,
-  normalizeDay, worldDay, cleanRewardText, parseClaimedSet, normalizeQuestRewards,
+  normalizeDay, worldDay, cleanRewardText, parseClaimedSet, parseLostSet,
+  mergeRewardMapEntries, normalizeQuestRewards,
+  CLAIMED_MARK_RE, LOST_MARK_RE,
   stripTaskTitle, matchFormalTask, extractHistoryStats, wasInHistoryFormalTasks,
   isAftermathEntryExpired,
 } from './state.js';
@@ -13,7 +15,6 @@ export { CORE_NAME, SPEAKER };
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? JSON.parse(JSON.stringify(v)) : {});
 const text = (v) => String(v ?? '');
-const CLAIMED_MARK_RE = /(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得)\s*[\]】）)]|\[\d+\s*[✓✔☑]\])/;
 
 /** 深拷贝 stat_data 并确保 /事件/任务情报板 存在。 */
 function draft(stat) {
@@ -91,6 +92,10 @@ export function ignoreQuest(stat, questId, questTitle = '') {
     if (id) delete board['已兑现'][id];
     if (removedTitle) delete board['已兑现'][removedTitle];
   }
+  if (board['已失效'] && typeof board['已失效'] === 'object') {
+    if (id) delete board['已失效'][id];
+    if (removedTitle) delete board['已失效'][removedTitle];
+  }
   if (Array.isArray(board['曾接取'])) {
     const removedNorm = stripTaskTitle(removedTitle);
     const nextEver = board['曾接取'].filter((x) => {
@@ -114,6 +119,88 @@ export function ignoreQuest(stat, questId, questTitle = '') {
   return { stat: next, done: `已忽略「${removedTitle || id}」，下一回合自动补入新情报` };
 }
 
+function findBoardEntry(board, id, title) {
+  if (Array.isArray(board['列表'])) {
+    return board['列表'].find((item, idx) => {
+      const r = obj(item);
+      const itemId = text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
+      const itemTitle = text(r['标题']).trim();
+      return (id && itemId === id) || (title && itemTitle === title);
+    }) || null;
+  }
+  if (board['列表'] && typeof board['列表'] === 'object') {
+    for (const [k, v] of Object.entries(board['列表'])) {
+      const r = obj(v);
+      const itemTitle = text(r['标题']).trim();
+      if ((id && text(k).trim() === id) || (title && itemTitle === title)) return v;
+    }
+  }
+  return null;
+}
+
+function normalizeRewardSlotList(arr) {
+  const nums = [];
+  const others = [];
+  const seenOther = new Set();
+  for (const x of arr) {
+    if (typeof x === 'number' && Number.isFinite(x) && x >= 1) {
+      nums.push(Math.floor(x));
+      continue;
+    }
+    const s = text(x).trim();
+    if (!s) continue;
+    if (/^\d+$/.test(s)) {
+      const n = Number(s);
+      if (n >= 1) nums.push(n);
+      continue;
+    }
+    const compact = cleanRewardText(s).replace(/\s+/g, '');
+    if (compact && seenOther.has(compact)) continue;
+    if (compact) seenOther.add(compact);
+    others.push(x);
+  }
+  const uniqueNums = [...new Set(nums)].sort((a, b) => a - b);
+  return [...uniqueNums, ...others];
+}
+
+function removeSlotFromRewardMap(board, field, key, title, slot, cleanSlotText) {
+  const map = board[field];
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return;
+  const curArr = mergeRewardMapEntries(map, key, title);
+  const filtered = curArr.filter((x) => {
+    if (typeof x === 'number' && Math.floor(x) === slot) return false;
+    const s = text(x).trim();
+    if (/^\d+$/.test(s) && Number(s) === slot) return false;
+    if (cleanSlotText && cleanRewardText(s).replace(/\s+/g, '') === cleanSlotText) return false;
+    return true;
+  });
+  const normalized = normalizeRewardSlotList(filtered);
+  if (normalized.length > 0) map[key] = normalized;
+  else delete map[key];
+  if (title && title !== key) delete map[title];
+}
+
+function addSlotToRewardMap(board, field, key, title, slot, cleanSlotText) {
+  if (!board[field] || typeof board[field] !== 'object' || Array.isArray(board[field])) {
+    board[field] = {};
+  }
+  const map = board[field];
+  const curArr = mergeRewardMapEntries(map, key, title).filter((x) => {
+    const s = text(x).trim();
+    if (cleanSlotText && !/^\d+$/.test(s) && cleanRewardText(s).replace(/\s+/g, '') === cleanSlotText) {
+      return false;
+    }
+    return true;
+  });
+  map[key] = normalizeRewardSlotList([...curArr, slot]);
+  if (title && title !== key) delete map[title];
+}
+
+function stripInlineSlotMark(targetEntry, rawRewards, slot) {
+  if (!targetEntry || !rawRewards.length) return;
+  targetEntry['预期收益'] = rawRewards.map((rw, idx) => (idx === slot - 1 ? cleanRewardText(rw) : rw));
+}
+
 /** 切换某条任务情报第 slotNo 栏（1 起）预期收益的「已兑现 ✓」状态，供玩家手动补勾或取消。 */
 export function toggleQuestRewardClaimed(stat, questId, slotNo, questTitle = '') {
   const id = text(questId).trim();
@@ -130,69 +217,85 @@ export function toggleQuestRewardClaimed(stat, questId, slotNo, questTitle = '')
     board['已兑现'] = {};
   }
 
-  let targetEntry = null;
-  if (Array.isArray(board['列表'])) {
-    targetEntry = board['列表'].find((item, idx) => {
-      const r = obj(item);
-      const itemId = text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
-      const itemTitle = text(r['标题']).trim();
-      return (id && itemId === id) || (title && itemTitle === title);
-    }) || null;
-  } else if (board['列表'] && typeof board['列表'] === 'object') {
-    for (const [k, v] of Object.entries(board['列表'])) {
-      const r = obj(v);
-      const itemTitle = text(r['标题']).trim();
-      if ((id && k === id) || (title && itemTitle === title)) {
-        targetEntry = v;
-        break;
-      }
-    }
-  }
-
+  const targetEntry = findBoardEntry(board, id, title);
   const rawRewards = targetEntry ? normalizeQuestRewards(targetEntry['预期收益']) : [];
   const rawSlotText = rawRewards[slot - 1] !== undefined ? text(rawRewards[slot - 1]) : '';
   const cleanSlotText = cleanRewardText(rawSlotText).replace(/\s+/g, '');
   const hadInlineMark = CLAIMED_MARK_RE.test(rawSlotText);
+  const hadLostInline = LOST_MARK_RE.test(rawSlotText);
 
-  const curRaw = board['已兑现'][key] ?? (title && board['已兑现'][title]) ?? [];
-  const curArr = Array.isArray(curRaw)
-    ? [...curRaw]
-    : (typeof curRaw === 'string' && curRaw.trim()
-      ? curRaw.split(/[、，,;\n；|｜]+/).map((x) => x.trim()).filter(Boolean)
-      : []);
-  const claimedInfo = parseClaimedSet(curRaw);
+  const mergedClaimed = mergeRewardMapEntries(board['已兑现'], key, title);
+  const claimedInfo = parseClaimedSet(mergedClaimed);
   const existsInMap = claimedInfo.slots.has(slot)
     || (!!cleanSlotText && claimedInfo.texts.has(cleanSlotText));
 
   const wasClaimed = existsInMap || hadInlineMark;
   if (wasClaimed) {
-    const filtered = curArr.filter((x) => {
-      if (typeof x === 'number' && Math.floor(x) === slot) return false;
-      const s = text(x).trim();
-      if (/^\d+$/.test(s) && Number(s) === slot) return false;
-      if (cleanSlotText && cleanRewardText(s).replace(/\s+/g, '') === cleanSlotText) return false;
-      return true;
-    });
-    if (filtered.length > 0) board['已兑现'][key] = filtered;
-    else delete board['已兑现'][key];
-    if (title && title !== key) delete board['已兑现'][title];
-    if (hadInlineMark && targetEntry) {
-      if (Array.isArray(targetEntry['预期收益'])) {
-        targetEntry['预期收益'][slot - 1] = cleanRewardText(rawSlotText);
-      } else {
-        const cleanedList = rawRewards.map((rw, idx) => (idx === slot - 1 ? cleanRewardText(rw) : rw));
-        targetEntry['预期收益'] = cleanedList;
-      }
-    }
+    removeSlotFromRewardMap(board, '已兑现', key, title, slot, cleanSlotText);
+    if (hadInlineMark) stripInlineSlotMark(targetEntry, rawRewards, slot);
     return { stat: next, done: `已取消第 ${slot} 栏收益的兑现标记` };
   }
 
-  const nextArr = [...curArr, slot];
-  const nums = nextArr.filter((x) => typeof x === 'number' || /^\d+$/.test(text(x).trim())).map((x) => Math.floor(Number(x)));
-  const others = nextArr.filter((x) => !(typeof x === 'number' || /^\d+$/.test(text(x).trim())));
-  const uniqueNums = [...new Set(nums)].sort((a, b) => a - b);
-  board['已兑现'][key] = [...uniqueNums, ...others];
-  if (title && title !== key) delete board['已兑现'][title];
+  removeSlotFromRewardMap(board, '已失效', key, title, slot, cleanSlotText);
+  if (hadLostInline) stripInlineSlotMark(targetEntry, rawRewards, slot);
+  addSlotToRewardMap(board, '已兑现', key, title, slot, cleanSlotText);
+  return { stat: next, done: `已将第 ${slot} 栏收益标记为已兑现 ✓` };
+}
+
+/** 三态循环切换某条任务情报第 slotNo 栏（1 起）预期收益状态：待获得 (□) → 已兑现 (✓) → 已失效 (✕) → 待获得 (□)。 */
+export function cycleQuestRewardState(stat, questId, slotNo, questTitle = '') {
+  const id = text(questId).trim();
+  const title = text(questTitle).trim();
+  const slot = Math.floor(Number(slotNo));
+  const key = id || title;
+  if (!key || !Number.isFinite(slot) || slot < 1) {
+    return { error: '请先选择有效的收益栏位' };
+  }
+
+  const next = draft(stat);
+  const board = ensureBoard(next);
+  const targetEntry = findBoardEntry(board, id, title);
+
+  const rawRewards = targetEntry ? normalizeQuestRewards(targetEntry['预期收益']) : [];
+  const rawSlotText = rawRewards[slot - 1] !== undefined ? text(rawRewards[slot - 1]) : '';
+  const cleanSlotText = cleanRewardText(rawSlotText).replace(/\s+/g, '');
+  const hadClaimedInline = CLAIMED_MARK_RE.test(rawSlotText);
+  const hadLostInline = LOST_MARK_RE.test(rawSlotText);
+
+  const claimedMap = board['已兑现'] && typeof board['已兑现'] === 'object' && !Array.isArray(board['已兑现'])
+    ? board['已兑现']
+    : {};
+  const lostMap = board['已失效'] && typeof board['已失效'] === 'object' && !Array.isArray(board['已失效'])
+    ? board['已失效']
+    : {};
+
+  const claimedInfo = parseClaimedSet(mergeRewardMapEntries(claimedMap, key, title));
+  const lostInfo = parseLostSet(mergeRewardMapEntries(lostMap, key, title));
+  const claimedInMap = claimedInfo.slots.has(slot)
+    || (!!cleanSlotText && claimedInfo.texts.has(cleanSlotText));
+  const lostInMap = lostInfo.slots.has(slot)
+    || (!!cleanSlotText && lostInfo.texts.has(cleanSlotText));
+
+  // 与解析保持一致：已兑现优先于已失效
+  const isClaimed = claimedInMap || hadClaimedInline;
+  const isLost = !isClaimed && (lostInMap || hadLostInline);
+
+  if (isClaimed) {
+    removeSlotFromRewardMap(board, '已兑现', key, title, slot, cleanSlotText);
+    if (hadClaimedInline || hadLostInline) stripInlineSlotMark(targetEntry, rawRewards, slot);
+    addSlotToRewardMap(board, '已失效', key, title, slot, cleanSlotText);
+    return { stat: next, done: `已将第 ${slot} 栏收益标记为已失效 ✕` };
+  }
+
+  if (isLost) {
+    removeSlotFromRewardMap(board, '已失效', key, title, slot, cleanSlotText);
+    if (hadLostInline) stripInlineSlotMark(targetEntry, rawRewards, slot);
+    return { stat: next, done: `已将第 ${slot} 栏收益恢复为待获得状态` };
+  }
+
+  removeSlotFromRewardMap(board, '已失效', key, title, slot, cleanSlotText);
+  if (hadLostInline) stripInlineSlotMark(targetEntry, rawRewards, slot);
+  addSlotToRewardMap(board, '已兑现', key, title, slot, cleanSlotText);
   return { stat: next, done: `已将第 ${slot} 栏收益标记为已兑现 ✓` };
 }
 
@@ -396,7 +499,7 @@ function isQuestEntryClosed(stat, entry, idx, claimedMap, everSet, everNormSet, 
   if (wasInHistoryFormalTasks(historyStats, id, title)) return true;
 
   const rawRewards = normalizeQuestRewards(r['预期收益']);
-  const claimedInfo = parseClaimedSet(claimedMap[id] ?? claimedMap[title]);
+  const claimedInfo = parseClaimedSet(mergeRewardMapEntries(claimedMap, id, title));
   return rawRewards.some((rawRw, rwIdx) => {
     const slot = rwIdx + 1;
     const cleanText = cleanRewardText(rawRw) || rawRw;
@@ -501,7 +604,7 @@ export function hasClosedQuestLeftovers(stat, current = {}) {
   return false;
 }
 
-/** 静默清理任务板里已完结的残留条目（含其意向、已兑现与曾接取键）。 */
+/** 静默清理任务板里已完结的残留条目（含其意向、已兑现、已失效与曾接取键）。 */
 export function sweepClosedQuests(stat, current = {}) {
   const next = draft(stat);
   const board = ensureBoard(next);
@@ -550,6 +653,9 @@ export function sweepClosedQuests(stat, current = {}) {
   }
   if (board['已兑现'] && typeof board['已兑现'] === 'object') {
     for (const k of [...removedIds, ...removedTitles]) delete board['已兑现'][k];
+  }
+  if (board['已失效'] && typeof board['已失效'] === 'object') {
+    for (const k of [...removedIds, ...removedTitles]) delete board['已失效'][k];
   }
   if (Array.isArray(board['曾接取'])) {
     const remaining = boardEntriesOf(board);

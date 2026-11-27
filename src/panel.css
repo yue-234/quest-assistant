@@ -1572,6 +1572,17 @@
   background: rgba(47, 209, 159, 0.22);
 }
 
+.qh-quest-reward-chip.is-lost {
+  border-color: rgba(224, 96, 108, 0.52);
+  background: rgba(224, 96, 108, 0.13);
+  color: #d99ba2;
+}
+
+.qh-quest-reward-chip.is-editable.is-lost:hover {
+  border-color: rgba(235, 114, 126, 0.82);
+  background: rgba(224, 96, 108, 0.22);
+}
+
 .qh-quest-reward-idx {
   flex: 0 0 auto;
   font-size: 10.5px;
@@ -1584,10 +1595,21 @@
   color: #2fd19f;
 }
 
+.qh-quest-reward-chip.is-lost .qh-quest-reward-idx {
+  color: #e06b76;
+  opacity: 0.85;
+}
+
 .qh-quest-reward-text {
   flex: 1 1 auto;
   line-height: 1.35;
   word-break: break-word;
+}
+
+.qh-quest-reward-chip.is-lost .qh-quest-reward-text {
+  text-decoration: line-through;
+  text-decoration-color: rgba(224, 107, 118, 0.72);
+  opacity: 0.86;
 }
 
 .qh-quest-reward-check {
@@ -1596,6 +1618,14 @@
   font-weight: 800;
   color: #2fd19f;
   text-shadow: 0 0 6px rgba(47, 209, 159, 0.5);
+}
+
+.qh-quest-reward-lost {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 800;
+  color: #e86f7a;
+  text-shadow: 0 0 6px rgba(224, 96, 108, 0.42);
 }
 
 .qh-quest-reward-empty {

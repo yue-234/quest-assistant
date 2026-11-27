@@ -16,11 +16,18 @@ import {
   matchFormalTask,
   extractHistoryStats,
   wasInHistoryFormalTasks,
+  cleanRewardText,
+  mergeRewardMapEntries,
+  parseClaimedSet,
+  parseLostSet,
+  CLAIMED_MARK_RE,
+  LOST_MARK_RE,
 } from './src/state.js';
 import {
   toggleQuestIntent,
   ignoreQuest,
   toggleQuestRewardClaimed,
+  cycleQuestRewardState,
   deleteAftermathEntry,
   hasExpiredAftermath,
   sweepExpiredAftermath,
@@ -759,7 +766,7 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
   assert.match(outNone, /并随局势同步升降色阶（恶化转黄或升红，好转降黄或转绿/);
   assert.match(outNone, /发生重大剧情或事件链变故时按规则更新区域或世界词条/);
   assert.match(outNone, /`世界` 词条同样使用 `\[绿\/黄\/红\]` 色阶，不默认生成，仅剧情任务或重大剧情与事件链引发的跨大区或全大陆级重大后果允许写入或改写 `世界`/);
-  assert.match(outNone, /保留「意向」「忽略」「已兑现」「曾接取」「上次重扫日」「余波」「区域访问日」/);
+  assert.match(outNone, /保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」/);
   assert.match(outNone, /"op": "insert", "path": "\/事件\/任务情报板\/余波"/);
 
   // 1.5) init 与 relocate 且当前区域无词条时，本轮指令提示写入 3 条差异化色阶初始区域词条并记录区域访问日
@@ -1259,10 +1266,11 @@ test('EJS 长线波折结构（maintain）：波折节拍、失败前进、禁�
   assert.doesNotMatch(out, /生成规格/);
   assert.match(out, /已接取的剧情任务按跨城\/跨大区三段式长线推进/);
   assert.match(out, /波折节拍:/);
+  assert.match(out, /按 `预期收益` 累计已结算份额（已兑现与已失效合计，栏位按高价值在前、基础在后排布）控制节奏/);
   assert.match(out, /NPC 不首轮揭示 `真相`/);
-  assert.match(out, /中段（剧情第 3~6 栏、本地主线第 2~3 栏）触发旧线索重新解释或第三方争夺筹码/);
-  assert.match(out, /终局前（剧情第 7~9 栏、本地主线第 4 栏）触发不可逆代价取舍/);
-  assert.match(out, /以替代战利品置换约定尾款以守住收益底线/);
+  assert.match(out, /中段（累计已结算 3~6 栏 \/ 本地主线 2~3 栏份额）触发旧线索重新解释或第三方争夺筹码/);
+  assert.match(out, /终局前（累计已结算 7~9 栏 \/ 本地主线 4 栏份额）触发不可逆代价取舍/);
+  assert.match(out, /以替代战利品置换约定尾款以守住剩余有效收益底线/);
   assert.match(out, /终局不空降无铺垫反派或万能解法/);
   assert.match(out, /交涉破裂、潜入暴露或击杀关键 NPC 时不阻断推进/);
   assert.match(out, /限时项拖过关键节点关闭最优窗口转入补救/);
@@ -1585,6 +1593,834 @@ test('限时 Buff 词条：解析、常驻3+限时2共存、过期隐藏/0注入
   };
   const sweptAll = sweepExpiredAftermath(allExpiredStat);
   assert.equal(Object.prototype.hasOwnProperty.call(sweptAll.stat.事件.任务情报板, '余波'), false);
+});
+
+test('EJS 收益高→低分层、4 档失败折损、追回边界与 [n✓]/[n✕]/[n□] 渲染', () => {
+  // 1) init 输出：收益高→低分层规格（剧情 1~3 / 4~7 / 8~10；本地主线 1 / 2~3 / 4~5）
+  const initOut = renderEjs({
+    世界: { 地点: '雾晶港-主城', 时间: '复兴纪元488年-6月-10日-12:00' },
+    事件: {},
+  });
+  assertCleanOutput(initOut, 'reward-tier-init');
+  assert.match(initOut, /剧情任务（10 栏）与本地主线（5 栏）按高价值在前、基础在后排布/);
+  assert.match(initOut, /剧情第 1~3 栏为核心层最高档压轴奖励、第 4~7 栏为中坚层进阶装备\/配方\/稀有资源、第 8~10 栏为基础层金币\/常规材料\/补给\/普通声望/);
+  assert.match(initOut, /本地主线第 1 栏为核心层、第 2~3 栏为中坚层、第 4~5 栏为基础层/);
+  assert.match(initOut, /总兑现不低于剩余有效栏位底线/);
+
+  // 2) maintain 输出：4 档折损与失效、已兑现不倒扣、追回边界、失效Patch 范围（剧情+主线有，支线无）与三态标记渲染
+  const maintainStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日-12:00' },
+    任务列表: {
+      '潮汐密钥': { 状态: '进行中', 进展: '[488年-6月-12日] 刚拿到码头密信。' },
+      '旧仓库谜案': { 状态: '进行中', 进展: '[488年-6月-12日] 发现密室暗门。' },
+      '清点海盐': { 状态: '进行中', 进展: '[488年-6月-12日] 清点第一批货箱。' },
+    },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        更新日: '488年-6月-12日',
+        意向: ['q4', 'q5'],
+        已兑现: { q1: [1, 2] },
+        已失效: { q1: [2, 5] },
+        列表: [
+          {
+            id: 'q1',
+            类别: '剧情任务',
+            等级: 'A',
+            标题: '潮汐密钥',
+            方式: '调查',
+            摘要: '潮闸钥匙失窃',
+            真相: '三方势力竞逐控制权',
+            更新日: '488年-6月-12日',
+            预期收益: [
+              '传说潮汐权杖 ×1',
+              '古龙鳞片 ×2',
+              '[已失效] 暗影典籍 ×1',
+              '[✕] 秘银锭 ×3',
+              '星辉药水×3',
+              '金币 ×500',
+              '药水×3',
+              '精炼盐晶 ×4',
+              '港务通行证 ×1',
+              '商会声望 +15',
+            ],
+          },
+          {
+            id: 'q2',
+            类别: '本地主线',
+            等级: 'B',
+            标题: '旧仓库谜案',
+            方式: '探索',
+            摘要: '旧仓库深夜响动',
+            真相: '走私商与港口官员勾结',
+            预期收益: ['史诗短刀 ×1', '秘银甲片 ×2', '稀有图纸 ×1', '金币 ×240', '补给包 ×2'],
+          },
+          {
+            id: 'q3',
+            类别: '支线任务',
+            等级: 'D',
+            标题: '清点海盐',
+            方式: '委托',
+            摘要: '帮商行核对海盐仓单',
+            预期收益: ['金币 ×80', '药水×2', '码头好感 +5'],
+          },
+          {
+            id: 'q4',
+            类别: '本地主线',
+            等级: 'B',
+            标题: '灯塔熄火',
+            方式: '危机',
+            摘要: '外港主灯塔突然熄灭',
+            真相: '海雾教团破坏镜片',
+            预期收益: ['史诗棱镜 ×1', '魔导透镜 ×2', '秘银灯油 ×3', '金币 ×200', '港务嘉奖 ×1'],
+          },
+          {
+            id: 'q5',
+            类别: '支线任务',
+            等级: 'D',
+            标题: '修补渔网',
+            方式: '委托',
+            摘要: '帮老渔夫修补破网',
+            预期收益: ['金币 ×50', '海鱼干 ×4', '渔村声望 +3'],
+          },
+          { id: 'q6', 类别: '支线任务', 等级: 'D', 标题: '搬运缆绳', 方式: '委托', 摘要: '搬运码头缆绳', 预期收益: ['金币 ×40', '麻绳 ×3', '体力药水×1'] },
+          { id: 'q7', 类别: '支线任务', 等级: 'D', 标题: '送达信件', 方式: '委托', 摘要: '给灯塔守望者送信', 预期收益: ['金币 ×45', '草药×2', '声望 +2'] },
+        ],
+      },
+    },
+  };
+  // 用户消息主动提及已锁定的本地主线「灯塔熄火」与已锁定支线「修补渔网」，使两者一并在 maintain 中展示
+  const maintainOut = renderEjs(maintainStat, {
+    chat: [{ is_user: true, mes: '我想先顺路打听一下灯塔熄火和修补渔网的事。' }],
+  });
+  assertCleanOutput(maintainOut, 'reward-loss-maintain');
+
+  // 4 档折损规则与边界口径
+  assert.match(maintainOut, /折损与失效: 剧情任务与本地主线（剧情 1~3 核心 \/ 4~7 中坚 \/ 8~10 基础，本地主线 1 \/ 2~3 \/ 4~5）/);
+  assert.match(maintainOut, /已标记 `\[✓\]` 的栏位不转为失效/);
+  assert.match(maintainOut, /轻度折损划除剧情 2 栏（中坚 1 栏与基础 1 栏）或本地主线 1 栏（中坚优先）/);
+  assert.match(maintainOut, /中度折损划除剧情 2~3 栏或本地主线 2 栏，跨层混合（核心层保留至少 1 栏，也不只划基础）/);
+  assert.match(maintainOut, /重度折损（濒临失败转入止损）划至剧情仅留 2~3 栏、本地主线仅留 1~2 栏，优先剥离核心与大部分中坚，仅留基础栏位或次要补给/);
+  assert.match(maintainOut, /彻底失败将全部剩余 `\[□\]` 栏位视为失效，零新收益结案、直接移出 `\/任务列表` 与任务情报板并写入对应 `\[黄\/红\]` 词条，无需再更新进展或写 `失效Patch`/);
+  assert.match(maintainOut, /标记 `\[✕\]` 失效的栏位本任务不再发放，剩余有效 `\[□\]` 栏位照常分批兑现/);
+  assert.match(maintainOut, /如果 <user> 后续在剧情外另行设法追回对应物件，按正常剧情逻辑判定成败，不得因曾标记 `\[✕\]` 而强行判定失败/);
+  assert.match(maintainOut, /无需再写 `兑现Patch` 或 `失效Patch`/);
+  assert.match(maintainOut, /发生折损失效时按 `失效Patch` 写入/);
+
+  const lines = maintainOut.split('\n');
+  const q1Line = lines.find((l) => l.includes('[q1｜剧情任务'));
+  const q2Line = lines.find((l) => l.includes('[q2｜本地主线'));
+  const q3Line = lines.find((l) => l.includes('[q3｜支线任务'));
+  const q4Line = lines.find((l) => l.includes('[q4｜本地主线'));
+  const q5Line = lines.find((l) => l.includes('[q5｜支线任务'));
+  assert.ok(q1Line && q2Line && q3Line && q4Line && q5Line, '5 条相关任务均应展示');
+
+  // [n✓] / [n✕] / [n□] 渲染，同栏位同时在已兑现与已失效时强制 [2✓]，行内 [已失效]/[✕] 剥离，且不误伤 ×500 / ×3
+  assert.match(q1Line, /\[1✓\]传说潮汐权杖 ×1/);
+  assert.match(q1Line, /\[2✓\]古龙鳞片 ×2/);
+  assert.doesNotMatch(q1Line, /\[2✕\]/);
+  assert.match(q1Line, /\[3✕\]暗影典籍 ×1/);
+  assert.match(q1Line, /\[4✕\]秘银锭 ×3/);
+  assert.match(q1Line, /\[5✕\]星辉药水×3/);
+  assert.match(q1Line, /\[6□\]金币 ×500/);
+  assert.match(q1Line, /\[7□\]药水×3/);
+  assert.doesNotMatch(q1Line, /\[已失效\]|\[✕\]/);
+
+  // 失效Patch：已接取剧情(replace)、已接取本地主线(insert)、★已锁定本地主线(insert)均带，支线（已接取与已锁定）均不带
+  assert.match(q1Line, /｜失效Patch：\{ "op": "replace", "path": "\/事件\/任务情报板\/已失效\/q1", "value": \[累计失效栏号\] \}/);
+  assert.match(q2Line, /｜失效Patch：\{ "op": "insert", "path": "\/事件\/任务情报板\/已失效\/q2", "value": \[累计失效栏号\] \}/);
+  assert.match(q4Line, /｜★已锁定\].*｜失效Patch：\{ "op": "insert", "path": "\/事件\/任务情报板\/已失效\/q4", "value": \[累计失效栏号\] \}/);
+  assert.doesNotMatch(q3Line, /失效Patch/);
+  assert.doesNotMatch(q5Line, /失效Patch/);
+
+  // 3) _qbLostMergeNote 在 maintain 模式下：无 已失效 且 >= 2 条可失效非支线任务时恰好出现 1 次
+  const maintainNoLost = JSON.parse(JSON.stringify(maintainStat));
+  delete maintainNoLost.事件.任务情报板.已失效;
+  const maintainNoLostOut = renderEjs(maintainNoLost);
+  const mergeNoteRe = /同轮首次记录多条任务时，合并写入同一个 `insert \/事件\/任务情报板\/已失效` 对象，不要重复 `insert` 同一路径/g;
+  assert.equal((maintainNoLostOut.match(mergeNoteRe) || []).length, 1, 'maintain 有 2 条可失效非支线任务且无 已失效 时应恰好提示 1 次合并写入');
+
+  // 4) 正则防回溯与前后端对齐：× 2 宝石 / [已作废] / × 宝石 / 宝石 × / [✓] 在 EJS 与前端一致
+  const alignStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日-12:00' },
+    任务列表: { '对齐校验任务': { 状态: '进行中', 进展: '[488年-6月-12日] 测试中' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        更新日: '488年-6月-12日',
+        已兑现: { qAlign: [8], '对齐校验任务': [9] },
+        已失效: { qAlign: [10] },
+        列表: [
+          {
+            id: 'qAlign',
+            类别: '剧情任务',
+            等级: 'A',
+            标题: '对齐校验任务',
+            方式: '调查',
+            摘要: '校验两端解析一致性',
+            真相: '内部测试',
+            更新日: '488年-6月-12日',
+            预期收益: [
+              '× 2 宝石',
+              '[已作废] 龙晶',
+              '× 宝石',
+              '宝石 ×',
+              '[✓] 圣杯',
+              '金币 ×500',
+              '药水×3',
+              '双键兑现甲',
+              '双键兑现乙',
+              '双键失效丙',
+            ],
+          },
+          { id: 's1', 类别: '支线任务', 等级: 'D', 标题: '支线一', 方式: '委托', 预期收益: ['金币 ×10'] },
+          { id: 's2', 类别: '支线任务', 等级: 'D', 标题: '支线二', 方式: '委托', 预期收益: ['金币 ×20'] },
+          { id: 's3', 类别: '支线任务', 等级: 'D', 标题: '支线三', 方式: '委托', 预期收益: ['金币 ×30'] },
+          { id: 's4', 类别: '支线任务', 等级: 'D', 标题: '支线四', 方式: '委托', 预期收益: ['金币 ×40'] },
+        ],
+      },
+    },
+  };
+  const alignEjsOut = renderEjs(alignStat);
+  assertCleanOutput(alignEjsOut, 'reward-align-ejs');
+  const alignLine = alignEjsOut.split('\n').find((l) => l.includes('[qAlign｜剧情任务'));
+  assert.ok(alignLine);
+  assert.match(alignLine, /\[1□\]× 2 宝石/);
+  assert.match(alignLine, /\[2✕\]龙晶/);
+  assert.match(alignLine, /\[3✕\]宝石/);
+  assert.match(alignLine, /\[4✕\]宝石/);
+  assert.match(alignLine, /\[5✓\]圣杯/);
+  assert.match(alignLine, /\[6□\]金币 ×500/);
+  assert.match(alignLine, /\[7□\]药水×3/);
+  assert.match(alignLine, /\[8✓\]双键兑现甲/);
+  assert.match(alignLine, /\[9✓\]双键兑现乙/);
+  assert.match(alignLine, /\[10✕\]双键失效丙/);
+
+  const alignFrontItem = questBoardState(alignStat).items.find((x) => x.id === 'qAlign');
+  assert.deepEqual(
+    alignFrontItem.rewardItems.map((r) => `[${r.slot}${r.claimed ? '✓' : (r.lost ? '✕' : '□')}]${r.text}`),
+    [
+      '[1□]× 2 宝石',
+      '[2✕]龙晶',
+      '[3✕]宝石',
+      '[4✕]宝石',
+      '[5✓]圣杯',
+      '[6□]金币 ×500',
+      '[7□]药水×3',
+      '[8✓]双键兑现甲',
+      '[9✓]双键兑现乙',
+      '[10✕]双键失效丙',
+    ],
+  );
+});
+
+test('EJS 待演进确定性分层抽签：4 阶段全覆盖、Patch 分支与非 10 栏老存档降级', () => {
+  const storyRewards10 = [
+    '传说圣剑 ×1',
+    '神话核心 ×1',
+    '古龙心核 ×1',
+    '史诗护甲 ×1',
+    '秘银配方 ×1',
+    '稀有魔晶 ×4',
+    '星辉锻石 ×3',
+    '金币 ×600',
+    '治疗药水×5',
+    '公会声望 +20',
+  ];
+  const makeAdvanceStat = ({ claimedMap, lostMap, extraStory, rewards = storyRewards10 } = {}) => ({
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-20日-12:00' },
+    任务列表: {
+      '暗潮港湾': { 状态: '进行中', 进展: '[488年-6月-10日] 拿到初步证词。' },
+      ...(extraStory ? { [extraStory.标题]: { 状态: '进行中', 进展: '[488年-6月-10日] 刚介入调查。' } } : {}),
+    },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        更新日: '488年-6月-10日',
+        ...(claimedMap ? { 已兑现: claimedMap } : {}),
+        ...(lostMap ? { 已失效: lostMap } : {}),
+        列表: [
+          {
+            id: 'q1',
+            类别: '剧情任务',
+            等级: 'A',
+            标题: '暗潮港湾',
+            方式: '调查',
+            摘要: '港口账册失窃',
+            真相: '三方争夺潮闸钥匙',
+            更新日: '488年-6月-10日',
+            预期收益: rewards,
+          },
+          ...(extraStory ? [extraStory] : []),
+          { id: 's1', 类别: '支线任务', 等级: 'D', 标题: '搬运货箱', 方式: '委托', 摘要: '搬货', 预期收益: ['金币 ×50'] },
+          { id: 's2', 类别: '支线任务', 等级: 'D', 标题: '巡查码头', 方式: '委托', 摘要: '巡查', 预期收益: ['金币 ×60'] },
+          { id: 's3', 类别: '支线任务', 等级: 'D', 标题: '清理藤壶', 方式: '委托', 摘要: '清理', 预期收益: ['金币 ×70'] },
+          { id: 's4', 类别: '支线任务', 等级: 'D', 标题: '运送灯油', 方式: '委托', 摘要: '运油', 预期收益: ['金币 ×80'] },
+        ],
+      },
+    },
+  });
+
+  const parseAdvLine = (out, id) => {
+    const line = out.split('\n').find((l) => l.includes(`[${id}｜剧情任务`));
+    assert.ok(line, `应存在任务 ${id} 的输出行`);
+    const patchMatch = line.match(/｜失效Patch：(\{[^｜]+\})/);
+    const patch = patchMatch ? JSON.parse(patchMatch[1]) : null;
+    const lossMatch = line.match(/｜本步失效（(轻度演进|中度演进|重度止损)）：([^｜]+)/);
+    if (lossMatch) {
+      const slots = [...lossMatch[2].matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1]));
+      return { line, failClose: false, stageLabel: lossMatch[1], newlyLost: slots, patch };
+    }
+    const failMatch = line.match(/｜本步演进：彻底失败（([^）]+)）/);
+    if (failMatch) {
+      const slots = [...failMatch[1].matchAll(/\[(\d+)\]/g)].map((m) => Number(m[1]));
+      return { line, failClose: true, stageLabel: '彻底失败', newlyLost: slots, failDetail: failMatch[1], patch };
+    }
+    assert.fail(`未能解析 ${id} 的演进失效片段: ${line}`);
+  };
+
+  const mergeNoteRe = /同轮首次记录多条任务时，合并写入同一个 `insert \/事件\/任务情报板\/已失效` 对象，不要重复 `insert` 同一路径/g;
+
+  // 阶段 1（lostCount=0）：抽 2 栏 = 中坚 1（4~7）+ 基础 1（8~10），不动核心（1~3）；确定性一致；单条可失效任务时 _qbLostMergeNote 为 0 次
+  const statS1 = makeAdvanceStat();
+  const outS1A = renderEjs(statS1);
+  const outS1B = renderEjs(statS1);
+  const outS1C = renderEjs(statS1);
+  assertCleanOutput(outS1A, 'adv-stage1');
+  assert.equal(outS1A, outS1B, '同状态多次渲染必须完全一致（确定性 RNG）');
+  assert.equal(outS1B, outS1C, '同状态多次渲染必须完全一致（确定性 RNG）');
+  assert.equal((outS1A.match(mergeNoteRe) || []).length, 0, '单条可失效任务时不应注入合并写入提示');
+
+  const s1 = parseAdvLine(outS1A, 'q1');
+  assert.equal(s1.stageLabel, '轻度演进');
+  assert.equal(s1.newlyLost.length, 2);
+  assert.equal(s1.newlyLost.filter((n) => n >= 1 && n <= 3).length, 0, '阶段 1 不动核心层（1~3）');
+  assert.equal(s1.newlyLost.filter((n) => n >= 4 && n <= 7).length, 1, '阶段 1 应抽中 1 栏中坚层（4~7）');
+  assert.equal(s1.newlyLost.filter((n) => n >= 8 && n <= 10).length, 1, '阶段 1 应抽中 1 栏基础层（8~10）');
+  assert.deepEqual(s1.patch, {
+    op: 'insert',
+    path: '/事件/任务情报板/已失效',
+    value: { q1: s1.newlyLost },
+  });
+
+  // 2 条可失效任务且无 已失效 时，_qbLostMergeNote 恰好出现 1 次（不会在 折损与失效 与 剧情演进 重复出现）
+  const extraStory = {
+    id: 'q2',
+    类别: '剧情任务',
+    等级: 'B',
+    标题: '霜脉裂隙',
+    方式: '异象',
+    摘要: '北境地脉异常',
+    真相: '封印柱松动',
+    更新日: '488年-6月-10日',
+    预期收益: storyRewards10,
+  };
+  const outTwoNoLost = renderEjs(makeAdvanceStat({ extraStory }));
+  assertCleanOutput(outTwoNoLost, 'adv-two-no-lost');
+  assert.equal((outTwoNoLost.match(mergeNoteRe) || []).length, 1, '2 条可失效任务且无 已失效 时合并提示应恰好出现 1 次');
+
+  // 2 条待演进任务但其中 1 条彻底失败（不写失效Patch）时，可写失效Patch任务数仅 1，合并提示为 0 次
+  const outOneFailOneAdv = renderEjs(makeAdvanceStat({
+    rewards: ['唯一遗物 ×1'],
+    extraStory,
+  }));
+  assert.equal((outOneFailOneAdv.match(mergeNoteRe) || []).length, 0, '仅有 1 条非彻底失败任务需写 失效Patch 时不注入合并提示');
+
+  // 阶段 2（lostCount=2，沿用阶段 1 抽出的 1 中 1 基）：抽 2 栏含核心 1（1~3），且已有 已失效 时区分 replace/insert
+  const outS2 = renderEjs(makeAdvanceStat({ lostMap: { q1: s1.newlyLost }, extraStory }));
+  assertCleanOutput(outS2, 'adv-stage2');
+  const s2 = parseAdvLine(outS2, 'q1');
+  assert.equal(s2.stageLabel, '中度演进');
+  assert.equal(s2.newlyLost.length, 2);
+  assert.equal(s2.newlyLost.filter((n) => n >= 1 && n <= 3).length, 1, '阶段 2 应抽中 1 栏核心层（1~3）且不清空核心');
+  const expectedS2Next = [...new Set([...s1.newlyLost, ...s2.newlyLost])].sort((a, b) => a - b);
+  assert.deepEqual(s2.patch, {
+    op: 'replace',
+    path: '/事件/任务情报板/已失效/q1',
+    value: expectedS2Next,
+  });
+  const s2Extra = parseAdvLine(outS2, 'q2');
+  assert.equal(s2Extra.patch.op, 'insert', '已存在 已失效 对象但缺少 q2 键时应使用 insert');
+  assert.equal(s2Extra.patch.path, '/事件/任务情报板/已失效/q2');
+  assert.deepEqual(s2Extra.patch.value, s2Extra.newlyLost);
+
+  // 阶段 2 边界（lostCount=2，仅剩 1 栏核心 [3] 且非核心充足时，核心层至少保留 1 栏不清空）
+  const outS2KeepCore = renderEjs(makeAdvanceStat({ lostMap: { q1: [1, 2] } }));
+  const s2KeepCore = parseAdvLine(outS2KeepCore, 'q1');
+  assert.equal(s2KeepCore.stageLabel, '中度演进');
+  assert.equal(s2KeepCore.newlyLost.length, 2);
+  assert.equal(s2KeepCore.newlyLost.includes(3), false, '阶段 2 非空核心在非核心充足时应至少保留 1 栏');
+
+  // 阶段 3（lostCount=4）：累计划至仅留 2~3 栏，优先剥离剩余核心
+  const outS3 = renderEjs(makeAdvanceStat({ lostMap: { q1: expectedS2Next } }));
+  assertCleanOutput(outS3, 'adv-stage3');
+  const s3 = parseAdvLine(outS3, 'q1');
+  assert.equal(s3.stageLabel, '重度止损');
+  const remainingAfterS3 = 10 - s3.patch.value.length;
+  assert.ok(remainingAfterS3 === 2 || remainingAfterS3 === 3, `阶段 3 结束后应仅留 2~3 栏，实际剩 ${remainingAfterS3} 栏`);
+  const remainingCoreBeforeS3 = [1, 2, 3].filter((n) => !expectedS2Next.includes(n));
+  for (const coreSlot of remainingCoreBeforeS3) {
+    assert.equal(s3.newlyLost.includes(coreSlot), true, `阶段 3 应优先剥离剩余核心栏位 ${coreSlot}`);
+  }
+  assert.deepEqual(
+    s3.patch.value,
+    [...new Set([...expectedS2Next, ...s3.newlyLost])].sort((a, b) => a - b),
+    '阶段 3 Patch value 应为历史+本步去重升序',
+  );
+
+  // 阶段 4（lostCount=7，剩余 3 栏无核心继续搁置）：彻底失败且不再输出 失效Patch，直接移出两板
+  const s4PrevLost = [1, 2, 3, 4, 5, 6, 8];
+  const outS4 = renderEjs(makeAdvanceStat({ lostMap: { q1: s4PrevLost } }));
+  assertCleanOutput(outS4, 'adv-stage4');
+  const s4 = parseAdvLine(outS4, 'q1');
+  assert.equal(s4.failClose, true);
+  assert.match(s4.failDetail, /剩余全失效/);
+  assert.match(s4.failDetail, /直接移出 \/任务列表 并执行完结移出，无需再写兑现Patch或失效Patch/);
+  assert.deepEqual(s4.newlyLost, [7, 9, 10]);
+  assert.equal(s4.patch, null, '彻底失败不应再输出 失效Patch，避免留下孤儿 已失效 键');
+  assert.doesNotMatch(s4.line, /｜失效Patch：/);
+
+  // 阶段 4 兜底（已全失效无剩余开放栏位）：同样无 失效Patch
+  const outS4Empty = renderEjs(makeAdvanceStat({ lostMap: { q1: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] } }));
+  const s4Empty = parseAdvLine(outS4Empty, 'q1');
+  assert.equal(s4Empty.failClose, true);
+  assert.match(s4Empty.failDetail, /剩余无可兑现栏位，直接移出 \/任务列表 并执行完结移出，无需再写兑现Patch或失效Patch/);
+  assert.equal(s4Empty.patch, null);
+
+  // P0 回归：10 栏先兑现 8~10（剩 1~7）完整经过 S1 → S2 → S3（剥离核心保留非核心）→ S4（无 失效Patch），绝不跳过 S3
+  const claimedBase = { q1: [8, 9, 10] };
+  const cS1 = parseAdvLine(renderEjs(makeAdvanceStat({ claimedMap: claimedBase })), 'q1');
+  assert.equal(cS1.stageLabel, '轻度演进');
+  assert.equal(cS1.newlyLost.length, 2);
+  assert.equal(cS1.newlyLost.every((n) => n >= 4 && n <= 7), true, '先兑现 8~10 后 S1 应只划中坚 4~7，不动核心 1~3');
+
+  const cS2 = parseAdvLine(renderEjs(makeAdvanceStat({ claimedMap: claimedBase, lostMap: { q1: cS1.patch.value.q1 } })), 'q1');
+  assert.equal(cS2.stageLabel, '中度演进');
+  assert.equal(cS2.newlyLost.length, 2);
+  assert.equal(cS2.newlyLost.filter((n) => n >= 1 && n <= 3).length, 1, 'S2 应抽 1 核心 + 1 中坚');
+  assert.equal(cS2.newlyLost.filter((n) => n >= 4 && n <= 7).length, 1);
+
+  const cS3 = parseAdvLine(renderEjs(makeAdvanceStat({ claimedMap: claimedBase, lostMap: { q1: cS2.patch.value } })), 'q1');
+  assert.equal(cS3.stageLabel, '重度止损', '剩 2 核心 + 1 中坚时必须进入 S3 重度止损，绝不跳过 S3');
+  assert.equal(cS3.failClose, false);
+  const remainCoreAfterCS2 = [1, 2, 3].filter((n) => !cS2.patch.value.includes(n));
+  assert.deepEqual(cS3.newlyLost, remainCoreAfterCS2, 'S3 应剥离全部剩余核心并保留最后 1 栏非核心');
+  assert.ok(cS3.patch, 'S3 仍应输出 失效Patch');
+
+  const cS4 = parseAdvLine(renderEjs(makeAdvanceStat({ claimedMap: claimedBase, lostMap: { q1: cS3.patch.value } })), 'q1');
+  assert.equal(cS4.failClose, true, '仅剩最后 1 栏非核心时进入 S4 彻底失败');
+  assert.equal(cS4.newlyLost.length, 1);
+  assert.equal(cS4.patch, null, 'S4 彻底失败不应输出 失效Patch');
+
+  // 非 10 栏老存档（5 栏、2 栏、1 栏）安全降级：不报错、不越界、不一步清零、无僵尸态
+  const outLegacy5 = renderEjs(makeAdvanceStat({
+    rewards: ['核心神器 ×1', '中坚护符 ×1', '中坚宝石 ×2', '金币 ×200', '药水×3'],
+  }));
+  assertCleanOutput(outLegacy5, 'adv-legacy-5');
+  const leg5 = parseAdvLine(outLegacy5, 'q1');
+  assert.equal(leg5.stageLabel, '轻度演进');
+  assert.equal(leg5.newlyLost.length, 2);
+  assert.ok(leg5.newlyLost.every((n) => n >= 1 && n <= 5));
+  assert.equal(leg5.newlyLost.includes(1), false, '5 栏老存档阶段 1 不动第 1 栏核心');
+
+  // 2 栏老存档（open.length === 2 && lostCount === 0）：S1 仅划 1 栏不一步清零；再推进（open.length === 1）直接进 S4 无 失效Patch
+  const legacy2Rewards = ['核心遗物 ×1', '金币 ×100'];
+  const outLegacy2Step1 = renderEjs(makeAdvanceStat({ rewards: legacy2Rewards }));
+  assertCleanOutput(outLegacy2Step1, 'adv-legacy-2-s1');
+  const leg2S1 = parseAdvLine(outLegacy2Step1, 'q1');
+  assert.equal(leg2S1.stageLabel, '轻度演进');
+  assert.equal(leg2S1.failClose, false);
+  assert.equal(leg2S1.newlyLost.length, 1, 'open.length === 2 且 lostCount === 0 时 S1 应仅划 1 栏，不一步清零');
+  assert.deepEqual(leg2S1.newlyLost, [2], '应优先划除基础/非核心栏位 2');
+  assert.deepEqual(leg2S1.patch, {
+    op: 'insert',
+    path: '/事件/任务情报板/已失效',
+    value: { q1: [2] },
+  });
+
+  const outLegacy2Step2 = renderEjs(makeAdvanceStat({ rewards: legacy2Rewards, lostMap: { q1: [2] } }));
+  assertCleanOutput(outLegacy2Step2, 'adv-legacy-2-s4');
+  const leg2S2 = parseAdvLine(outLegacy2Step2, 'q1');
+  assert.equal(leg2S2.failClose, true, 'open.length === 1 应直接进入 S4 彻底失败，避免 rem=0 僵尸态');
+  assert.deepEqual(leg2S2.newlyLost, [1]);
+  assert.equal(leg2S2.patch, null, 'open.length === 1 彻底失败不应输出 失效Patch');
+
+  // 1 栏老存档（open.length === 1 && lostCount === 0）：直接进入 S4 彻底失败且无 失效Patch
+  const outLegacy1 = renderEjs(makeAdvanceStat({ rewards: ['唯一宝物 ×1'] }));
+  assertCleanOutput(outLegacy1, 'adv-legacy-1');
+  const leg1 = parseAdvLine(outLegacy1, 'q1');
+  assert.equal(leg1.failClose, true);
+  assert.deepEqual(leg1.newlyLost, [1]);
+  assert.equal(leg1.patch, null);
+});
+
+test('前端 已失效 解析、三态循环切换与 ignoreQuest / sweepClosedQuests 清理联动', () => {
+  // 1) 正则防回溯与文本清理边界：数量乘号（含 × 2 宝石）不被误判或误删；[已作废] / × 宝石 / 宝石 × / [✓] 正确识别清理
+  assert.equal(LOST_MARK_RE.test('金币 ×500'), false);
+  assert.equal(LOST_MARK_RE.test('药水×3'), false);
+  assert.equal(LOST_MARK_RE.test('秘银矿 × 12'), false);
+  assert.equal(LOST_MARK_RE.test('× 2 宝石'), false);
+  assert.equal(LOST_MARK_RE.test(`宝石${' '.repeat(80)}× 12`), false);
+  assert.equal(cleanRewardText('金币 ×500'), '金币 ×500');
+  assert.equal(cleanRewardText('药水×3'), '药水×3');
+  assert.equal(cleanRewardText('× 2 宝石'), '× 2 宝石');
+  assert.equal(LOST_MARK_RE.test('[已失效] 暗影典籍 ×1'), true);
+  assert.equal(LOST_MARK_RE.test('[已作废] 龙晶'), true);
+  assert.equal(LOST_MARK_RE.test('× 宝石'), true);
+  assert.equal(LOST_MARK_RE.test('宝石 ×'), true);
+  assert.equal(LOST_MARK_RE.test('[✕] 秘银锭 ×3'), true);
+  assert.equal(LOST_MARK_RE.test('[4✕] 星辰碎屑 ×2'), true);
+  assert.equal(cleanRewardText('[已失效] 暗影典籍 ×1'), '暗影典籍 ×1');
+  assert.equal(cleanRewardText('[已作废] 龙晶'), '龙晶');
+  assert.equal(cleanRewardText('× 宝石'), '宝石');
+  assert.equal(cleanRewardText('宝石 ×'), '宝石');
+  assert.equal(cleanRewardText('[4✕] 星辰碎屑 ×2'), '星辰碎屑 ×2');
+  assert.equal(CLAIMED_MARK_RE.test('[1✓] 传说权杖 ×1'), true);
+  assert.equal(CLAIMED_MARK_RE.test('[✓] 圣杯'), true);
+  assert.equal(cleanRewardText('[✓] 圣杯'), '圣杯');
+  assert.equal(parseClaimedSet('1、3').slots.has(3), true);
+  assert.equal(parseLostSet([2, '4']).slots.has(4), true);
+
+  // 2) 旧存档无 已失效 字段：默认 lost=false, lostCount=0
+  const oldStat = {
+    世界: { 地点: '白石镇', 时间: '复兴纪元488年-3月-12日' },
+    事件: {
+      任务情报板: {
+        区域键: '白石镇',
+        区域: '白石镇',
+        列表: [
+          { id: 'q1', 类别: '本地主线', 等级: 'B', 标题: '旧档任务', 方式: '委托', 预期收益: ['金币 ×500', '药水×3'] },
+        ],
+      },
+    },
+  };
+  const oldQb = questBoardState(oldStat);
+  assert.equal(oldQb.items.length, 1);
+  assert.equal(oldQb.items[0].lostCount, 0);
+  assert.deepEqual(oldQb.items[0].rewardItems.map((r) => r.lost), [false, false]);
+
+  // 3) questBoardState 解析 已失效 + 已兑现优先 + 数量乘号免疫 + 未接取仅含已失效不被隐藏/不被判已完结
+  const mixedStat = {
+    世界: { 地点: '白石镇', 时间: '复兴纪元488年-3月-12日' },
+    任务列表: {
+      '进行中剧情': { 状态: '进行中', 进展: '调查中' },
+      '原版突发任务': { 状态: '进行中', 详情: '本地主线', 奖励: '[已失效] 秘宝 ×1、金币 ×500' },
+    },
+    事件: {
+      任务情报板: {
+        区域键: '白石镇',
+        区域: '白石镇',
+        已兑现: { q1: [1, 2] },
+        已失效: { q1: [2, 3], qOpenLost: [1] },
+        列表: [
+          {
+            id: 'q1',
+            类别: '剧情任务',
+            等级: 'A',
+            标题: '进行中剧情',
+            方式: '调查',
+            预期收益: ['传说武器 ×1', '古龙鳞片 ×2', '秘银锭 ×3', '[已失效] 失窃卷轴 ×1', '金币 ×500', '药水×3'],
+          },
+          {
+            id: 'qOpenLost',
+            类别: '本地主线',
+            等级: 'B',
+            标题: '未接取但含失效收益',
+            方式: '探索',
+            预期收益: ['史诗护符 ×1', '[✕] 稀有矿石 ×2', '金币 ×300'],
+          },
+        ],
+      },
+    },
+  };
+  const mixedQb = questBoardState(mixedStat);
+  const q1 = mixedQb.items.find((x) => x.id === 'q1');
+  assert.ok(q1);
+  assert.equal(q1.claimedCount, 2);
+  assert.equal(q1.lostCount, 2);
+  assert.deepEqual(
+    q1.rewardItems.map((r) => ({ slot: r.slot, text: r.text, claimed: r.claimed, lost: r.lost })),
+    [
+      { slot: 1, text: '传说武器 ×1', claimed: true, lost: false },
+      { slot: 2, text: '古龙鳞片 ×2', claimed: true, lost: false }, // 已兑现优先于已失效
+      { slot: 3, text: '秘银锭 ×3', claimed: false, lost: true },
+      { slot: 4, text: '失窃卷轴 ×1', claimed: false, lost: true },
+      { slot: 5, text: '金币 ×500', claimed: false, lost: false },
+      { slot: 6, text: '药水×3', claimed: false, lost: false },
+    ],
+  );
+
+  // 未上墙原版进行中任务也能正确解析 [已失效] 且不误伤 金币 ×500
+  const formalOnly = mixedQb.items.find((x) => x.id === 'formal:原版突发任务');
+  assert.ok(formalOnly);
+  assert.equal(formalOnly.lostCount, 1);
+  assert.deepEqual(formalOnly.rewardItems.map((r) => ({ text: r.text, lost: r.lost })), [
+    { text: '秘宝 ×1', lost: true },
+    { text: '金币 ×500', lost: false },
+  ]);
+
+  // 未接取任务仅含 已失效 时，不被隐藏、不被 hasClosedQuestLeftovers/isQuestEntryClosed 误判为已完结
+  const openLost = mixedQb.items.find((x) => x.id === 'qOpenLost');
+  assert.ok(openLost, '未接取任务仅含 已失效 收益时不应被 questBoardState 隐藏');
+  assert.equal(openLost.accepted, false);
+  assert.equal(openLost.claimedCount, 0);
+  assert.equal(openLost.lostCount, 2);
+  assert.equal(hasClosedQuestLeftovers(mixedStat), false, '仅含 已失效 不应被判定为已完结残留');
+  const sweptNoop = sweepClosedQuests(mixedStat);
+  assert.equal(sweptNoop.stat.事件.任务情报板.列表.some((x) => x.id === 'qOpenLost'), true);
+  assert.deepEqual(sweptNoop.stat.事件.任务情报板.已失效.qOpenLost, [1]);
+
+  // 4) cycleQuestRewardState 三态循环：待获得 → 已兑现 ✓ → 已失效 ✕ → 待获得（含数组与对象型列表、title 别名键与行内清理、空数组删键）
+  assert.ok(cycleQuestRewardState(oldStat, '', 1).error);
+  assert.ok(cycleQuestRewardState(oldStat, 'q1', 0).error);
+
+  const c1 = cycleQuestRewardState(oldStat, 'q1', 1, '旧档任务');
+  assert.match(c1.done, /已兑现 ✓/);
+  assert.deepEqual(c1.stat.事件.任务情报板.已兑现.q1, [1]);
+  assert.equal(c1.stat.事件.任务情报板.已失效, undefined);
+
+  const c2 = cycleQuestRewardState(c1.stat, 'q1', 1, '旧档任务');
+  assert.match(c2.done, /已失效 ✕/);
+  assert.equal(Object.prototype.hasOwnProperty.call(c2.stat.事件.任务情报板.已兑现, 'q1'), false, '已兑现删空后应删除键');
+  assert.deepEqual(c2.stat.事件.任务情报板.已失效.q1, [1]);
+
+  const c3 = cycleQuestRewardState(c2.stat, 'q1', 1, '旧档任务');
+  assert.match(c3.done, /待获得/);
+  assert.equal(Object.prototype.hasOwnProperty.call(c3.stat.事件.任务情报板.已失效, 'q1'), false, '已失效删空后应删除键');
+  assert.equal(questBoardState(c3.stat).items[0].rewardItems[0].claimed, false);
+  assert.equal(questBoardState(c3.stat).items[0].rewardItems[0].lost, false);
+
+  // 对象型列表 + title 别名键 + 行内 [已失效] 清理
+  const objListStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        已失效: { '潮汐神殿': [1, 2] },
+        列表: {
+          'boss/1': {
+            类别: '剧情任务',
+            等级: 'A',
+            标题: '潮汐神殿',
+            方式: '探索',
+            预期收益: ['[已失效] 圣物 ×1', '金币 ×500'],
+          },
+        },
+      },
+    },
+  };
+  const o1 = cycleQuestRewardState(objListStat, 'boss/1', 1, '潮汐神殿');
+  assert.match(o1.done, /待获得/);
+  assert.equal(o1.stat.事件.任务情报板.列表['boss/1'].预期收益[0], '圣物 ×1', '行内 [已失效] 应被清理干净');
+  assert.equal(Object.prototype.hasOwnProperty.call(o1.stat.事件.任务情报板.已失效, '潮汐神殿'), false, '应清理 title 别名键');
+  assert.deepEqual(o1.stat.事件.任务情报板.已失效['boss/1'], [2], '剩余栏位应规范迁移到主 key');
+
+  const o2 = cycleQuestRewardState(o1.stat, 'boss/1', 2, '潮汐神殿');
+  assert.match(o2.done, /待获得/);
+  assert.equal(Object.prototype.hasOwnProperty.call(o2.stat.事件.任务情报板.已失效, 'boss/1'), false, '空数组应删除键');
+  assert.equal(o2.stat.事件.任务情报板.列表['boss/1'].预期收益[1], '金币 ×500');
+
+  const o3 = cycleQuestRewardState(o2.stat, 'boss/1', 2, '潮汐神殿');
+  assert.match(o3.done, /已兑现 ✓/);
+  assert.deepEqual(o3.stat.事件.任务情报板.已兑现['boss/1'], [2]);
+  const o4 = cycleQuestRewardState(o3.stat, 'boss/1', 2, '潮汐神殿');
+  assert.match(o4.done, /已失效 ✕/);
+  assert.deepEqual(o4.stat.事件.任务情报板.已失效['boss/1'], [2]);
+  assert.equal(o4.stat.事件.任务情报板.列表['boss/1'].预期收益[1], '金币 ×500');
+
+  // 5) ignoreQuest 同步清理 board['已失效'] 对应 id 与 title 键，不影响其他任务
+  const ignoreStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        已兑现: { q1: [1], '要忽略的任务': [1] },
+        已失效: { q1: [2], '要忽略的任务': [3], qKeep: [1] },
+        列表: [
+          { id: 'q1', 类别: '本地主线', 等级: 'B', 标题: '要忽略的任务', 方式: '委托', 预期收益: ['甲', '乙', '丙'] },
+          { id: 'qKeep', 类别: '本地主线', 等级: 'B', 标题: '保留的任务', 方式: '委托', 预期收益: ['丁', '戊'] },
+        ],
+      },
+    },
+  };
+  const ignored = ignoreQuest(ignoreStat, 'q1', '要忽略的任务');
+  assert.equal(Object.prototype.hasOwnProperty.call(ignored.stat.事件.任务情报板.已失效, 'q1'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(ignored.stat.事件.任务情报板.已失效, '要忽略的任务'), false);
+  assert.deepEqual(ignored.stat.事件.任务情报板.已失效.qKeep, [1]);
+
+  // 6) sweepClosedQuests（数组型 + 对象型列表）同步清理 board['已失效'] 对应键，保留未完结任务
+  const sweepArrStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: {
+      '已完结剧情': { 状态: '已失败', 进展: '结案' },
+    },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        曾接取: ['曾接取已结案'],
+        已兑现: { qDone1: [1], qDone2: [1] },
+        已失效: { qDone1: [2, 3], '已完结剧情': [4], '曾接取已结案': [2], qOpen: [1] },
+        列表: [
+          { id: 'qDone1', 类别: '剧情任务', 等级: 'A', 标题: '已完结剧情', 方式: '调查', 预期收益: ['一', '二', '三', '四'] },
+          { id: 'qDone2', 类别: '本地主线', 等级: 'B', 标题: '曾接取已结案', 方式: '探索', 预期收益: ['甲', '乙'] },
+          { id: 'qOpen', 类别: '本地主线', 等级: 'B', 标题: '未完结任务', 方式: '探索', 预期收益: ['丙', '丁'] },
+        ],
+      },
+    },
+  };
+  assert.equal(hasClosedQuestLeftovers(sweepArrStat), true);
+  const sweptArr = sweepClosedQuests(sweepArrStat);
+  assert.deepEqual(sweptArr.stat.事件.任务情报板.列表.map((x) => x.id), ['qOpen']);
+  assert.deepEqual(sweptArr.stat.事件.任务情报板.已失效, { qOpen: [1] });
+
+  const sweepObjStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: {
+      '对象型已完结': { 状态: '已完成' },
+    },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        已失效: { 'k/done': [1], '对象型已完结': [2], 'k/open': [1] },
+        列表: {
+          'k/done': { 类别: '本地主线', 等级: 'B', 标题: '对象型已完结', 方式: '调查', 预期收益: ['甲', '乙'] },
+          'k/open': { 类别: '本地主线', 等级: 'B', 标题: '对象型未完结', 方式: '调查', 预期收益: ['丙', '丁'] },
+        },
+      },
+    },
+  };
+  const sweptObj = sweepClosedQuests(sweepObjStat);
+  assert.deepEqual(Object.keys(sweptObj.stat.事件.任务情报板.列表), ['k/open']);
+  assert.deepEqual(sweptObj.stat.事件.任务情报板.已失效, { 'k/open': [1] });
+
+  // 7) P0 回归：id 与 title 双键并存时合并保留双方栏号，写回归并到 id 并删除 title 键不丢数据
+  const dualKeyStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { '双键合并任务': { 状态: '进行中' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        已兑现: { qDual: [1], '双键合并任务': [2] },
+        已失效: { qDual: [3], '双键合并任务': [4] },
+        列表: [
+          {
+            id: 'qDual',
+            类别: '本地主线',
+            等级: 'B',
+            标题: '双键合并任务',
+            方式: '调查',
+            预期收益: ['甲', '乙', '丙', '丁', '戊'],
+          },
+        ],
+      },
+    },
+  };
+  assert.deepEqual(mergeRewardMapEntries(dualKeyStat.事件.任务情报板.已兑现, 'qDual', '双键合并任务'), [1, 2]);
+  assert.deepEqual(mergeRewardMapEntries(dualKeyStat.事件.任务情报板.已失效, 'qDual', '双键合并任务'), [3, 4]);
+  const dualQb = questBoardState(dualKeyStat).items[0];
+  assert.deepEqual(
+    dualQb.rewardItems.map((r) => ({ slot: r.slot, claimed: r.claimed, lost: r.lost })),
+    [
+      { slot: 1, claimed: true, lost: false },
+      { slot: 2, claimed: true, lost: false },
+      { slot: 3, claimed: false, lost: true },
+      { slot: 4, claimed: false, lost: true },
+      { slot: 5, claimed: false, lost: false },
+    ],
+  );
+  // 栏 5 打勾：已兑现归并 [1, 2, 5] 到 qDual 并删 title 键，不丢栏 2
+  const dualClaim5 = cycleQuestRewardState(dualKeyStat, 'qDual', 5, '双键合并任务');
+  assert.deepEqual(dualClaim5.stat.事件.任务情报板.已兑现.qDual, [1, 2, 5]);
+  assert.equal(Object.prototype.hasOwnProperty.call(dualClaim5.stat.事件.任务情报板.已兑现, '双键合并任务'), false);
+  // 栏 3 从已失效恢复待获得：已失效归并保留栏 4 到 qDual 并删 title 键，不丢栏 4
+  const dualRestore3 = cycleQuestRewardState(dualClaim5.stat, 'qDual', 3, '双键合并任务');
+  assert.deepEqual(dualRestore3.stat.事件.任务情报板.已失效.qDual, [4]);
+  assert.equal(Object.prototype.hasOwnProperty.call(dualRestore3.stat.事件.任务情报板.已失效, '双键合并任务'), false);
+
+  // 8) P0 回归：原 预期收益 数组含空串时，清除行内标记索引不错位
+  const sparseRewardsStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { '含空项收益任务': { 状态: '进行中' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        列表: [
+          {
+            id: 'qSparse',
+            类别: '本地主线',
+            等级: 'B',
+            标题: '含空项收益任务',
+            方式: '委托',
+            预期收益: ['', '史诗武器 [✓]', '   ', '[已失效] 秘银 ×2'],
+          },
+        ],
+      },
+    },
+  };
+  const sparseQb = questBoardState(sparseRewardsStat).items[0];
+  assert.deepEqual(
+    sparseQb.rewardItems.map((r) => ({ slot: r.slot, text: r.text, claimed: r.claimed, lost: r.lost })),
+    [
+      { slot: 1, text: '史诗武器', claimed: true, lost: false },
+      { slot: 2, text: '秘银 ×2', claimed: false, lost: true },
+    ],
+  );
+  // toggleQuestRewardClaimed 取消栏 1 行内 [✓] 时不发生索引错位
+  const sparseUntoggle = toggleQuestRewardClaimed(sparseRewardsStat, 'qSparse', 1, '含空项收益任务');
+  assert.deepEqual(sparseUntoggle.stat.事件.任务情报板.列表[0].预期收益, ['史诗武器', '[已失效] 秘银 ×2']);
+  // cycleQuestRewardState 对栏 1（待获得 -> 已兑现 -> 已失效）及栏 2（已失效 -> 待获得）索引完全准确
+  const sparseCycle1 = cycleQuestRewardState(sparseRewardsStat, 'qSparse', 1, '含空项收益任务');
+  assert.deepEqual(sparseCycle1.stat.事件.任务情报板.列表[0].预期收益, ['史诗武器', '[已失效] 秘银 ×2']);
+  assert.deepEqual(sparseCycle1.stat.事件.任务情报板.已失效.qSparse, [1]);
+  const sparseCycle2 = cycleQuestRewardState(sparseCycle1.stat, 'qSparse', 2, '含空项收益任务');
+  assert.deepEqual(sparseCycle2.stat.事件.任务情报板.列表[0].预期收益, ['史诗武器', '秘银 ×2']);
+
+  // 9) P0 回归：toggleQuestRewardClaimed 给已失效栏位打勾后同步清掉 已失效，再次取消打勾不会“复活”为已失效
+  const reviveGuardStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { '防复活校验': { 状态: '进行中' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        已失效: { qGuard: [1] },
+        列表: [
+          {
+            id: 'qGuard',
+            类别: '本地主线',
+            等级: 'B',
+            标题: '防复活校验',
+            方式: '调查',
+            预期收益: ['传说护符 ×1', '[已失效] 古董 ×1'],
+          },
+        ],
+      },
+    },
+  };
+  const guardClaim1 = toggleQuestRewardClaimed(reviveGuardStat, 'qGuard', 1, '防复活校验');
+  assert.deepEqual(guardClaim1.stat.事件.任务情报板.已兑现.qGuard, [1]);
+  assert.equal(Object.prototype.hasOwnProperty.call(guardClaim1.stat.事件.任务情报板.已失效, 'qGuard'), false, '打勾后应同步清除 已失效 对应栏位并删空键');
+  const guardUnclaim1 = toggleQuestRewardClaimed(guardClaim1.stat, 'qGuard', 1, '防复活校验');
+  const guardItem1 = questBoardState(guardUnclaim1.stat).items[0].rewardItems[0];
+  assert.equal(guardItem1.claimed, false);
+  assert.equal(guardItem1.lost, false, '取消打勾后不得复活为已失效');
+
+  // 行内 [已失效] 栏位打勾再取消同样不会复活为已失效
+  const guardClaim2 = toggleQuestRewardClaimed(guardUnclaim1.stat, 'qGuard', 2, '防复活校验');
+  assert.equal(guardClaim2.stat.事件.任务情报板.列表[0].预期收益[1], '古董 ×1');
+  const guardUnclaim2 = toggleQuestRewardClaimed(guardClaim2.stat, 'qGuard', 2, '防复活校验');
+  const guardItem2 = questBoardState(guardUnclaim2.stat).items[0].rewardItems[1];
+  assert.equal(guardItem2.claimed, false);
+  assert.equal(guardItem2.lost, false, '行内 [已失效] 栏位打勾再取消后不得复活为已失效');
 });
 
 test('入口模式配置：默认悬浮框、读写归一化与持久化', () => {

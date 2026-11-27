@@ -5,7 +5,7 @@ import { DATA, SCRIPT_VERSION } from './data.js';
 import { readState, CORE_NAME, SPEAKER } from './state.js';
 import {
   toggleQuestIntent,
-  toggleQuestRewardClaimed,
+  cycleQuestRewardState,
   deleteAftermathEntry,
   ignoreQuest,
   requestQuestRescan,
@@ -584,7 +584,9 @@ function renderContent(state) {
         ui.questEditRewards ? '✓ 完成修改' : '✎ 修改模式',
         {
           type: 'button',
-          title: ui.questEditRewards ? '退出修改模式' : '开启后可手动勾选已兑现收益或删除区域/世界词条',
+          title: ui.questEditRewards
+            ? '退出修改模式'
+            : '开启后可点击收益在待获得 / 已兑现 ✓ / 已失效 ✕ 间切换，或删除区域/世界词条',
         },
         {
           click: () => {
@@ -684,20 +686,29 @@ function renderContent(state) {
     // 预期收益栏
     const rewardItems = Array.isArray(item.rewardItems) && item.rewardItems.length > 0
       ? item.rewardItems
-      : (item.rewards || []).map((rw, idx) => ({ slot: idx + 1, text: rw, claimed: false }));
+      : (item.rewards || []).map((rw, idx) => ({ slot: idx + 1, text: rw, claimed: false, lost: false }));
     const totalSlots = rewardItems.length || item.expectedSlots;
     const claimedCount = typeof item.claimedCount === 'number'
       ? item.claimedCount
       : rewardItems.filter((r) => r.claimed).length;
-    const rewardTitle = claimedCount > 0
-      ? `预期收益 · 已兑现 ${claimedCount} / ${totalSlots} 栏`
-      : `预期收益 · ${totalSlots} 栏`;
+    const lostCount = typeof item.lostCount === 'number'
+      ? item.lostCount
+      : rewardItems.filter((r) => !r.claimed && r.lost).length;
+    const rewardTitle = claimedCount > 0 && lostCount > 0
+      ? `预期收益 · 共 ${totalSlots} 栏（已兑现 ${claimedCount} · 已失效 ${lostCount}）`
+      : (lostCount > 0
+        ? `预期收益 · 已失效 ${lostCount} / ${totalSlots} 栏`
+        : (claimedCount > 0
+          ? `预期收益 · 已兑现 ${claimedCount} / ${totalSlots} 栏`
+          : `预期收益 · ${totalSlots} 栏`));
     const canEditRewards = !!(ui.questEditRewards && item.accepted && !item.fromFormalOnly);
     const rewardNote = item.fromFormalOnly
       ? '来自原版任务列表，只读展示'
       : (canEditRewards
-        ? '修改模式：点击下方收益可手动切换 ✓'
-        : (ui.questEditRewards ? '接取后可在修改模式中手动切换 ✓' : '模糊预告，发放后自动打 ✓'));
+        ? '修改模式：点击下方收益可切换（待获得 / 已兑现 ✓ / 已失效 ✕）'
+        : (ui.questEditRewards
+          ? '接取后可在修改模式中切换收益（待获得 / 已兑现 ✓ / 已失效 ✕）'
+          : '模糊预告，兑现打 ✓，错失标 ✕'));
 
     const rewardBox = el('div', 'qh-quest-rewards' + (canEditRewards ? ' is-editing' : ''));
     rewardBox.append(
@@ -709,29 +720,38 @@ function renderContent(state) {
     if (rewardItems.length > 0) {
       const chips = el('div', 'qh-quest-reward-grid');
       rewardItems.forEach((rw) => {
+        const isClaimed = !!rw.claimed;
+        const isLost = !isClaimed && !!rw.lost;
+        const stateCls = isClaimed ? ' is-claimed' : (isLost ? ' is-lost' : '');
+        const statusIcon = isClaimed
+          ? el('span', 'qh-quest-reward-check', '✓')
+          : (isLost ? el('span', 'qh-quest-reward-lost', '✕') : null);
         const children = [
           el('span', 'qh-quest-reward-idx', String(rw.slot).padStart(2, '0')),
           el('span', 'qh-quest-reward-text', rw.text),
-          rw.claimed ? el('span', 'qh-quest-reward-check', '✓') : null,
+          statusIcon,
         ];
         if (canEditRewards) {
+          const nextTitle = isClaimed
+            ? '点击切换为已失效 ✕'
+            : (isLost ? '点击恢复为待获得' : '点击标记为已兑现 ✓');
           chips.append(
             el(
               'button',
-              'qh-quest-reward-chip is-editable' + (rw.claimed ? ' is-claimed' : ''),
+              'qh-quest-reward-chip is-editable' + stateCls,
               children,
-              { type: 'button', title: rw.claimed ? '点击取消已兑现勾选' : '点击手动标记为已兑现' },
+              { type: 'button', title: nextTitle },
               {
                 click: () => run(
                   '已更新收益状态',
-                  (s) => toggleQuestRewardClaimed(s, item.id, rw.slot, item.title),
+                  (s) => cycleQuestRewardState(s, item.id, rw.slot, item.title),
                   { redraw: false },
                 ),
               },
             ),
           );
         } else {
-          chips.append(el('div', 'qh-quest-reward-chip' + (rw.claimed ? ' is-claimed' : ''), children));
+          chips.append(el('div', 'qh-quest-reward-chip' + stateCls, children));
         }
       });
       rewardBox.append(chips);
