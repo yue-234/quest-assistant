@@ -35,13 +35,88 @@ function loadEsbuild() {
   throw new Error('未找到 esbuild，请先安装 esbuild 或设置环境变量 ESBUILD_PATH');
 }
 
-const esbuild = loadEsbuild();
-
 function escapeInlineScript(code) {
   return code.replace(/<\/script/gi, '<\\/script');
 }
 
-async function build() {
+function createWorldbookEntry({ uid, comment, order, content }) {
+  return {
+    uid,
+    displayIndex: uid,
+    comment,
+    disable: false,
+    constant: true,
+    selective: false,
+    key: [],
+    selectiveLogic: 0,
+    keysecondary: [],
+    scanDepth: null,
+    vectorized: false,
+    position: 4,
+    role: 0,
+    depth: 1,
+    order,
+    content,
+    useProbability: true,
+    probability: 100,
+    excludeRecursion: false,
+    preventRecursion: true,
+    delayUntilRecursion: false,
+    sticky: null,
+    cooldown: null,
+    delay: null,
+    addMemo: true,
+    matchPersonaDescription: false,
+    matchCharacterDescription: false,
+    matchCharacterPersonality: false,
+    matchCharacterDepthPrompt: false,
+    matchScenario: false,
+    matchCreatorNotes: false,
+    group: '',
+    groupOverride: false,
+    groupWeight: 100,
+    caseSensitive: null,
+    matchWholeWords: null,
+    useGroupScoring: null,
+    automationId: '',
+    ignoreBudget: false,
+    outletName: '',
+    triggers: [],
+    characterFilter: { isExclude: false, names: [], tags: [] },
+  };
+}
+
+/** 从单一 EJS 源码导出双条目标准酒馆世界书 JSON（剧情引导 + 变量更新）。 */
+export function buildWorldbookJson(ejsContent, version = SCRIPT_VERSION) {
+  const normalized = String(ejsContent ?? '').replace(/\r\n/g, '\n');
+  if (!normalized.includes("const _wbRole = 'all';")) {
+    throw new Error("世界书源码缺少角色声明 `const _wbRole = 'all';`，无法导出双条目世界书");
+  }
+  const ver = String(version ?? '').trim();
+  const renderRole = (role) => normalized
+    .replace(/\/\/\s*@role\s+all\b/, `// @role ${role}`)
+    .replace("const _wbRole = 'all';", `const _wbRole = '${role}';`);
+
+  return {
+    entries: {
+      '0': createWorldbookEntry({
+        uid: 0,
+        comment: `[mvu_plot]任务助手-剧情引导${ver}`,
+        order: 1150,
+        content: renderRole('plot'),
+      }),
+      '1': createWorldbookEntry({
+        uid: 1,
+        comment: `[mvu_update]任务助手-变量更新${ver}`,
+        order: 99990,
+        content: renderRole('update'),
+      }),
+    },
+  };
+}
+
+export async function build() {
+  const esbuild = loadEsbuild();
   const srcDir = path.join(__dirname, 'src');
   const outFile = path.join(__dirname, '⭐粘这个-任务助手脚本.js');
   const outTxtFile = path.join(__dirname, '⭐粘这个-任务助手脚本.txt');
@@ -104,65 +179,27 @@ async function build() {
   fs.writeFileSync(outTxtFile, finalCode, 'utf8');
   fs.writeFileSync(outDistFile, finalCode, 'utf8');
 
-  // 3. 同步导出带版本号子标题的标准酒馆世界书 JSON
-  const ejsContent = fs.readFileSync(path.join(__dirname, '任务助手-世界书.ejs'), 'utf8').replace(/\r\n/g, '\n');
-  const worldbookComment = `任务助手${SCRIPT_VERSION}`;
-  const worldbookJson = {
-    entries: {
-      '0': {
-        uid: 0,
-        displayIndex: 0,
-        comment: worldbookComment,
-        disable: false,
-        constant: true,
-        selective: false,
-        key: [],
-        selectiveLogic: 0,
-        keysecondary: [],
-        scanDepth: null,
-        vectorized: false,
-        position: 4,
-        role: 0,
-        depth: 1,
-        order: 1150,
-        content: ejsContent,
-        useProbability: true,
-        probability: 100,
-        excludeRecursion: false,
-        preventRecursion: true,
-        delayUntilRecursion: false,
-        sticky: null,
-        cooldown: null,
-        delay: null,
-        addMemo: true,
-        matchPersonaDescription: false,
-        matchCharacterDescription: false,
-        matchCharacterPersonality: false,
-        matchCharacterDepthPrompt: false,
-        matchScenario: false,
-        matchCreatorNotes: false,
-        group: '',
-        groupOverride: false,
-        groupWeight: 100,
-        caseSensitive: null,
-        matchWholeWords: null,
-        useGroupScoring: null,
-        automationId: '',
-        ignoreBudget: false,
-        outletName: '',
-        triggers: [],
-        characterFilter: { isExclude: false, names: [], tags: [] },
-      },
-    },
-  };
+  // 3. 同步导出带版本号子标题的标准酒馆双条目世界书 JSON
+  const ejsContent = fs.readFileSync(path.join(__dirname, '任务助手-世界书.ejs'), 'utf8');
+  const worldbookJson = buildWorldbookJson(ejsContent, SCRIPT_VERSION);
   const outWorldbookFile = path.join(__dirname, '⭐导入这个-命定任务助手世界书.json');
   fs.writeFileSync(outWorldbookFile, JSON.stringify(worldbookJson), 'utf8');
 
   const kb = (Buffer.byteLength(finalCode, 'utf8') / 1024).toFixed(1);
-  console.log(`构建完成：${outFile} & ${outTxtFile} & ${outDistFile} (${kb} KB) + ${outWorldbookFile} (${worldbookComment})`);
+  const wbComments = Object.values(worldbookJson.entries).map((e) => e.comment).join(' + ');
+  console.log(`构建完成：${outFile} & ${outTxtFile} & ${outDistFile} (${kb} KB) + ${outWorldbookFile} (${wbComments})`);
 }
 
-build().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+const isMain = (() => {
+  if (!process.argv[1]) return false;
+  const a = path.resolve(process.argv[1]);
+  const b = path.resolve(fileURLToPath(import.meta.url));
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+})();
+
+if (isMain) {
+  build().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

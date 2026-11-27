@@ -431,11 +431,23 @@ export function requestQuestRescan(stat, floor, chatCount, { nullCore = false } 
   return { stat: next, done: `已扣除 ${cost} FP 启动地区情报重扫，下一回合刷新本地情报` };
 }
 
-/** 重扫请求是否已经过去（由界面或后台维护顺手清理）。 */
+/** 重扫请求是否已过完额外模型结算窗口，可由界面或后台维护安全清理。 */
 export function questRescanDone(stat, currentFloor, currentCount) {
   const pending = obj(boardNode(stat)['待重扫']);
   if (!Object.keys(pending).length) return false;
-  return !rescanFresh(pending, { floor: currentFloor, chatCount: currentCount });
+  const num = (v) => {
+    if (v === undefined || v === null || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const atCount = num(pending['消息数']);
+  const nowCount = num(currentCount);
+  // 额外模型在主回复落楼（nowCount === atCount + 2）后才排队执行，需严格超过 atCount + 2 才可安全清理
+  if (atCount !== null && nowCount !== null) return nowCount > atCount + 2;
+  const atFloor = num(pending['楼层']);
+  const nowFloor = num(currentFloor);
+  if (atFloor !== null && nowFloor !== null) return nowFloor > atFloor + 2;
+  return atCount === null && atFloor === null;
 }
 
 /** 清掉已消费的重扫请求标记。 */

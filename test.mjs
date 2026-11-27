@@ -64,6 +64,7 @@ import {
   fetchAvailableScriptRefs,
   fetchScriptByRef,
 } from './src/scriptRef.js';
+import { buildWorldbookJson } from './build.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -104,7 +105,7 @@ const builtDistScriptPath = path.join(__dirname, 'dist', 'quest-assistant.js');
 const builtWorldbookPath = path.join(__dirname, '⭐导入这个-命定任务助手世界书.json');
 const remoteLoaderPath = path.join(__dirname, '⭐粘这个-远程自动更新脚本.js');
 
-function renderEjs(statData, { chat = [], lastUserMessageId = 0, geoData = {}, systemCore = '', destinyImmersiveMode } = {}) {
+function renderEjs(statData, { chat = [], lastUserMessageId = 0, geoData = {}, systemCore = '', destinyImmersiveMode, source = ejsSource } = {}) {
   const ctx = {
     getvar: (k) => {
       if (k === 'stat_data') return statData;
@@ -116,7 +117,7 @@ function renderEjs(statData, { chat = [], lastUserMessageId = 0, geoData = {}, s
     lastUserMessageId,
     ...(typeof destinyImmersiveMode === 'function' ? { destinyImmersiveMode } : {}),
   };
-  return ejs.render(ejsSource, ctx);
+  return ejs.render(source, ctx);
 }
 
 function assertCleanOutput(out, label) {
@@ -401,7 +402,9 @@ test('actions 全流程：锁定、忽略、100 FP 重扫、修改模式打勾',
   const dup = requestQuestRescan(stat, 10, 12);
   assert.ok(dup.error);
 
-  assert.equal(questRescanDone(stat, 12, 14), true);
+  // 主回复刚落楼（chatCount = 12 + 2 = 14）时需保留 待重扫 给额外模型结算，超过窗口（>= 15）再清理
+  assert.equal(questRescanDone(stat, 12, 14), false);
+  assert.equal(questRescanDone(stat, 12, 15), true);
   stat = clearQuestRescan(stat).stat;
   assert.equal(stat['事件']['任务情报板']['待重扫'], undefined);
 });
@@ -2825,6 +2828,99 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
     checkWorldbookCompatibility({ supported: true, found: true, enabled: false, version: 'v1.4.5' }, { loadedRef: 'v1.4.5' }).mismatch,
     true,
   );
+
+  // 双条目世界书（[mvu_plot] + [mvu_update]）检测：完整匹配 / 半启用提醒 / 版本冲突提醒
+  const wbDualOk = inspectWorldbookEntries([
+    {
+      bookName: '命定任务助手世界书',
+      entries: [
+        { name: '[mvu_plot]任务助手-剧情引导v1.4.8', enabled: true, content: '// @role plot\n/事件/任务情报板' },
+        { name: '[mvu_update]任务助手-变量更新v1.4.8', enabled: true, content: '// @role update\n<任务情报板变量更新协议>\n/事件/任务情报板' },
+      ],
+    },
+  ]);
+  assert.equal(wbDualOk.dualMode, true);
+  assert.equal(wbDualOk.enabled, true);
+  assert.equal(wbDualOk.version, 'v1.4.8');
+  assert.equal(checkWorldbookCompatibility(wbDualOk, { loadedRef: 'v1.4.8', scriptVersion: 'v1.4.8' }).status, 'matched');
+
+  const wbDualPartial = inspectWorldbookEntries([
+    {
+      bookName: '命定任务助手世界书',
+      entries: [
+        { name: '[mvu_plot]任务助手-剧情引导v1.4.8', enabled: true, content: '// @role plot\n/事件/任务情报板' },
+        { name: '[mvu_update]任务助手-变量更新v1.4.8', enabled: false, content: '// @role update\n<任务情报板变量更新协议>' },
+      ],
+    },
+  ]);
+  assert.equal(wbDualPartial.partialDisabled, true);
+  assert.equal(wbDualPartial.missingRole, 'update');
+  const compatPartial = checkWorldbookCompatibility(wbDualPartial, { loadedRef: 'v1.4.8', scriptVersion: 'v1.4.8' });
+  assert.equal(compatPartial.status, 'partial_disabled');
+  assert.equal(compatPartial.mismatch, true);
+
+  const wbDualConflict = inspectWorldbookEntries([
+    {
+      bookName: '命定任务助手世界书',
+      entries: [
+        { name: '[mvu_plot]任务助手-剧情引导v1.4.8', enabled: true, content: '// @role plot\n/事件/任务情报板' },
+        { name: '[mvu_update]任务助手-变量更新v1.4.9', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+      ],
+    },
+  ]);
+  assert.equal(wbDualConflict.versionConflict, true);
+  const compatConflict = checkWorldbookCompatibility(wbDualConflict, { loadedRef: 'v1.4.9', scriptVersion: 'v1.4.9' });
+  assert.equal(compatConflict.status, 'mismatch');
+  assert.equal(compatConflict.mismatch, true);
+
+  // buildWorldbookJson 双条目派生、角色隔离、额外模型重扫时序（nc+2）与空板强指令校验
+  assert.throws(() => buildWorldbookJson('no role marker', 'v1.4.9'), /_wbRole/);
+  const dualJson = buildWorldbookJson(ejsSource, 'v1.4.9');
+  assert.equal(dualJson.entries['0'].comment, '[mvu_plot]任务助手-剧情引导v1.4.9');
+  assert.equal(dualJson.entries['0'].order, 1150);
+  assert.equal(dualJson.entries['1'].comment, '[mvu_update]任务助手-变量更新v1.4.9');
+  assert.equal(dualJson.entries['1'].order, 99990);
+  const plotSrc = dualJson.entries['0'].content;
+  const updateSrc = dualJson.entries['1'].content;
+
+  // 额外模型重扫时序：点重扫时消息数=10，用户发消息=11，AI正文落楼=12（末尾 is_user: false）→ update 命中 rescan 且空板补剧情与词条
+  const extraChat12 = Array.from({ length: 12 }, (_, idx) => ({
+    is_user: idx % 2 === 0,
+    is_system: false,
+    mes: idx === 11 ? 'AI 正文刚落地' : '对话',
+  }));
+  const extraRescanStat = {
+    世界: { 地点: '卡拉什利亚斯-巡天王庭', 时间: '复兴纪元488年-5月-26日' },
+    任务列表: {},
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        更新日: '复兴纪元488年-5月-26日',
+        待重扫: { 楼层: '9', 消息数: '10' },
+        列表: [],
+      },
+    },
+  };
+  const plotOut = renderEjs(extraRescanStat, { chat: extraChat12, lastUserMessageId: 10, source: plotSrc });
+  const updateOut = renderEjs(extraRescanStat, { chat: extraChat12, lastUserMessageId: 10, source: updateSrc });
+
+  // plot 零加粗、零 Patch、零变量协议
+  assert.equal((plotOut.match(/\*\*[^*]+\*\*/g) || []).length, 0, 'plot 模式不得包含加粗红线');
+  assert.doesNotMatch(plotOut, /variables_update_rules|兑现Patch|失效Patch|完结移出|生成规格|严禁/);
+  // update 严格 1 处加粗、含标准 variables_update_rules 协议、零纯剧情波折重复、精准命中 rescan 且补剧情与词条
+  assert.equal((updateOut.match(/\*\*[^*]+\*\*/g) || []).length, 1, 'update 模式应严格保留 1 处加粗红线');
+  assert.match(updateOut, /<任务情报板变量更新协议>/);
+  assert.match(updateOut, /variables_update_rules:/);
+  assert.doesNotMatch(updateOut, /波折节拍:|演化与完结:|层级与串联:|层级护栏:/);
+  assert.match(updateOut, /启动地区情报重扫：保留剧情任务、已接取与 `★已锁定` 项，按当前区域重新生成 1~2 条本地主线 \+ 2~3 条支线任务/);
+  assert.match(updateOut, /没有剧情任务时补 1 条剧情任务/);
+  assert.match(updateOut, /为当前区域写入 3 条差异化色阶的初始常驻词条/);
+
+  // 下一轮玩家再发消息（消息数=13，末尾 is_user: true）时 rescan 正常过期，不重复触发
+  const extraChat13 = [...extraChat12, { is_user: true, is_system: false, mes: '下一轮' }];
+  const updateNextOut = renderEjs(extraRescanStat, { chat: extraChat13, lastUserMessageId: 12, source: updateSrc });
+  assert.doesNotMatch(updateNextOut, /启动地区情报重扫/);
 
   const mem = new Map();
   const read = (k) => mem.get(k) || '';

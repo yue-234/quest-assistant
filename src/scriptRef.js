@@ -82,6 +82,7 @@ export function isQuestAssistantEntry(entry) {
   if (
     content.includes('/事件/任务情报板')
     || content.includes('<任务情报板>')
+    || content.includes('<任务情报板变量更新协议>')
     || content.includes('yue-234/quest-assistant')
   ) {
     return true;
@@ -93,6 +94,26 @@ export function isQuestAssistantEntry(entry) {
 function extractEntryContentVersion(content) {
   const m = String(content ?? '').match(/\/\/\s*@version\s+([^\s\r\n]+)/i);
   return m ? extractVersionFromText(m[1]) : '';
+}
+
+function detectEntryRole(entry) {
+  const title = String(entry?.name ?? entry?.comment ?? '').trim();
+  const content = String(entry?.content ?? '');
+  if (/\[mvu_plot\]/i.test(title)) return 'plot';
+  if (/\[mvu_update\]/i.test(title)) return 'update';
+  const roleMeta = content.match(/\/\/\s*@role\s+(plot|update|all)\b/i);
+  if (roleMeta) {
+    const r = roleMeta[1].toLowerCase();
+    return r === 'plot' || r === 'update' ? r : 'all';
+  }
+  const roleConst = content.match(/const\s+_wbRole\s*=\s*['"](plot|update|all)['"]/);
+  if (roleConst) {
+    const r = roleConst[1];
+    return r === 'plot' || r === 'update' ? r : 'all';
+  }
+  if (title.includes('剧情引导')) return 'plot';
+  if (title.includes('变量更新')) return 'update';
+  return 'all';
 }
 
 /** 从当前启用的世界书集合中定位任务助手条目，并优先从其子标题提取版本号。 */
@@ -109,7 +130,8 @@ export function inspectWorldbookEntries(bookEntriesList = []) {
       const contentVer = extractEntryContentVersion(entry.content);
       const bookVer = extractVersionFromText(bookName);
       const version = titleVer || contentVer || bookVer;
-      candidates.push({ bookName, title, enabled, version });
+      const role = detectEntryRole(entry);
+      candidates.push({ bookName, title, enabled, version, role });
     }
   }
 
@@ -123,15 +145,74 @@ export function inspectWorldbookEntries(bookEntriesList = []) {
     return 0;
   });
 
-  const best = candidates[0];
-  return {
+  const enabledCandidates = candidates.filter((c) => c.enabled);
+  if (enabledCandidates.length === 0) {
+    const best = candidates[0];
+    const hasDual = candidates.some((c) => c.role === 'plot') || candidates.some((c) => c.role === 'update');
+    return {
+      supported: true,
+      found: true,
+      enabled: false,
+      version: best.version,
+      title: best.title,
+      bookName: best.bookName,
+      ...(hasDual ? { dualMode: true } : {}),
+    };
+  }
+
+  const enabledPlot = enabledCandidates.filter((c) => c.role === 'plot');
+  const enabledUpdate = enabledCandidates.filter((c) => c.role === 'update');
+  const enabledLegacy = enabledCandidates.filter((c) => c.role === 'all');
+  const hasDualEnabled = enabledPlot.length > 0 || enabledUpdate.length > 0;
+
+  // 收集已启用条目的去重语义版本号（按 semver 降序，末尾为较低版本）
+  const distinctVersions = [];
+  for (const c of enabledCandidates) {
+    if (!c.version) continue;
+    if (!distinctVersions.some((v) => compareSemverTags(v, c.version) === 0)) {
+      distinctVersions.push(c.version);
+    }
+  }
+  distinctVersions.sort(compareSemverTags);
+
+  const hasPartialDisabled = hasDualEnabled
+    && enabledLegacy.length === 0
+    && (enabledPlot.length === 0 || enabledUpdate.length === 0);
+  const missingRole = hasPartialDisabled
+    ? (enabledPlot.length === 0 ? 'plot' : 'update')
+    : '';
+
+  const hasRoleVersionMismatch = enabledPlot.length > 0
+    && enabledUpdate.length > 0
+    && (
+      distinctVersions.length > 1
+      || (enabledPlot.some((c) => !!c.version) !== enabledUpdate.some((c) => !!c.version))
+    );
+  const versionConflict = distinctVersions.length > 1 || hasRoleVersionMismatch;
+
+  const primary = enabledPlot[0] || enabledUpdate[0] || enabledCandidates[0];
+  const resolvedVersion = versionConflict
+    ? (distinctVersions[distinctVersions.length - 1] || primary.version)
+    : (distinctVersions[0] || primary.version);
+
+  const result = {
     supported: true,
     found: true,
-    enabled: best.enabled,
-    version: best.version,
-    title: best.title,
-    bookName: best.bookName,
+    enabled: true,
+    version: resolvedVersion,
+    title: primary.title,
+    bookName: primary.bookName,
   };
+  if (hasDualEnabled) result.dualMode = true;
+  if (hasPartialDisabled) {
+    result.partialDisabled = true;
+    result.missingRole = missingRole;
+  }
+  if (versionConflict) {
+    result.versionConflict = true;
+    result.versions = distinctVersions;
+  }
+  return result;
 }
 
 /** 校验世界书版本与当前脚本运行版本是否匹配（决定设置按钮是否显示红点提醒）。 */
@@ -165,6 +246,24 @@ export function checkWorldbookCompatibility(wbInfo, scriptMeta = {}) {
       worldbookVersion: wbInfo.version || '',
       scriptVersion: scriptVer,
       message: '世界书中的任务助手条目当前处于关闭状态，请启用并保持版本一致',
+    };
+  }
+  if (wbInfo.partialDisabled) {
+    return {
+      status: 'partial_disabled',
+      mismatch: true,
+      worldbookVersion: wbInfo.version || '',
+      scriptVersion: scriptVer,
+      message: '任务助手双条目世界书仅启用了部分条目，请同时启用「剧情引导」与「变量更新」条目',
+    };
+  }
+  if (wbInfo.versionConflict) {
+    return {
+      status: 'mismatch',
+      mismatch: true,
+      worldbookVersion: wbInfo.version || '',
+      scriptVersion: scriptVer,
+      message: '世界书中存在多个不同版本的任务助手条目，请清理旧条目并保持版本一致',
     };
   }
   if (!wbInfo.version) {
