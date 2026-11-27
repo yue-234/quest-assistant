@@ -3,7 +3,7 @@
 
 import { DATA } from './data.js';
 import {
-  BOARD_KEY, CORE_NAME, SPEAKER, fpOf, boardNode, rescanFresh, lastNonSystemIsAssistant,
+  BOARD_KEY, CORE_NAME, SPEAKER, fpOf, boardNode, effectiveChatCount, rescanFresh, lastNonSystemIsAssistant,
   normalizeDay, worldDay, cleanRewardText, parseClaimedSet, parseLostSet,
   mergeRewardMapEntries, normalizeQuestRewards,
   CLAIMED_MARK_RE, LOST_MARK_RE,
@@ -396,9 +396,15 @@ export function sweepExpiredAftermath(stat) {
 }
 
 /** 预约下一回合重扫当前区域的本地任务情报（保留已锁定与跨区剧情任务）。 */
-export function requestQuestRescan(stat, floor, chatCount, { nullCore = false } = {}) {
+export function requestQuestRescan(
+  stat,
+  floor,
+  chatCount,
+  { nullCore = false, chat, lastIsAssistant, extraAnalyzing } = {},
+) {
+  const effectiveCount = effectiveChatCount(chat, chatCount);
   const boardNow = boardNode(stat);
-  if (rescanFresh(obj(boardNow['待重扫']), { floor, chatCount })) {
+  if (rescanFresh(obj(boardNow['待重扫']), { floor, chatCount: effectiveCount, chat, lastIsAssistant, extraAnalyzing })) {
     return { error: '本回合已经预约过地区重扫了，等下一回合刷新' };
   }
   if (nullCore) {
@@ -412,7 +418,7 @@ export function requestQuestRescan(stat, floor, chatCount, { nullCore = false } 
     if (curDay) board['上次重扫日'] = curDay;
     board['待重扫'] = {
       楼层: floor === undefined || floor === null ? '' : String(floor),
-      消息数: chatCount === undefined || chatCount === null ? '' : String(chatCount),
+      消息数: effectiveCount === undefined || effectiveCount === null ? '' : String(effectiveCount),
     };
     return { stat: next, done: '已启动今日免费地区情报重扫，下一回合刷新本地情报' };
   }
@@ -426,7 +432,7 @@ export function requestQuestRescan(stat, floor, chatCount, { nullCore = false } 
   const board = ensureBoard(next);
   board['待重扫'] = {
     楼层: floor === undefined || floor === null ? '' : String(floor),
-    消息数: chatCount === undefined || chatCount === null ? '' : String(chatCount),
+    消息数: effectiveCount === undefined || effectiveCount === null ? '' : String(effectiveCount),
   };
   return { stat: next, done: `已扣除 ${cost} FP 启动地区情报重扫，下一回合刷新本地情报` };
 }
@@ -451,7 +457,7 @@ export function questRescanDone(
     : lastNonSystemIsAssistant(chat);
   const settled = extraFinished || allowGrace;
   const atCount = num(pending['消息数']);
-  const nowCount = num(currentCount);
+  const nowCount = num(effectiveChatCount(chat, currentCount));
   // 额外模型在主回复落楼后才排队执行，需等到变量更新结束事件、落楼宽限期满或进入下一轮后再清理
   if (atCount !== null && nowCount !== null) {
     if (nowCount > atCount + 2) return true;

@@ -9,6 +9,7 @@ import vm from 'node:vm';
 import { DATA, SCRIPT_VERSION } from './src/data.js';
 import {
   questBoardState,
+  effectiveChatCount,
   rescanFresh,
   lastNonSystemIsAssistant,
   readState,
@@ -310,20 +311,24 @@ test('EJS rescan 模式：100 FP 地区情报重扫（仅保留剧情/已接取/
       },
     },
   };
-  const chatMentionDropped = [
-    ...new Array(4).fill({ is_user: false, mes: '' }),
+  const chatMentionUserTurn = [
+    ...new Array(5).fill({ is_user: false, mes: '' }),
     { is_user: true, is_system: false, mes: '我想顺手看看校准风向仪的任务。' },
-    { is_user: false, is_system: false, mes: '' },
   ];
-  const allDropAll = renderEjs(allDroppedRescanStat, { chat: chatMentionDropped, lastUserMessageId: 4 });
+  const chatMentionExtraTurn = [
+    ...chatMentionUserTurn,
+    { is_user: false, is_system: false, mes: 'AI 正文' },
+  ];
+  const allDropAll = renderEjs(allDroppedRescanStat, { chat: chatMentionUserTurn, lastUserMessageId: 5 });
   const allDropPlot = renderEjs(allDroppedRescanStat, {
-    chat: chatMentionDropped,
-    lastUserMessageId: 4,
+    chat: chatMentionUserTurn,
+    lastUserMessageId: 5,
     source: ejsSource.replace("const _wbRole = 'all';", "const _wbRole = 'plot';").replace('// @role all', '// @role plot'),
   });
   const allDropUpdate = renderEjs(allDroppedRescanStat, {
-    chat: chatMentionDropped,
-    lastUserMessageId: 4,
+    chat: chatMentionExtraTurn,
+    lastUserMessageId: 5,
+    Mvu: { isDuringExtraAnalysis: () => true },
     source: ejsSource.replace("const _wbRole = 'all';", "const _wbRole = 'update';").replace('// @role all', '// @role update'),
   });
   assert.doesNotMatch(allDropPlot, /校准风向仪/);
@@ -1386,7 +1391,7 @@ test('剧情追加规则与参考配额非硬上限断言', () => {
   assert.match(out, /\/事件\/任务情报板\/列表\/-/);
   assert.match(out, /按体量定级：剧情任务/);
   assert.match(out, /剧情任务与本地主线附加 `真相`/);
-  assert.match(out, /下列条数为自动生成与补缺的参考配额，非硬上限/);
+  assert.match(out, /下列条数为参考配额，剧情追加不受上限限制/);
 });
 
 test('EJS 长线波折结构（init）：分级波折、三要素暗牌真相与余波衍生任务', () => {
@@ -1437,7 +1442,7 @@ test('EJS 长线波折结构（maintain）：波折节拍、失败前进、禁�
   assert.match(out, /NPC 不首轮揭示 `真相`/);
   assert.match(out, /中段（累计已结算 3~6 栏 \/ 本地主线 2~3 栏份额）触发旧线索重新解释或第三方争夺筹码/);
   assert.match(out, /终局前（累计已结算 7~9 栏 \/ 本地主线 4 栏份额）触发不可逆代价取舍/);
-  assert.match(out, /以替代战利品置换约定尾款以守住剩余有效收益底线/);
+  assert.match(out, /以替代战利品置换约定尾款，守住剩余有效收益底线/);
   assert.match(out, /终局不临时引入缺乏铺垫的反派或万能解法/);
   assert.match(out, /交涉破裂、潜入暴露或击杀关键 NPC 时不阻断推进/);
   assert.match(out, /限时项拖过关键节点关闭最优窗口转入补救/);
@@ -1769,7 +1774,7 @@ test('EJS 收益高→低分层、4 档失败折损、追回边界与 [n✓]/[n�
     事件: {},
   });
   assertCleanOutput(initOut, 'reward-tier-init');
-  assert.match(initOut, /仅剧情任务与本地主线的核心层可\+1 档，对应 D优良\/C稀有\/B史诗\/A传说\/S神话，不得超过\+1 档；其余栏位与全部支线任务一律按任务原等级品质，无\+1 档/);
+  assert.match(initOut, /生成规格（品质与禁项沿用<任务与委托规则>，仅核心层可\+1 档，其余按原等级；下列条数为参考配额，剧情追加不受上限限制）/);
   assert.match(initOut, /支线任务（2~3 条，限本区｜数小时~7 天｜全栏原等级，无\+1 档｜收益 3 栏）/);
   assert.match(initOut, /剧情任务（10 栏）与本地主线（5 栏）按高价值在前、基础在后排布（剧情第 1~3 栏为核心层、第 4~7 栏为中坚层进阶装备\/配方\/实用资源、第 8~10 栏为基础层金币\/常规材料\/补给\/普通声望；本地主线第 1 栏为核心层、第 2~3 栏为中坚层、第 4~5 栏为基础层），仅核心层可\+1 档且不得超限，中坚层、基础层与全部支线任务（3 栏）均按任务原等级品质发放/);
   assert.match(initOut, /写法上与普通支线保持一致，不泄露幕后真相；不得在结尾用「但\/可\/却……私下……」点破异常疑点、暗中插手的势力或内部隐患，疑点留到接取后的实地接触中暴露/);
@@ -1874,7 +1879,7 @@ test('EJS 收益高→低分层、4 档失败折损、追回边界与 [n✓]/[n�
   assert.match(maintainOut, /如果 <user> 主动挑衅、袭击或强闯高于本任务等级的人物与核心禁地，对方按真实生命层级反击/);
   assert.match(maintainOut, /高于任务等级的人物与势力只作为背景存在、幕后授意者或线索来源（不主动下场攻击），任务推进或完结时可借他们留下的动向或线索，按「剧情追加」引出高一级的新任务/);
   assert.match(maintainOut, /中度折损划除剧情 2~3 栏或本地主线 2 栏，跨层混合（核心层保留至少 1 栏，也不只划基础）/);
-  assert.match(maintainOut, /重度折损（濒临失败转入止损）划至剧情仅留 2~3 栏、本地主线仅留 1~2 栏，优先剥离核心与大部中坚，仅留基础栏位或次要补给/);
+  assert.match(maintainOut, /重度折损（濒临失败转入止损）划至剧情仅留 2~3 栏、本地主线仅留 1~2 栏，优先剥离核心与大部分中坚，仅留基础栏位或次要补给/);
   assert.match(maintainOut, /彻底失败将剩余 `\[□\]` 全部视为失效，零新收益结案、直接移出 `\/任务列表` 与任务情报板并写入 `\[黄\/红\]` 词条，无需更新进展或写 `失效Patch`/);
   assert.match(maintainOut, /标记 `\[✕\]` 的栏位本任务不再发放，剩余有效 `\[□\]` 照常兑现/);
   assert.match(maintainOut, /如果 <user> 后续在剧情外另行设法追回对应物件，按正常剧情判定成败，不得因曾标记 `\[✕\]` 而强行判定失败/);
@@ -3271,10 +3276,12 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   // init 模式下将首批余波并入整板 insert 示例，不重复要求独立 insert 余波
   const initUpdateOut = renderEjs({ 世界: { 地点: '雾晶港', 时间: '复兴纪元488年-5月-26日' }, 事件: {} }, { source: updateSrc });
   assert.match(initUpdateOut, /"余波": \{ "雾晶港": /);
-  assert.match(initUpdateOut, /不另行重复 `insert \/事件\/任务情报板\/余波`/);
+  assert.match(initUpdateOut, /不再单独 `insert \/事件\/任务情报板\/余波`/);
 
-  // 续写（continue）与重Roll（swipe）均不放宽待重扫窗口，避免 plot/update 同一轮模式分裂
-  for (const genType of ['continue', 'swipe']) {
+  // 续写（continue/append/appendFinal）与重Roll（swipe）在 nc+1 与 nc+2 下均不得触发重扫
+  const extraChat11Ai = extraChat12.slice(0, 11);
+  extraChat11Ai[10] = { is_user: false, is_system: false, mes: 'AI在nc+1直接落地' };
+  for (const genType of ['continue', 'swipe', 'append', 'appendFinal']) {
     const gatedPlotOut = renderEjs(extraRescanStat, {
       chat: extraChat12,
       lastUserMessageId: 10,
@@ -3287,9 +3294,25 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
       generateType: genType,
       source: updateSrc,
     });
+    const gatedWithinWindow = renderEjs(extraRescanStat, {
+      chat: extraChat11Ai,
+      lastUserMessageId: 9,
+      generateType: genType,
+      source: updateSrc,
+    });
     assert.doesNotMatch(gatedPlotOut, /已预约地区情报重扫/, `${genType} 不应误触发 plot 重扫提示`);
     assert.doesNotMatch(gatedUpdateOut, /启动地区情报重扫/, `${genType} 不应放宽 update 重扫窗口`);
+    assert.doesNotMatch(gatedWithinWindow, /启动地区情报重扫/, `${genType} 在 <= nc+1 内同样不应触发重扫`);
   }
+  // nc+1 末尾为 AI 回复时，主 API（isDuringExtraAnalysis=false）不再二次触发，仅额外模型轮触发
+  assert.doesNotMatch(
+    renderEjs(extraRescanStat, { chat: extraChat11Ai, lastUserMessageId: 9, Mvu: { isDuringExtraAnalysis: () => false }, source: updateSrc }),
+    /启动地区情报重扫/,
+  );
+  assert.match(
+    renderEjs(extraRescanStat, { chat: extraChat11Ai, lastUserMessageId: 9, Mvu: { isDuringExtraAnalysis: () => true }, source: updateSrc }),
+    /启动地区情报重扫/,
+  );
 
   // Mvu.isDuringExtraAnalysis() 可用时：主 API 回合（false）下 update 条目不得放宽到 nc+2，避免与 plot 分裂；仅额外模型轮（true）放宽
   const updateMainTurnOut = renderEjs(extraRescanStat, {
@@ -3328,7 +3351,74 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
 
   // 语体红线回归：plot / update / all 输出均不得出现已清理的冗余防备或文言残余
   const allOut = renderEjs(extraRescanStat, { chat: extraChat12, lastUserMessageId: 10 });
-  assert.doesNotMatch(`${plotOut}\n${updateOut}\n${allOut}`, /属于必执行的|另行额外|严禁|务必|切勿/);
+  assert.doesNotMatch(
+    `${plotOut}\n${updateOut}\n${allOut}`,
+    /属于必执行的|另行额外|严禁|务必|切勿|大部中坚|不泄真相|不另行重复|无可用线索时|一并移出/,
+  );
+
+  // effectiveChatCount & EJS system 隐藏消息排除 + rescan 保留同区 地点/引导/更新日 及 预期收益 去前缀说明
+  const chatWithHiddenSys = [
+    ...extraChat12,
+    { is_user: false, is_system: true, mes: '系统摘要提示' },
+  ];
+  assert.equal(effectiveChatCount(chatWithHiddenSys), 12);
+  const rescanAfterSysOut = renderEjs(extraRescanStat, {
+    chat: chatWithHiddenSys,
+    generateType: 'normal',
+    Mvu: { isDuringExtraAnalysis: () => true },
+    source: updateSrc,
+  });
+  assert.match(rescanAfterSysOut, /启动地区情报重扫/, '结尾 is_system 隐藏楼层不得破坏消息计数窗口');
+  const rescanAiRecoveredChat = Array.from({ length: 11 }, (_, idx) => ({
+    is_user: idx !== 10 && idx % 2 === 0,
+    is_system: false,
+    mes: '对话',
+  }));
+  const allowRetryRescan = requestQuestRescan(
+    {
+      命运点数: 200,
+      事件: { 任务情报板: { 区域键: '铁炉堡', 区域: '铁炉堡', 待重扫: { 楼层: '9', 消息数: '10' }, 列表: [] } },
+    },
+    10,
+    11,
+    { chat: rescanAiRecoveredChat, extraAnalyzing: false },
+  );
+  assert.ok(!allowRetryRescan.error, '上一轮 nc+1 AI 落楼结束后，应允许再次预约重扫');
+  const rescanPreserveFieldStat = {
+    世界: { 地点: '铁炉堡-东区', 时间: '复兴纪元488年-5月-26日' },
+    任务列表: { '铁炉旧案': { 状态: '进行中', 进展: '[5月-25日] 已接触线人' } },
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        待重扫: { 楼层: '9', 消息数: '10' },
+        已兑现: { q_keep: [1] },
+        列表: [
+          {
+            id: 'q_keep',
+            类别: '本地主线',
+            等级: 'C',
+            标题: '铁炉旧案',
+            方式: '调查',
+            引导: '下城区酒馆接头人',
+            地点: '铁炉堡',
+            摘要: '旧案档案出现缺页',
+            更新日: '复兴纪元488年-5月-20日',
+            预期收益: ['稀有护腕 ×1', '金币 ×200'],
+          },
+        ],
+      },
+    },
+  };
+  const rescanPreserveOut = renderEjs(rescanPreserveFieldStat, {
+    chat: extraChat12,
+    lastUserMessageId: 10,
+    Mvu: { isDuringExtraAnalysis: () => true },
+    source: updateSrc,
+  });
+  assert.match(rescanPreserveOut, /铁炉堡，更新日 复兴纪元488年-5月-20日/, '整表 replace 时应保留同区域 地点 与非剧情保留项 更新日');
+  assert.match(rescanPreserveOut, /引导：下城区酒馆接头人/, '整表 replace 时应保留已接取任务的原始 引导');
+  assert.match(rescanPreserveOut, /写回 `预期收益` 时去掉 `\[n□\]`\/`\[n✓\]`\/`\[n✕\]` 前缀/);
 
   // host 边界回归：空聊天（getLastMessageId=-1）不调用 0--1；readActiveWorldbookInfo 读取人设世界书且排除命定原版规则条目
   const prevGetChat = globalThis.getChatMessages;
@@ -3537,6 +3627,34 @@ test('jsDelivr 远程自动更新脚本：默认 main 追新、多节点回退�
   await assert.rejects(() => ctx1.window.__QuestHelperRemoteLoader.switchRef('missing-tag'));
   assert.equal(storage.get(SCRIPT_REF_KEY), 'v1.4.0');
   assert.equal(ctx1.window.__QuestHelperRemoteLoader.loadedRef, 'v1.4.0');
+
+  // 切换到 eval 顶层抛错的脚本版本时，应回滚配置、重新加载并恢复弹窗、提示错误
+  const origFetch = ctx1.fetch;
+  ctx1.fetch = async (url) => {
+    if (url.includes('@broken-eval/')) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '/* QuestHelperApp */ throw new Error("boom in new build");',
+      };
+    }
+    return origFetch(url);
+  };
+  await assert.rejects(
+    () => ctx1.window.__QuestHelperRemoteLoader.switchRef('broken-eval', { reopen: true }),
+    /boom in new build/,
+  );
+  assert.equal(storage.get(SCRIPT_REF_KEY), 'v1.4.0');
+  assert.equal(ctx1.window.__QuestHelperRemoteLoader.loadedRef, 'v1.4.0');
+  assert.deepEqual(loadedTags, ['main', 'v1.4.0', 'v1.4.0']);
+  assert.equal(openCalls, 2);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /回退 v1\.4\.0/);
+
+  // 切回 DEFAULT_REF（main）时应清空 SCRIPT_REF_KEY 为空串（默认同步最新）
+  const backMain = await ctx1.window.__QuestHelperRemoteLoader.switchRef('main');
+  assert.equal(backMain.ref, 'main');
+  assert.equal(storage.get(SCRIPT_REF_KEY), '');
 
   // 场景 2：启动时保存的自定义版本失效（全节点 404），应自动清除并回退默认 main
   const fallbackStorage = new Map([[SCRIPT_REF_KEY, 'bad-tag']]);

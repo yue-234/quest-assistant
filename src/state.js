@@ -302,6 +302,22 @@ export function lastNonSystemIsAssistant(chat) {
   return null;
 }
 
+/** 统计排除 system 隐藏消息后的有效对话条数（显式传入非 chat.length 的数字时尊重调用方指定值）。 */
+export function effectiveChatCount(chat, fallbackCount = null) {
+  const hasExplicit = fallbackCount !== undefined && fallbackCount !== null && fallbackCount !== ''
+    && Number.isFinite(Number(fallbackCount));
+  const explicitNum = hasExplicit ? Number(fallbackCount) : null;
+  if (Array.isArray(chat) && (explicitNum === null || chat.length === explicitNum)) {
+    let count = 0;
+    for (let i = 0; i < chat.length; i += 1) {
+      const m = chat[i];
+      if (m && !m.is_system) count += 1;
+    }
+    return count;
+  }
+  return explicitNum;
+}
+
 /** 一次重扫请求是否仍然新鲜（尚未经过下一回合消费；额外模型解析期间仍保持锁定）。 */
 export function rescanFresh(pending, current = {}) {
   if (!pending || !Object.keys(pending).length) return false;
@@ -314,7 +330,7 @@ export function rescanFresh(pending, current = {}) {
     ? current.lastIsAssistant
     : lastNonSystemIsAssistant(current.chat);
   const atCount = num(pending['消息数']);
-  const nowCount = num(current.chatCount);
+  const nowCount = num(effectiveChatCount(current.chat, current.chatCount));
   if (atCount !== null && nowCount !== null) {
     if (nowCount <= atCount) return true;
     if (nowCount === atCount + 1) {

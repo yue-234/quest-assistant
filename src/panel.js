@@ -2,7 +2,7 @@
 // 点击操作经 commit.js 写回最新楼层 /事件/任务情报板。
 
 import { DATA, SCRIPT_VERSION } from './data.js';
-import { readState, CORE_NAME, SPEAKER } from './state.js';
+import { readState, effectiveChatCount, CORE_NAME, SPEAKER } from './state.js';
 import {
   toggleQuestIntent,
   cycleQuestRewardState,
@@ -15,7 +15,7 @@ import {
   needsQuestAcceptedRecord,
   maintainQuestBoard,
 } from './actions.js';
-import { commit, extraAnalysisActive, generating, isMvuUpdateEndedFor } from './commit.js';
+import { commit, extraAnalysisActive, generating, isMsgRecvWithinGrace, isMvuUpdateEndedFor } from './commit.js';
 import * as host from './host.js';
 import { ENTRY_MODES, readEntryMode, writeEntryMode } from './entryMode.js';
 import {
@@ -94,8 +94,7 @@ function lastFloor() {
 }
 
 function chatCount() {
-  const chat = chatArray();
-  return chat ? chat.length : null;
+  return effectiveChatCount(chatArray());
 }
 
 function currentStat() {
@@ -321,7 +320,11 @@ function renderContent(state) {
               ui.confirmDeleteTrait = '';
               return run(
                 '已预约重扫',
-                (s) => requestQuestRescan(s, lastFloor(), chatCount(), { nullCore: true }),
+                (s) => requestQuestRescan(s, lastFloor(), chatCount(), {
+                  nullCore: true,
+                  chat: chatArray(),
+                  extraAnalyzing: extraAnalysisActive(),
+                }),
                 { redraw: true },
               );
             },
@@ -343,7 +346,11 @@ function renderContent(state) {
             ui.confirmDeleteTrait = '';
             return run(
               '已预约重扫',
-              (s) => requestQuestRescan(s, lastFloor(), chatCount(), { nullCore: false }),
+              (s) => requestQuestRescan(s, lastFloor(), chatCount(), {
+                nullCore: false,
+                chat: chatArray(),
+                extraAnalyzing: extraAnalysisActive(),
+              }),
               { redraw: true },
             );
           },
@@ -357,7 +364,7 @@ function renderContent(state) {
   // 状态提示
   if (qb.rescanPending) {
     wrap.append(
-      renderNoteCallout('地区情报重扫已预约：下一回合只重扫未锁定的本地主线与支线任务，剧情任务及已锁定任务将原样保留。'),
+      renderNoteCallout('地区情报重扫已预约：下一回合只重扫未锁定的本地主线与支线任务，剧情任务、已接取任务与已锁定任务将原样保留。'),
     );
   } else if (qb.regionChanged) {
     wrap.append(
@@ -836,15 +843,19 @@ function render() {
   const curCount = chatCount();
   const chatSnapshot = chatArray();
 
+  const curChatId = host.readChatId?.() || '';
   const extraAnalyzing = extraAnalysisActive();
   const extraFinished = isMvuUpdateEndedFor({
     chatCount: curCount,
-    chatId: host.readChatId?.() || '',
+    chatId: curChatId,
   });
+  const allowGrace = !extraAnalyzing
+    && !extraFinished
+    && !isMsgRecvWithinGrace({ chatCount: curCount, chatId: curChatId });
   if (
     !sweeping &&
     !generating() &&
-    (questRescanDone(stat, curFloor, curCount, { extraFinished, extraAnalyzing, chat: chatSnapshot })
+    (questRescanDone(stat, curFloor, curCount, { extraFinished, extraAnalyzing, allowGrace, chat: chatSnapshot })
       || hasClosedQuestLeftovers(stat, { chat: chatSnapshot })
       || needsQuestAcceptedRecord(stat)
       || hasExpiredAftermath(stat))
@@ -855,17 +866,22 @@ function render() {
         const liveChat = chatArray();
         const liveFloor = lastFloor();
         const liveCount = chatCount();
+        const liveChatId = host.readChatId?.() || '';
         const liveAnalyzing = extraAnalysisActive();
         const liveExtraFinished = isMvuUpdateEndedFor({
           chatCount: liveCount,
-          chatId: host.readChatId?.() || '',
+          chatId: liveChatId,
         });
+        const liveAllowGrace = !liveAnalyzing
+          && !liveExtraFinished
+          && !isMsgRecvWithinGrace({ chatCount: liveCount, chatId: liveChatId });
         return maintainQuestBoard(statNow, {
           floor: liveFloor,
           chatCount: liveCount,
           chat: liveChat,
           extraFinished: liveExtraFinished,
           extraAnalyzing: liveAnalyzing,
+          allowGrace: liveAllowGrace,
         });
       },
       { core: CORE_NAME, speaker: SPEAKER, redraw: false },
@@ -1121,8 +1137,12 @@ async function applyScriptRef(rawRef) {
     toast('请输入有效的版本号（如 v1.4.3 或 main）', 'err');
     return;
   }
+  const defaultRef = meta.defaultRef || DEFAULT_SCRIPT_REF;
   const targetRef = normalized;
-  if (targetRef === meta.loadedRef && normalized === meta.overrideRef) {
+  if (
+    targetRef === meta.loadedRef
+    && (normalized === meta.overrideRef || (targetRef === defaultRef && !meta.overrideRef))
+  ) {
     toast(`当前已处于版本 ${targetRef}`, 'info');
     return;
   }

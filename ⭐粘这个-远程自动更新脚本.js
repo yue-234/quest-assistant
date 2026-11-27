@@ -106,6 +106,7 @@
     throw new Error(errors.join(' | '));
   }
 
+  let loadedCode = '';
   const remoteState = {
     defaultRef: DEFAULT_REF,
     loadedRef: DEFAULT_REF,
@@ -116,8 +117,9 @@
       const prevOverride = readStorage(REF_STORAGE_KEY);
       const prevLoadedRef = remoteState.loadedRef;
       const prevLoadedOrigin = remoteState.loadedOrigin;
+      const prevLoadedCode = loadedCode;
       const result = await fetchByRef(targetRef);
-      writeStorage(REF_STORAGE_KEY, normalized);
+      writeStorage(REF_STORAGE_KEY, normalized === DEFAULT_REF ? '' : normalized);
       remoteState.loadedRef = result.ref;
       remoteState.loadedOrigin = result.origin;
       const win = parentWindow();
@@ -126,6 +128,7 @@
           win.QuestHelperApp.stop();
         }
         (0, eval)(result.code);
+        loadedCode = result.code;
         if (reopen && win?.QuestHelperApp && typeof win.QuestHelperApp.open === 'function') {
           void win.QuestHelperApp.open();
         }
@@ -134,6 +137,18 @@
         writeStorage(REF_STORAGE_KEY, prevOverride);
         remoteState.loadedRef = prevLoadedRef;
         remoteState.loadedOrigin = prevLoadedOrigin;
+        if (prevLoadedCode) {
+          try {
+            (0, eval)(prevLoadedCode);
+            loadedCode = prevLoadedCode;
+            if (reopen && win?.QuestHelperApp && typeof win.QuestHelperApp.open === 'function') {
+              void win.QuestHelperApp.open();
+            }
+          } catch {
+            /* 旧版重装异常忽略 */
+          }
+        }
+        notifyError(`切换脚本版本 ${result.ref} 失败，已回退 ${prevLoadedRef}：${err && err.message ? err.message : err}`);
         throw err;
       }
     },
@@ -154,6 +169,7 @@
       const result = await fetchByRef(preferredRef);
       remoteState.loadedRef = result.ref;
       remoteState.loadedOrigin = result.origin;
+      loadedCode = result.code;
       (0, eval)(result.code);
       return;
     } catch (firstErr) {
@@ -163,6 +179,7 @@
           const fallback = await fetchByRef(DEFAULT_REF);
           remoteState.loadedRef = fallback.ref;
           remoteState.loadedOrigin = fallback.origin;
+          loadedCode = fallback.code;
           (0, eval)(fallback.code);
           notifyError(`自定义版本 ${customRef} 加载失败，已自动回退到默认版本 ${DEFAULT_REF}`);
           return;

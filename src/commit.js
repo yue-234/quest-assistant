@@ -3,6 +3,8 @@ import { parentWindow } from './host.js';
 
 const QUEUE_KEY = '__questHelperCommitQueue';
 const MVU_END_KEY = '__questHelperMvuEnd';
+const MSG_RECV_KEY = '__questHelperMsgRecv';
+const DEFAULT_MSG_RECV_GRACE_MS = 1800;
 
 /** 记录宿主页最近一次 MVU 变量更新完成信号（供 runtime 与 panel 共享）。 */
 export function recordMvuUpdateEnded(chatCount = null, chatId = '') {
@@ -24,6 +26,50 @@ export function clearMvuUpdateEnded() {
   } catch {
     /* 忽略 */
   }
+}
+
+/** 记录宿主页最近一次消息落楼时间（供 runtime 与 panel 共享宽限期）。 */
+export function recordMsgReceived(chatCount = null, chatId = '') {
+  try {
+    parentWindow[MSG_RECV_KEY] = {
+      chatCount: typeof chatCount === 'number' && Number.isFinite(chatCount) ? chatCount : null,
+      chatId: chatId ? String(chatId) : '',
+      at: Date.now(),
+    };
+  } catch {
+    /* 忽略宿主环境写入异常 */
+  }
+}
+
+/** 清除宿主页上的消息落楼宽限信号。 */
+export function clearMsgReceived() {
+  try {
+    delete parentWindow[MSG_RECV_KEY];
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 返回宿主页消息落楼后的剩余宽限毫秒数（0 表示不在宽限期内）。 */
+export function msgRecvGraceRemainingMs({ chatCount = null, chatId = '', graceMs = DEFAULT_MSG_RECV_GRACE_MS } = {}) {
+  try {
+    const rec = parentWindow[MSG_RECV_KEY];
+    if (!rec || typeof rec !== 'object' || !rec.at) return 0;
+    const curId = chatId ? String(chatId) : '';
+    if (curId && rec.chatId && rec.chatId !== curId) return 0;
+    if (rec.chatCount !== null && typeof chatCount === 'number' && Number.isFinite(chatCount) && rec.chatCount !== chatCount) {
+      return 0;
+    }
+    const elapsed = Date.now() - rec.at;
+    return elapsed >= 0 && elapsed < graceMs ? graceMs - elapsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** 当前是否仍处于消息落楼后的 MVU 额外模型启动宽限期内。 */
+export function isMsgRecvWithinGrace(opts = {}) {
+  return msgRecvGraceRemainingMs(opts) > 0;
 }
 
 /** 判断宿主页记录的 MVU 更新结束事件是否匹配当前聊天与消息数。 */

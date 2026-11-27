@@ -3,7 +3,7 @@
 // 项目地址：https://github.com/yue-234/quest-assistant
 
 import { PANEL_CSS, PANEL_JS } from 'quest-helper:panel';
-import { BOARD_KEY, CORE_NAME, SPEAKER, readState } from './state.js';
+import { BOARD_KEY, CORE_NAME, SPEAKER, effectiveChatCount, readState } from './state.js';
 import {
   hasClosedQuestLeftovers,
   hasExpiredAftermath,
@@ -12,11 +12,14 @@ import {
   maintainQuestBoard,
 } from './actions.js';
 import {
+  clearMsgReceived,
   clearMvuUpdateEnded,
   commit,
   extraAnalysisActive,
   generating,
   isMvuUpdateEndedFor,
+  msgRecvGraceRemainingMs,
+  recordMsgReceived,
   recordMvuUpdateEnded,
 } from './commit.js';
 import { SCRIPT_VERSION } from './data.js';
@@ -157,7 +160,10 @@ export function start() {
     return frame;
   };
 
+  let openSeq = 0;
+
   const hide = () => {
+    openSeq += 1;
     if (!frame) return;
     panelOpened = false;
     frame.style.display = 'none';
@@ -179,6 +185,7 @@ export function start() {
   };
 
   const open = async () => {
+    const mySeq = ++openSeq;
     const el = ensureFrame();
     if (!el) {
       toast('页面还没准备好，稍后再试');
@@ -193,7 +200,7 @@ export function start() {
         panel = null;
       }
       if (!panel) panel = await ready;
-      if (stopped) return;
+      if (stopped || mySeq !== openSeq) return;
       if (!panel) throw new Error('任务情报面板未初始化');
       panel.onClose = hide;
       panel.onEntryModeChange = (nextMode) => mountActiveEntry(nextMode);
@@ -216,7 +223,7 @@ export function start() {
         /* 忽略 */
       }
     } catch (error) {
-      if (stopped) return;
+      if (stopped || mySeq !== openSeq) return;
       panelOpened = false;
       el.remove();
       frame = null;
@@ -249,13 +256,14 @@ export function start() {
     const targetRef = normalized || DEFAULT_SCRIPT_REF;
     const prevOverride = readScriptRef(host.readStorage);
     const prevSelfBoot = win.__QuestHelperSelfBoot;
+    const prevBootstrappedRef = win.__QuestHelperBootstrappedRef;
     const result = await fetchScriptByRef(targetRef, {
       fetchFn: win.fetch || globalThis.fetch,
       readStorage: host.readStorage,
       writeStorage: host.writeStorage,
     });
     if (stopped) return { ref: result.ref, origin: result.origin };
-    writeScriptRef(host.writeStorage, normalized);
+    writeScriptRef(host.writeStorage, normalized === DEFAULT_SCRIPT_REF ? '' : normalized);
     win.__QuestHelperSelfBoot = { ref: result.ref, origin: result.origin };
     win.__QuestHelperBootstrappedRef = result.ref;
     stop();
@@ -268,7 +276,11 @@ export function start() {
       writeScriptRef(host.writeStorage, prevOverride);
       if (prevSelfBoot) win.__QuestHelperSelfBoot = prevSelfBoot;
       else delete win.__QuestHelperSelfBoot;
+      if (prevBootstrappedRef !== undefined) win.__QuestHelperBootstrappedRef = prevBootstrappedRef;
+      else delete win.__QuestHelperBootstrappedRef;
       start();
+      if (reopen) void open();
+      toast(`脚本版本切换失败，已回退原版本：${error && error.message ? error.message : error}`);
       throw error;
     }
     return { ref: result.ref, origin: result.origin };
@@ -360,8 +372,6 @@ export function start() {
   let bgTimer = 0;
   let bgSweeping = false;
   let bgCooldownUntil = 0;
-  let lastMsgRecvAt = 0;
-  let lastMsgRecvCount = null;
   let graceRetry = 0;
 
   const RESCAN_GRACE_MS = 1800;
@@ -375,14 +385,10 @@ export function start() {
     }
   };
 
-  const evalGrace = (curCount, extraFinished, extraAnalyzing) => {
+  const evalGrace = (curCount, extraFinished, extraAnalyzing, curChatId = host.readChatId()) => {
     if (extraAnalyzing || extraFinished) return { allowGrace: false, waitGraceMs: 0 };
-    if (lastMsgRecvAt && (lastMsgRecvCount === null || lastMsgRecvCount === curCount)) {
-      const elapsed = Date.now() - lastMsgRecvAt;
-      if (elapsed < RESCAN_GRACE_MS) {
-        return { allowGrace: false, waitGraceMs: RESCAN_GRACE_MS - elapsed + 50 };
-      }
-    }
+    const rem = msgRecvGraceRemainingMs({ chatCount: curCount, chatId: curChatId, graceMs: RESCAN_GRACE_MS });
+    if (rem > 0) return { allowGrace: false, waitGraceMs: rem + 50 };
     return { allowGrace: true, waitGraceMs: 0 };
   };
 
@@ -427,11 +433,11 @@ export function start() {
 
     const chatSnapshot = readHostChat();
     const curFloor = readHostFloor();
-    const curCount = chatSnapshot ? chatSnapshot.length : null;
+    const curCount = effectiveChatCount(chatSnapshot);
     const curChatId = host.readChatId();
     const extraAnalyzing = extraAnalysisActive();
     const extraFinished = isMvuUpdateEndedFor({ chatCount: curCount, chatId: curChatId });
-    const { allowGrace, waitGraceMs } = evalGrace(curCount, extraFinished, extraAnalyzing);
+    const { allowGrace, waitGraceMs } = evalGrace(curCount, extraFinished, extraAnalyzing, curChatId);
 
     const needClearRescan = questRescanDone(stat, curFloor, curCount, {
       extraFinished,
@@ -462,11 +468,11 @@ export function start() {
           // 在写锁回调内重读最新宿主页快照，防止排队期间聊天与分析状态变化
           const liveChat = readHostChat();
           const liveFloor = readHostFloor();
-          const liveCount = liveChat ? liveChat.length : null;
+          const liveCount = effectiveChatCount(liveChat);
           const liveChatId = host.readChatId();
           const liveAnalyzing = extraAnalysisActive();
           const liveExtraFinished = isMvuUpdateEndedFor({ chatCount: liveCount, chatId: liveChatId });
-          const liveGrace = evalGrace(liveCount, liveExtraFinished, liveAnalyzing).allowGrace;
+          const liveGrace = evalGrace(liveCount, liveExtraFinished, liveAnalyzing, liveChatId).allowGrace;
           return maintainQuestBoard(statNow, {
             floor: liveFloor,
             chatCount: liveCount,
@@ -504,12 +510,12 @@ export function start() {
 
   const scheduleMaintenance = (fromMvuEnd = false) => {
     const snap = readHostChat();
-    const curCount = snap ? snap.length : null;
+    const curCount = effectiveChatCount(snap);
+    const curChatId = host.readChatId();
     if (fromMvuEnd) {
-      recordMvuUpdateEnded(curCount, host.readChatId());
+      recordMvuUpdateEnded(curCount, curChatId);
     } else {
-      lastMsgRecvAt = Date.now();
-      lastMsgRecvCount = curCount;
+      recordMsgReceived(curCount, curChatId);
       graceRetry = 0;
     }
     const delay = bgSweeping ? 500 : Math.max(600, bgCooldownUntil - Date.now() + 50);
@@ -522,8 +528,7 @@ export function start() {
   if (stEvents && stEvents.CHAT_CHANGED) {
     listen(stEvents.CHAT_CHANGED, () => {
       clearTimeout(bgTimer);
-      lastMsgRecvAt = 0;
-      lastMsgRecvCount = null;
+      clearMsgReceived();
       graceRetry = 0;
       clearMvuUpdateEnded();
       close();
@@ -532,11 +537,21 @@ export function start() {
   }
   const onPassiveRefresh = () => {
     clearTimeout(bgTimer);
-    lastMsgRecvAt = 0;
-    lastMsgRecvCount = null;
+    clearMsgReceived();
     graceRetry = 0;
     clearMvuUpdateEnded();
     syncEntryUnread();
+    // 若重Roll/删楼前已有 待重扫，宽限后补跑一次过期清理，避免遗留孤儿标记
+    try {
+      const pending = host.readStat?.()?.['事件']?.[BOARD_KEY]?.['待重扫'];
+      if (pending && typeof pending === 'object' && Object.keys(pending).length) {
+        bgTimer = setTimeout(() => {
+          void runQuestBoardMaintenance();
+        }, 2200);
+      }
+    } catch {
+      /* 忽略 */
+    }
   };
   listen(stEvents && stEvents.MESSAGE_RECEIVED ? stEvents.MESSAGE_RECEIVED : 'message_received', () => scheduleMaintenance(false));
   listen('mag_variable_update_ended', () => scheduleMaintenance(true));
