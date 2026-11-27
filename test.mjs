@@ -753,30 +753,46 @@ test('区域与世界词条持久化：按当前区域精准注入、异区 0 �
   assert.doesNotMatch(outNone, /当前词条（持续生效的客观现状）/);
   assert.match(outNone, /区域与世界词条:/);
   assert.match(outNone, /\[绿\/黄\/红\]【2~6字短标签】30~50字客观现状/);
-  assert.match(outNone, /默认写入 3 条常驻词条/);
-  assert.match(outNone, /分属不同维度.*彼此逻辑自洽，不重复、不自相矛盾/);
-  assert.match(outNone, /禁止 3 绿、3 黄、3 红/);
-  assert.match(outNone, /不得每区机械套用 1 绿 1 黄 1 红/);
-  assert.match(outNone, /当地正有短期活动时应先写满 3 条常驻词条，再额外追加 1~2 条限时词条/);
-  assert.match(outNone, /离开满 14 天/);
-  assert.match(outNone, /明确剧情变故、已到期的预告事件/);
+  assert.doesNotMatch(outNone, /默认写入 3 条常驻词条/, 'maintain 常规停留不应冗余注入初始 3 条词条规则');
+  assert.doesNotMatch(outNone, /离开满 14 天/, 'maintain 常规停留不应冗余注入 14 天重返规则');
   assert.match(outNone, /禁止以 <user> 或冒险者为主语写战绩记录/);
   assert.match(outNone, /支线任务与日常琐事不改写词条/);
   assert.match(outNone, /非任务的重大剧情与事件链变故（如敌对势力袭击城镇/);
   assert.match(outNone, /并随局势同步升降色阶（恶化转黄或升红，好转降黄或转绿/);
   assert.match(outNone, /发生重大剧情或事件链变故时按规则更新区域或世界词条/);
   assert.match(outNone, /`世界` 词条同样使用 `\[绿\/黄\/红\]` 色阶，不默认生成，仅剧情任务或重大剧情与事件链引发的跨大区或全大陆级重大后果允许写入或改写 `世界`/);
-  assert.match(outNone, /保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」/);
+  assert.match(outNone, /严禁整块覆写 `\/事件` 或 `\/事件\/任务情报板`/);
   assert.match(outNone, /"op": "insert", "path": "\/事件\/任务情报板\/余波"/);
 
-  // 1.5) init 与 relocate 且当前区域无词条时，本轮指令提示写入 3 条差异化色阶初始区域词条并记录区域访问日
+  // 1.5) init 与 relocate 且当前区域无词条时，注入初始 3 条差异化色阶与叠加限时规则，并提示记录区域访问日
   const outInit = renderEjs({
     世界: { 地点: '霜语城-港口', 时间: '复兴纪元488年-3月-11日-10:00' },
     事件: {},
   });
   assertCleanOutput(outInit, 'aftermath-init-hint');
+  assert.match(outInit, /默认写入 3 条常驻词条/);
+  assert.match(outInit, /分属不同维度.*彼此逻辑自洽，不重复、不自相矛盾/);
+  assert.match(outInit, /禁止 3 绿、3 黄、3 红/);
+  assert.match(outInit, /不得每区机械套用 1 绿 1 黄 1 红/);
+  assert.match(outInit, /当地正有短期活动时应先写满 3 条常驻词条，再额外追加 1~2 条限时词条/);
   assert.match(outInit, /为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时另行额外叠加 1~2 条限时词条）并记录区域访问日/);
   assert.match(outInit, /"区域访问日": \{ "港口": "复兴纪元488年-3月-11日" \}/);
+
+  // 1.6) relocate 返回旧区域时，保留字段清单与 14 天重返规则均应注入
+  const outRelocBack = renderEjs({
+    世界: { 地点: '雾晶港-码头', 时间: '复兴纪元488年-3月-28日-10:00' },
+    事件: {
+      任务情报板: {
+        ...baseBoard,
+        余波: { 雾晶港: ['[绿]【港口畅通】商船往来频繁。'] },
+        区域访问日: { 雾晶港: '复兴纪元488年-3月-10日' },
+      },
+    },
+  });
+  assertCleanOutput(outRelocBack, 'aftermath-reloc-back');
+  assert.match(outRelocBack, /离开满 14 天/);
+  assert.match(outRelocBack, /明确剧情变故、已到期的预告事件/);
+  assert.match(outRelocBack, /保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」/);
 
   const outRelocateNoTrait = renderEjs({
     世界: { 地点: '瓦伦蒂亚-城门广场', 时间: '复兴纪元488年-3月-11日-10:00' },
@@ -1215,10 +1231,10 @@ test('剧情追加规则与参考配额非硬上限断言', () => {
   const out = renderEjs(stat);
   assertCleanOutput(out, 'story-on-wall');
   assert.match(out, /剧情追加/);
-  assert.match(out, /不受默认参考配额限制/);
+  assert.match(out, /不受参考配额限制/);
   assert.match(out, /\/事件\/任务情报板\/列表\/-/);
-  assert.match(out, /优先按体量定级为「剧情任务」/);
-  assert.match(out, /剧情任务与本地主线附带后台隐藏 `真相`/);
+  assert.match(out, /按体量定级：剧情任务/);
+  assert.match(out, /剧情任务与本地主线附加 `真相`/);
   assert.match(out, /下列条数为自动生成与补缺的参考配额，非硬上限/);
 });
 
@@ -1266,7 +1282,7 @@ test('EJS 长线波折结构（maintain）：波折节拍、失败前进、禁�
   assert.doesNotMatch(out, /生成规格/);
   assert.match(out, /已接取的剧情任务按跨城\/跨大区三段式长线推进/);
   assert.match(out, /波折节拍:/);
-  assert.match(out, /按 `预期收益` 累计已结算份额（已兑现与已失效合计，栏位按高价值在前、基础在后排布）控制节奏/);
+  assert.match(out, /按 `预期收益` 累计已结算份额（已兑现与已失效合计，栏位高价值在前、基础在后）控制节奏/);
   assert.match(out, /NPC 不首轮揭示 `真相`/);
   assert.match(out, /中段（累计已结算 3~6 栏 \/ 本地主线 2~3 栏份额）触发旧线索重新解释或第三方争夺筹码/);
   assert.match(out, /终局前（累计已结算 7~9 栏 \/ 本地主线 4 栏份额）触发不可逆代价取舍/);
@@ -1701,16 +1717,16 @@ test('EJS 收益高→低分层、4 档失败折损、追回边界与 [n✓]/[n�
 
   // 4 档折损规则与边界口径
   assert.match(maintainOut, /折损与失效: 剧情任务与本地主线（剧情 1~3 核心 \/ 4~7 中坚 \/ 8~10 基础，本地主线 1 \/ 2~3 \/ 4~5）/);
-  assert.match(maintainOut, /已标记 `\[✓\]` 的栏位不转为失效/);
-  assert.match(maintainOut, /轻度折损划除剧情 2 栏（中坚 1 栏与基础 1 栏）或本地主线 1 栏（中坚优先）/);
+  assert.match(maintainOut, /已标记 `\[✓\]` 不转为失效/);
+  assert.match(maintainOut, /轻度折损划除剧情 2 栏（中坚 1 \+ 基础 1）或本地主线 1 栏（中坚优先）/);
   assert.match(maintainOut, /层级与串联: 任务中正面敌对、主动攻击或追杀 <user> 的角色，生命层级不得超过任务对应层级（D一层\/C二层\/B三层\/A四层\/S五层）/);
   assert.match(maintainOut, /如果 <user> 主动挑衅、袭击或强闯高于本任务等级的人物与核心禁地，对方按真实生命层级反击/);
   assert.match(maintainOut, /高于任务等级的人物与势力仅作为背景存在、幕后授意者或线索来源（不主动下场攻击），任务推进或完结时可借他们留下的动向或线索，按「剧情追加」引出高一级的新任务/);
   assert.match(maintainOut, /中度折损划除剧情 2~3 栏或本地主线 2 栏，跨层混合（核心层保留至少 1 栏，也不只划基础）/);
-  assert.match(maintainOut, /重度折损（濒临失败转入止损）划至剧情仅留 2~3 栏、本地主线仅留 1~2 栏，优先剥离核心与大部分中坚，仅留基础栏位或次要补给/);
-  assert.match(maintainOut, /彻底失败将全部剩余 `\[□\]` 栏位视为失效，零新收益结案、直接移出 `\/任务列表` 与任务情报板并写入对应 `\[黄\/红\]` 词条，无需再更新进展或写 `失效Patch`/);
-  assert.match(maintainOut, /标记 `\[✕\]` 失效的栏位本任务不再发放，剩余有效 `\[□\]` 栏位照常分批兑现/);
-  assert.match(maintainOut, /如果 <user> 后续在剧情外另行设法追回对应物件，按正常剧情逻辑判定成败，不得因曾标记 `\[✕\]` 而强行判定失败/);
+  assert.match(maintainOut, /重度折损（濒临失败转入止损）划至剧情仅留 2~3 栏、本地主线仅留 1~2 栏，优先剥离核心与大部中坚，仅留基础栏位或次要补给/);
+  assert.match(maintainOut, /彻底失败将剩余 `\[□\]` 全部视为失效，零新收益结案、直接移出 `\/任务列表` 与任务情报板并写入 `\[黄\/红\]` 词条，无需更新进展或写 `失效Patch`/);
+  assert.match(maintainOut, /标记 `\[✕\]` 的栏位本任务不再发放，剩余有效 `\[□\]` 照常兑现/);
+  assert.match(maintainOut, /如果 <user> 后续在剧情外另行设法追回对应物件，按正常剧情判定成败，不得因曾标记 `\[✕\]` 而强行判定失败/);
   assert.match(maintainOut, /无需再写 `兑现Patch` 或 `失效Patch`/);
   assert.match(maintainOut, /发生折损失效时按 `失效Patch` 写入/);
 
@@ -1820,6 +1836,62 @@ test('EJS 收益高→低分层、4 档失败折损、追回边界与 [n✓]/[n�
       '[10✕]双键失效丙',
     ],
   );
+});
+
+test('EJS 安全版日常条件门控：0 接取/仅支线/原版活跃任务护栏与 Token 瘦身验证', () => {
+  const boardItems = [
+    { id: 'q1', 类别: '剧情任务', 等级: 'B', 标题: '银月长线', 方式: '危机', 摘要: '港口传闻', 真相: '暗中转运', 更新日: '488年-6月-24日', 预期收益: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'] },
+    { id: 'q2', 类别: '本地主线', 等级: 'C', 标题: '防波堤蟹潮', 方式: '委托', 摘要: '清理巨钳蟹', 真相: '泄漏晶簇', 预期收益: ['1', '2', '3', '4', '5'] },
+    { id: 'q3', 类别: '支线任务', 等级: 'D', 标题: '校准风向仪', 方式: '委托', 摘要: '灯塔校准', 预期收益: ['1', '2', '3'] },
+    { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '收集旧图谱', 方式: '探索', 摘要: '补全图谱', 预期收益: ['1', '2', '3'] },
+    { id: 'q5', 类别: '支线任务', 等级: 'D', 标题: '清点货箱', 方式: '委托', 摘要: '核对货单', 预期收益: ['1', '2', '3'] },
+    { id: 'q6', 类别: '支线任务', 等级: 'D', 标题: '修补缆绳', 方式: '委托', 摘要: '修补绳索', 预期收益: ['1', '2', '3'] },
+  ];
+  const baseStat = (formalTasks = {}) => ({
+    世界: { 地点: '雾晶港-巨浪港区', 时间: '复兴纪元488年-6月-24日' },
+    任务列表: formalTasks,
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        更新日: '488年-6月-24日',
+        区域访问日: { 雾晶港: '488年-6月-24日' },
+        列表: boardItems,
+        余波: {
+          雾晶港: [
+            '[绿]【法环护持】城墙魔导法环稳定运行。',
+            '[黄]【海雾残渣】外港残留偏高。',
+            '[黄]【黑市暗涌】旧货交易增多。',
+          ],
+        },
+      },
+    },
+  });
+
+  // 1) 0 接取、无提及闲聊：大幅瘦身（<2200 字符），关闭波折/折损/默认3条/14天重返/锁定与换区，但保留层级护栏与双红线
+  const outIdle = renderEjs(baseStat({}));
+  assertCleanOutput(outIdle, 'gating-idle');
+  assert.ok(outIdle.length < 2200, `0 接取日常渲染应瘦身至 2200 字符以内，实际为 ${outIdle.length}`);
+  assert.match(outIdle, /层级护栏:/);
+  assert.match(outIdle, /严禁整块覆写 `\/事件` 或 `\/事件\/任务情报板`/);
+  assert.match(outIdle, /剧情追加:/);
+  assert.match(outIdle, /未接取支线单回合接取并完结时从 `\/事件\/任务情报板\/列表` 移除/);
+  assert.doesNotMatch(outIdle, /波折节拍:|折损与失效:|默认写入 3 条常驻词条|离开满 14 天|锁定与换区:/);
+
+  // 2) 仅 1 条支线已接取：关闭波折/演化/4档折损，但保留支线节奏、层级与串联及分批兑现
+  const outSideOnly = renderEjs(baseStat({ 校准风向仪: { 状态: '进行中' } }));
+  assertCleanOutput(outSideOnly, 'gating-side-only');
+  assert.match(outSideOnly, /支线任务限本区单点闭环直接推进，不设反转/);
+  assert.match(outSideOnly, /层级与串联:/);
+  assert.match(outSideOnly, /分批兑现:/);
+  assert.doesNotMatch(outSideOnly, /波折节拍:|演化与完结:|折损与失效:/);
+
+  // 3) 板上 0 接取但原版 /任务列表 有未上墙进行中任务：护栏生效，开启完整 推进与兑现
+  const outFormalOnly = renderEjs(baseStat({ 学院突发委托: { 状态: '进行中', 进展: '正在调查' } }));
+  assertCleanOutput(outFormalOnly, 'gating-formal-only');
+  assert.match(outFormalOnly, /波折节拍:/);
+  assert.match(outFormalOnly, /折损与失效:/);
+  assert.match(outFormalOnly, /层级与串联:/);
 });
 
 test('EJS 待演进确定性分层抽签：4 阶段全覆盖、Patch 分支与非 10 栏老存档降级', () => {
@@ -2665,7 +2737,7 @@ test('构建产物 ⭐粘这个-任务助手脚本.js、.txt、dist/quest-assist
   const wbJson = JSON.parse(fs.readFileSync(builtWorldbookPath, 'utf8'));
   assert.equal(txtCode, code, '⭐粘这个-任务助手脚本.txt 应与 .js 产物完全一致');
   assert.equal(distCode, code, 'dist/quest-assistant.js 应与 .js 产物完全一致');
-  assert.equal(wbJson?.entries?.['0']?.comment, '任务助手v1.4.7');
+  assert.equal(wbJson?.entries?.['0']?.comment, '任务助手v1.4.8');
   assert.equal(wbJson?.entries?.['0']?.constant, true);
   assert.equal(wbJson?.entries?.['0']?.disable, false);
   assert.equal(wbJson?.entries?.['0']?.content, ejsSource.replace(/\r\n/g, '\n'));
@@ -2679,7 +2751,7 @@ test('构建产物 ⭐粘这个-任务助手脚本.js、.txt、dist/quest-assist
   assert.match(code, /quest_helper_entry_mode_v1/);
   assert.match(code, /quest_helper_script_ref_v1/);
   assert.match(code, /v1\.4\.0/);
-  assert.match(code, /v1\.4\.7/);
+  assert.match(code, /v1\.4\.8/);
   assert.doesNotThrow(() => new Function(code), '产物必须通过 new Function 语法校验');
   assert.doesNotThrow(() => new Function(`"use strict";\n${code}`), '产物必须兼容严格模式 / ES Module import');
 });

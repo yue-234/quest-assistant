@@ -372,8 +372,15 @@ export function start() {
       syncEntryUnread();
     });
   }
+  const onPassiveRefresh = () => {
+    clearTimeout(bgTimer);
+    syncEntryUnread();
+  };
   listen(events && events.MESSAGE_RECEIVED ? events.MESSAGE_RECEIVED : 'message_received', scheduleMaintenance);
   listen('mag_variable_update_ended', scheduleMaintenance);
+  listen(events && events.MESSAGE_SWIPED ? events.MESSAGE_SWIPED : 'message_swiped', onPassiveRefresh);
+  listen(events && events.MESSAGE_EDITED ? events.MESSAGE_EDITED : 'message_edited', onPassiveRefresh);
+  listen(events && events.MESSAGE_DELETED ? events.MESSAGE_DELETED : 'message_deleted', onPassiveRefresh);
 
   const stop = () => {
     stopped = true;
