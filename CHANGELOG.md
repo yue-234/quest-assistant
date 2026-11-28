@@ -6,21 +6,29 @@
 
 ## 2026-11-28
 
-### 待发版（`main` 分支阶段性调整，尚未打包交付物）
+### `v1.4.12`（`f72b0fc` ~ 本次发版）
 
 #### 重要更新
-- **【移除 MVU 额外模型支持，统一双 `[mvu_plot]` 子条目主模型注入】**【需更新世界书】【需更新脚本】：
-  - 彻底移除 MVU「额外模型更新变量」通路，保留双子条目导出架构（`uid: 0` `[mvu_plot]任务助手-剧情引导`、`order: 1150` 与 `uid: 1` `[mvu_plot]任务助手-变量更新`、`order: 99999`），统一使用 `[mvu_plot]` 随主模型注入，彻底规避部分预设总结模块收集 `[mvu_update]` 整表内容构建正则导致 `Regular expression too large` 报错的问题。
+- **【移除 MVU 额外模型支持，统一双 `[mvu_plot]` 子条目主模型注入】**（`8705a4d` ~ `2c55612`）【需更新世界书】【需更新脚本】：
+  - 彻底移除 MVU「额外模型更新变量」通路，保留双子条目导出架构（`uid: 0` `[mvu_plot]任务助手-剧情引导v1.4.12`、`order: 1150` 与 `uid: 1` `[mvu_plot]任务助手-变量更新v1.4.12`、`order: 99999`），统一使用 `[mvu_plot]` 随主模型注入，彻底规避部分预设总结模块收集 `[mvu_update]` 整表内容构建正则导致 `Regular expression too large` 报错的问题。
   - `src/scriptRef.js` 调整 `detectEntryRole` 优先级（加入正文 `<任务情报板>`/`<任务情报板变量更新协议>` 结构启发式兜底）、导出 `worldbookCompatibilityBadge` 并新增 `legacy_mvu_update` 兼容告警与顺位优化，检测旧版含 `[mvu_update]` 前缀的条目时自动提醒迁移。
   - 精简 `commit.js`、`state.js`、`actions.js`、`runtime.js`、`panel.js` 及 `任务助手-世界书.ejs`，移除 `extraAnalysisActive`、`1800ms` 额外模型宽限轮询、`nc+2` 与 `isDuringExtraAnalysis()` 判定，改为轻量 1200ms 主回复防抢跑缓冲（结合 `VARIABLE_UPDATE_ENDED` / `mag_variable_update_ended` 在主模型 `<UpdateVariable>` 解析完后即刻唤醒）；`update` 子条目同步开启防剧透与「正文正面推进，不提前点破引信」限制（仅 `若本轮结案留种` 保留客观矛盾 JSON）。
+- **【新增轻量「关注方向」、四大骨架避重轮盘与「假象余震 / 因果后续」导演闭环】**（`f72b0fc` ~ `f8d9758`）【需更新世界书】【需更新脚本】：
+  - 重扫悬浮面板新增「仅本次 / 长期」轻量 `关注方向` 引导，支持移动端安全视口、回车/输入法防误触与单次消费自动清理。
+  - 剧情任务与本地主线新增 `【悬疑反转】`/`【多方竞速】`/`【灾变探索】`/`【护送破局】` 四大骨架轮换，并引入一阶段物理盲演、隐形 `导演状态` 引信截获、3 步冷却隔离及过期自动清理。
 
-#### 优化与修复
-- **【双 `[mvu_plot]` 沙盘去重与多轮审计回归修复】**【需更新世界书】【需更新脚本】：
-  - 修复 `runtime.js` `refreshOpenPanel` 未定义导致后台维护后异常与面板不刷新问题，恢复 `graceRetry < 60` 阶梯退避，补齐 `onSwipeRefresh`/`onPassiveRefresh` 全量待清理项检查与 `MESSAGE_DELETED` / 删楼重发防抢跑穿透清理；修复 `panel.js` 设置页 `legacy_mvu_update` 与 `缺少 [mvu_plot] 标签` 徽章展示。
-  - 优化双 `[mvu_plot]` 联动输出：移除 `生成规格` 中残留的 `_emitPlot` 死门控，并在 `update` 非整表重置轮省略重复词条正文、`摘要`、`幕后真相` 与三步阶梯抄写（日常维护降幅达百余至三百余字符），同步在 `rescan` 写板后引导移除 `/事件/任务情报板/待重扫`。
+#### 优化
+- **【双 `[mvu_plot]` 去重瘦身与三轮语体标准化收口】**（`8b8c69f` ~ `2c55612`）【需更新世界书】：
+  - 在 `update` 非整表重置轮省略重复词条正文、`摘要`、`幕后真相` 与三步阶梯抄写（常规维持净减百余至 350 字符），同步清理 `生成规格` 死门控并完成三轮全篇去古风、口语清理与跨路径合并提示收敛。
+
+#### 修复
+- **【前端时序防抢跑、兼容诊断与面板/导演边界修复】**（`8b8c69f` ~ `2c55612`）【需更新脚本】：
+  - 修复 `runtime.js` `refreshOpenPanel` 未定义问题，恢复 `graceRetry < 60` 阶梯退避，补齐 `onSwipeRefresh` / `onPassiveRefresh` 全量待清理检查与删楼重发同 `chatCount` 防抢跑穿透清理；修复 `panel.js` 设置页 `legacy_mvu_update` 与 `缺少 [mvu_plot] 标签` 徽章展示。
+  - 修复队列级 `swipe` 锁、多前缀标签剥离、顺序无关余震冷却与僵尸导演状态死循环等回归问题，在 `rescan` 写板后补充引导移除 `/事件/任务情报板/待重扫`。
 
 #### 其他
-- **【额外模型还原备份与文档同步】**：新增 [额外模型支持还原参考备份](docs/extra-analysis-backup.md) 记录基线提交 `34ea146` 与还原清单；同步更新 `README.md`、`使用说明.md`、[提示词写作与古风清理](docs/archaic-wording-cleanup.md) 与 `test.mjs` 回归用例。
+- **【额外模型还原备份、回归测试扩展与 `v1.4.12` 正式打包】**（`8705a4d` ~ 本次发版）：
+  - 新增 [额外模型支持还原参考备份](docs/extra-analysis-backup.md) 记录基线提交 `34ea146` 与还原清单，更新 [README.md](README.md)、[使用说明.md](使用说明.md)、[AGENTS.md](AGENTS.md) 与 [提示词写作与古风清理](docs/archaic-wording-cleanup.md)，清理旧版 `命定任务助手世界书v1.4.11.json` 并完成 `v1.4.12` 全量脚本及 [命定任务助手世界书v1.4.12.json](命定任务助手世界书v1.4.12.json) 打包发布。
 
 ---
 

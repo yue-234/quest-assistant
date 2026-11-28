@@ -3,7 +3,7 @@
 这是「任务助手（Quest Assistant）」独立通用插件仓库，面向「命定之诗与黄昏之歌」，不绑定特定核心。
 
 - **核心入口**：
-  - 世界书条目：[任务助手-世界书.ejs](任务助手-世界书.ejs)（交付导入 JSON 按版本命名为 `命定任务助手世界书v1.x.x.json`，当前为 [命定任务助手世界书v1.4.11.json](命定任务助手世界书v1.4.11.json)）
+  - 世界书条目：[任务助手-世界书.ejs](任务助手-世界书.ejs)（交付导入 JSON 按版本命名为 `命定任务助手世界书v1.x.x.json`，当前为 [命定任务助手世界书v1.4.12.json](命定任务助手世界书v1.4.12.json)）
   - 前端源码：[src/](src/)（构建产物为 [⭐粘这个-任务助手脚本.js](⭐粘这个-任务助手脚本.js)、[⭐粘这个-任务助手脚本.txt](⭐粘这个-任务助手脚本.txt) 与 CDN 分发产物 [dist/quest-assistant.js](dist/quest-assistant.js)；远程加载壳为 [⭐粘这个-远程自动更新脚本.js](⭐粘这个-远程自动更新脚本.js)）
   - 构建、测试与 CDN 工具：[build.mjs](build.mjs)、[test.mjs](test.mjs)、[tools/purge-cdn.mjs](tools/purge-cdn.mjs)
   - 更新日志与文档：[CHANGELOG.md](CHANGELOG.md)、[README.md](README.md)、[使用说明.md](使用说明.md)
