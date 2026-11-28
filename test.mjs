@@ -3306,7 +3306,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.doesNotMatch(updateOut, /^variables_update_rules:/m);
   assert.doesNotMatch(updateOut, /波折节拍:|演化与完结:|层级与串联:|层级护栏:/);
   assert.match(updateOut, /潮汐后续/);
-  assert.match(updateOut, /启动地区情报重扫：保留剧情任务、已接取与 `★已锁定` 项，按当前区域重新生成 1~2 条本地主线 \+ 2~3 条支线任务/);
+  assert.match(updateOut, /启动地区情报重扫：先为当前区域写入 3 条差异化色阶的初始常驻词条.*并记录区域访问日；随后保留剧情任务、已接取与 `★已锁定` 项，按当前区域重新生成 1~2 条本地主线 \+ 2~3 条支线任务/);
   assert.match(updateOut, /没有剧情任务时补 1 条剧情任务/);
   assert.match(updateOut, /为当前区域写入 3 条差异化色阶的初始常驻词条/);
   assert.match(updateOut, /"op": "remove", "path": "\/事件\/任务情报板\/待重扫"/);
@@ -4924,4 +4924,85 @@ test('三轮收口回归：toastr.ok映射、入队队列级swipe锁、额外键
     if (savedCommitGlobals.getComputedStyle === undefined) delete globalThis.getComputedStyle;
     else globalThis.getComputedStyle = savedCommitGlobals.getComputedStyle;
   }
+});
+
+test('先词条后任务生成顺序与假象余震/悬疑反转互斥强约束', () => {
+  const plotSrc = ejsSource.replace("const _wbRole = 'all';", "const _wbRole = 'plot';").replace('// @role all', '// @role plot');
+  const updateSrc = ejsSource.replace("const _wbRole = 'all';", "const _wbRole = 'update';").replace('// @role all', '// @role update');
+
+  // 1) init 模式：先于任务列表写词条 + JSON 模板中 "余波" 位于 "列表" 之前 + 本轮指令先写词条再生成任务 + 避免复述摘要
+  const initHitStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-1日-12:00' },
+    事件: {},
+  };
+  const initUpdateOut = renderEjs(initHitStat, { source: updateSrc });
+  assertCleanOutput(initUpdateOut, 'aftermath-first-init');
+  assert.match(initUpdateOut, /先于任务列表按当前世界书设定与近期剧情为当前区域默认写入 3 条常驻词条/);
+  assert.match(initUpdateOut, /不复述待生成任务摘要/);
+  assert.match(initUpdateOut, /"余波": \{ "雾晶港": \[ "\[绿\/黄\/红\]【短标签】\.\.\." \] \}, "列表": \[ \.\.\. \]/);
+  assert.match(initUpdateOut, /本轮先写出本区 `余波` 词条，再从其中 `\[黄\]\/\[红\]` 词条展开任务，避免任务摘要与词条内容同义复述/);
+  assert.match(initUpdateOut, /首次初始化任务情报板：先为当前区域写入 3 条差异化色阶的初始常驻词条.*，并记录区域访问日；再生成 1 条剧情任务 \+ 1~2 条本地主线 \+ 2~3 条支线任务/);
+
+  // 2) _allowAftershockSlot === true 时：附加骨架处与稀缺伏笔槽双向封堵 【悬疑反转】 与 ｜余震引信： 混用
+  assert.match(initUpdateOut, /若对某条 `本地主线` 启用下方「稀缺伏笔槽」则改以 `【假象余震】` 开头且禁止选用 `【悬疑反转】`/);
+  assert.match(initUpdateOut, /稀缺伏笔槽（本轮至多 1 条本地主线可选）: 若为 1 条新建 `本地主线` 启用一阶段伏笔，其 `真相` 必须以 `【假象余震】` 开头（可单用，或搭配 `【多方竞速】`\/`【灾变探索】`\/`【护送破局】`），禁止与 `【悬疑反转】` 同用/);
+  assert.match(initUpdateOut, /第一阶段不设 ①表里落差 与隐瞒反转/);
+  assert.match(initUpdateOut, /未以 `【假象余震】` 开头的任务（含选用 `【悬疑反转】` 的任务、全部 `剧情任务` 与 `支线任务`），均禁止附带 `｜余震引信：`/);
+
+  // plot 子条目严格静默，不注入变量写板模板、先词条指令与稀缺伏笔槽
+  const initPlotOut = renderEjs(initHitStat, { source: plotSrc });
+  assert.equal((initPlotOut.match(/\*\*[^*]+\*\*/g) || []).length, 0);
+  assert.doesNotMatch(initPlotOut, /稀缺伏笔槽|余震引信|首次初始化任务情报板/);
+
+  // 3) _allowAftershockSlot === false 时：附加骨架提示与稀缺伏笔槽均 0 注入
+  const initMissOut = renderEjs({
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-2日-12:00' },
+    事件: {},
+  }, { source: updateSrc });
+  assertCleanOutput(initMissOut, 'aftershock-slot-off');
+  assert.doesNotMatch(initMissOut, /稀缺伏笔槽|若对某条 `本地主线` 启用下方「稀缺伏笔槽」|余震引信/);
+
+  // 4) relocate 与 rescan 在本区无词条时同样先写词条再生成任务；已有词条的 refill 不注入先写词条提示
+  const relocateNewOut = renderEjs({
+    世界: { 地点: '瓦伦蒂亚-码头', 时间: '复兴纪元488年-6月-1日-12:00' },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        更新日: '复兴纪元488年-5月-20日',
+        列表: [{ id: 'q1', 类别: '剧情任务', 等级: 'A', 标题: '潮汐长线', 方式: '调查', 预期收益: ['史诗杖 ×1'] }],
+      },
+    },
+  }, { source: updateSrc });
+  assertCleanOutput(relocateNewOut, 'aftermath-first-relocate');
+  assert.match(relocateNewOut, /已跨区域迁入「瓦伦蒂亚」（原「雾晶港」）：先为当前区域写入 3 条差异化色阶的初始常驻词条.*，并记录区域访问日；随后保留下方现有项.*按新区生成/);
+
+  const rescanNoTraitOut = renderEjs({
+    世界: { 地点: '铁炉堡-东区', 时间: '复兴纪元488年-6月-1日-12:00' },
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        更新日: '复兴纪元488年-5月-20日',
+        待重扫: { 楼层: '4', 消息数: '5' },
+        列表: [{ id: 'q1', 类别: '支线任务', 等级: 'D', 标题: '旧委托', 方式: '委托', 预期收益: ['金币 ×40'] }],
+      },
+    },
+  }, { chat: new Array(6).fill({}), lastUserMessageId: 5, source: updateSrc });
+  assertCleanOutput(rescanNoTraitOut, 'aftermath-first-rescan');
+  assert.match(rescanNoTraitOut, /启动地区情报重扫：先为当前区域写入 3 条差异化色阶的初始常驻词条.*，并记录区域访问日；随后当前没有需保留的旧任务/);
+
+  const refillHasTraitOut = renderEjs({
+    世界: { 地点: '铁炉堡-商业街', 时间: '复兴纪元488年-6月-1日-12:00' },
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        余波: { 铁炉堡: ['[绿]【矿脉稳产】南区高炉运转平稳。'] },
+        列表: [{ id: 'q1', 类别: '支线任务', 等级: 'D', 标题: '运煤', 方式: '委托', 预期收益: ['金币 ×40'] }],
+      },
+    },
+  }, { source: updateSrc });
+  assertCleanOutput(refillHasTraitOut, 'aftermath-exists-refill');
+  assert.doesNotMatch(refillHasTraitOut, /本轮先写出本区 `余波` 词条|先于任务列表/);
 });
