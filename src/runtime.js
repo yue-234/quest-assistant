@@ -3,10 +3,12 @@
 // 项目地址：https://github.com/yue-234/quest-assistant
 
 import { PANEL_CSS, PANEL_JS } from 'quest-helper:panel';
-import { BOARD_KEY, CORE_NAME, SPEAKER, effectiveChatCount, readState } from './state.js';
+import { BOARD_KEY, CORE_NAME, SPEAKER, effectiveChatCount, normalizeQuestFocus, readState } from './state.js';
 import {
   hasClosedQuestLeftovers,
   hasExpiredAftermath,
+  hasExpiredDirectorLeads,
+  hasExpiredOnceFocus,
   needsQuestAcceptedRecord,
   questRescanDone,
   maintainQuestBoard,
@@ -448,14 +450,28 @@ export function start() {
     const needSweep = !!board['列表'] && hasClosedQuestLeftovers(stat, { chat: chatSnapshot });
     const needRecord = !!board['列表'] && needsQuestAcceptedRecord(stat);
     const needSweepExpired = hasExpiredAftermath(stat);
+    const hasPendingRescan = !!(board['待重扫'] && typeof board['待重扫'] === 'object' && Object.keys(board['待重扫']).length);
+    const canCheckOnceFocus = !hasPendingRescan || needClearRescan || allowGrace || extraFinished;
+    const needClearOnceFocus = canCheckOnceFocus && hasExpiredOnceFocus(stat, {
+      floor: curFloor,
+      chatCount: curCount,
+      chat: chatSnapshot,
+      extraAnalyzing,
+      extraFinished,
+      allowGrace,
+      rescanCleared: needClearRescan,
+    });
+    const needSweepLeads = hasExpiredDirectorLeads(stat, { chatCount: curCount, chat: chatSnapshot });
+    const hasOnceFocus = normalizeQuestFocus(board['关注方向']).mode === 'once'
+      && !!normalizeQuestFocus(board['关注方向']).text;
 
-    if (!needClearRescan && !needSweep && !needRecord && !needSweepExpired) {
-      if (board['待重扫'] && waitGraceMs > 0) {
+    if (!needClearRescan && !needSweep && !needRecord && !needSweepExpired && !needClearOnceFocus && !needSweepLeads) {
+      if ((hasPendingRescan || hasOnceFocus) && waitGraceMs > 0) {
         clearTimeout(bgTimer);
         bgTimer = setTimeout(() => {
           void runQuestBoardMaintenance();
         }, waitGraceMs);
-      } else if (extraFinished && !board['待重扫']) {
+      } else if (extraFinished && !hasPendingRescan) {
         clearMvuUpdateEnded();
       }
       return;

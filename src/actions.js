@@ -4,7 +4,9 @@
 import { DATA } from './data.js';
 import {
   BOARD_KEY, CORE_NAME, SPEAKER, fpOf, boardNode, effectiveChatCount, rescanFresh, lastNonSystemIsAssistant,
-  normalizeDay, worldDay, cleanRewardText, parseClaimedSet, parseLostSet,
+  normalizeDay, worldDay, addWorldDays, resolveRegion, resolveRegionText, normalizeQuestCategory,
+  normalizeQuestFocus, isOnceFocusExpired,
+  cleanRewardText, parseClaimedSet, parseLostSet,
   mergeRewardMapEntries, normalizeQuestRewards,
   CLAIMED_MARK_RE, LOST_MARK_RE,
   stripTaskTitle, matchFormalTask, extractHistoryStats, wasInHistoryFormalTasks,
@@ -395,46 +397,124 @@ export function sweepExpiredAftermath(stat) {
   return { stat: next, done: '已清理过期词条' };
 }
 
+function writeFocusToBoard(board, rawText, mode, effCountStr) {
+  const reqMode = mode === 'once' ? 'once' : 'long';
+  const norm = normalizeQuestFocus({ 文本: rawText, 模式: reqMode });
+  if (!norm.text) {
+    delete board['关注方向'];
+    return null;
+  }
+  if (norm.mode === 'once') {
+    board['关注方向'] = {
+      文本: norm.text,
+      模式: 'once',
+      消息数: effCountStr,
+    };
+  } else {
+    board['关注方向'] = {
+      文本: norm.text,
+      模式: 'long',
+    };
+  }
+  return norm;
+}
+
+/** 设定或清空任务情报板「关注方向」（软倾斜生成偏好）。 */
+export function setQuestFocus(stat, rawText, { mode = 'long', chatCount, chat } = {}) {
+  const eff = effectiveChatCount(chat, chatCount);
+  const effStr = eff !== undefined && eff !== null ? String(eff) : '';
+  const next = draft(stat);
+  const board = ensureBoard(next);
+  const written = writeFocusToBoard(board, rawText, mode, effStr);
+  if (!written) {
+    return { stat: next, done: '已清空关注方向，恢复通用情报生成' };
+  }
+  const modeDesc = written.mode === 'once' ? '仅本次' : '长期';
+  return { stat: next, done: `已设定${modeDesc}关注方向「${written.text}」` };
+}
+
+/** 当前是否存在已过期的「仅本次」关注方向。 */
+export function hasExpiredOnceFocus(stat, current = {}) {
+  return isOnceFocusExpired(boardNode(stat), current);
+}
+
+/** 清理已过期的「仅本次」关注方向（传 current 时按新鲜度校验；未传 current 时直接清理 once 项）。 */
+export function clearExpiredOnceFocus(stat, current) {
+  const next = draft(stat);
+  const board = ensureBoard(next);
+  const rawFocus = board['关注方向'];
+  const focus = normalizeQuestFocus(rawFocus);
+  const rawIsOnce = !!(rawFocus && typeof rawFocus === 'object' && !Array.isArray(rawFocus)
+    && (rawFocus['模式'] === 'once' || rawFocus.mode === 'once'));
+  if (focus.mode !== 'once' && !rawIsOnce) {
+    return { stat: next, done: '无需清理关注方向' };
+  }
+  if (current !== undefined && focus.text && !isOnceFocusExpired(board, current)) {
+    return { stat: next, done: '关注方向尚未过期' };
+  }
+  delete board['关注方向'];
+  return { stat: next, done: '已清理过期的仅本次关注方向' };
+}
+
+function applyRescanFocus(board, effCountStr, focusText, focusMode) {
+  if (focusText !== undefined) {
+    writeFocusToBoard(board, focusText, focusMode || 'long', effCountStr);
+    return;
+  }
+  const existing = normalizeQuestFocus(board['关注方向']);
+  if (existing.text && existing.mode === 'once') {
+    board['关注方向'] = {
+      文本: existing.text,
+      模式: 'once',
+      消息数: effCountStr,
+    };
+  }
+}
+
 /** 预约下一回合重扫当前区域的本地任务情报（保留已锁定与跨区剧情任务）。 */
 export function requestQuestRescan(
   stat,
   floor,
   chatCount,
-  { nullCore = false, chat, lastIsAssistant, extraAnalyzing } = {},
+  { nullCore = false, chat, lastIsAssistant, extraAnalyzing, focusText, focusMode } = {},
 ) {
   const effectiveCount = effectiveChatCount(chat, chatCount);
+  const effCountStr = effectiveCount !== undefined && effectiveCount !== null ? String(effectiveCount) : '';
   const boardNow = boardNode(stat);
   if (rescanFresh(obj(boardNow['待重扫']), { floor, chatCount: effectiveCount, chat, lastIsAssistant, extraAnalyzing })) {
     return { error: '本回合已经预约过地区重扫了，等下一回合刷新' };
   }
+  const curDay = nullCore ? worldDay(stat) : '';
   if (nullCore) {
-    const curDay = worldDay(stat);
     const lastDay = normalizeDay(boardNow['上次重扫日']);
     if (curDay && lastDay && curDay === lastDay) {
       return { error: '今日已重扫过本地情报，请等次日再试' };
     }
-    const next = draft(stat);
-    const board = ensureBoard(next);
-    if (curDay) board['上次重扫日'] = curDay;
-    board['待重扫'] = {
-      楼层: floor === undefined || floor === null ? '' : String(floor),
-      消息数: effectiveCount === undefined || effectiveCount === null ? '' : String(effectiveCount),
-    };
-    return { stat: next, done: '已启动今日免费地区情报重扫，下一回合刷新本地情报' };
+  } else {
+    const cost = DATA.questBoard.rescanFp;
+    if (fpOf(stat) < cost) {
+      return { error: `命运点数不足：地区重扫需要 ${cost} FP，现有 ${fpOf(stat)} FP` };
+    }
   }
 
-  const cost = DATA.questBoard.rescanFp;
-  if (fpOf(stat) < cost) {
-    return { error: `命运点数不足：地区重扫需要 ${cost} FP，现有 ${fpOf(stat)} FP` };
-  }
   const next = draft(stat);
-  next['命运点数'] = fpOf(stat) - cost;
   const board = ensureBoard(next);
+  if (nullCore) {
+    if (curDay) board['上次重扫日'] = curDay;
+  } else {
+    next['命运点数'] = fpOf(stat) - DATA.questBoard.rescanFp;
+  }
   board['待重扫'] = {
     楼层: floor === undefined || floor === null ? '' : String(floor),
-    消息数: effectiveCount === undefined || effectiveCount === null ? '' : String(effectiveCount),
+    消息数: effCountStr,
   };
-  return { stat: next, done: `已扣除 ${cost} FP 启动地区情报重扫，下一回合刷新本地情报` };
+  applyRescanFocus(board, effCountStr, focusText, focusMode);
+  return {
+    stat: next,
+    done: nullCore
+      ? '已启动今日免费地区情报重扫，下一回合刷新本地情报'
+      : `已扣除 ${DATA.questBoard.rescanFp} FP 启动地区情报重扫，下一回合刷新本地情报`,
+  };
 }
 
 /** 重扫请求是否已过完额外模型结算窗口，可由界面或后台维护安全清理。 */
@@ -675,7 +755,185 @@ export function hasClosedQuestLeftovers(stat, current = {}) {
   return false;
 }
 
-/** 静默清理任务板里已完结的残留条目（含其意向、已兑现、已失效与曾接取键）。 */
+const FUSE_TRIM_EDGE_RE = /^[\s"'“”‘’【】\[\]()（）:：\-—·,，;；]+|[\s"'“”‘’【】\[\]()（）:：\-—·,，;；。！？!?]+$/g;
+
+function extractDirectorLead(entry, id, stat, board, currentCount, current = {}) {
+  const r = obj(entry);
+  const title = text(r['标题']).trim();
+  if (!title) return null;
+  const sources = [text(r['真相']), text(r['幕后真相'])].filter(Boolean);
+  if (!sources.length) return null;
+
+  let leadType = '';
+  let afterMarker = '';
+  for (const src of sources) {
+    const m = src.match(/余震引信\s*[：:]\s*([\s\S]*)/);
+    if (m) {
+      leadType = '假象余震';
+      afterMarker = m[1];
+      break;
+    }
+  }
+  if (!leadType) {
+    for (const src of sources) {
+      const m = src.match(/后续引信\s*[：:]\s*([\s\S]*)/);
+      if (m) {
+        leadType = '因果后续';
+        afterMarker = m[1];
+        break;
+      }
+    }
+  }
+  if (!leadType) return null;
+
+  const sentence = text(afterMarker)
+    .split(/[\r\n。！？!?|｜]+/)[0]
+    .replace(/[\s\u3000]+/g, ' ')
+    .replace(FUSE_TRIM_EDGE_RE, '')
+    .trim();
+  const fuse = sentence.slice(0, 60).replace(FUSE_TRIM_EDGE_RE, '').trim();
+  if (!fuse) return null;
+
+  const locRaw = text(r['地点']).trim();
+  const boardRegion = text(board['区域'] || board['区域名']).trim();
+  const geo = current.geoData || null;
+  const matchesBoardRegion = !!(locRaw && boardRegion
+    && (locRaw === boardRegion || locRaw.split(/[-－—>＞/／,，、;；·•・\n]+/).map((s) => s.trim()).includes(boardRegion)));
+  const locName = locRaw
+    ? (matchesBoardRegion ? boardRegion : (resolveRegionText(locRaw, geo).name || locRaw))
+    : '';
+  const area = locName || boardRegion || resolveRegion(stat, geo).name || '';
+  const curDay = worldDay(stat);
+  const triggerDay = curDay ? (addWorldDays(curDay, 1) || curDay) : '';
+
+  const lead = {
+    id: id || title,
+    标题: title,
+    类型: leadType,
+    引信: fuse,
+    区域: area,
+    触发后消息数: currentCount !== null ? String(currentCount + 2) : '',
+    触发日: triggerDay,
+  };
+  if (currentCount !== null) {
+    lead['过期消息数'] = String(currentCount + 12);
+  }
+  return lead;
+}
+
+function isAftershockQuestEntry(entry, lead = null) {
+  if (lead && lead['类型'] === '假象余震') return true;
+  const r = obj(entry);
+  if (r['余震'] === true || r['来自余震'] === true) return true;
+  const tagText = [r['来源'], r['标签'], r['类型'], r['真相'], r['幕后真相']]
+    .map((v) => text(v))
+    .join(' ');
+  return /【?假象余震】?|余震衍生|余震引信\s*[：:]/.test(tagText);
+}
+
+function updateDirectorAfterSweep(board, stat, removedEntries, currentCount, current = {}) {
+  if (!removedEntries.length) return;
+  const rawDirector = board['导演状态'];
+  const hadDirector = !!(rawDirector && typeof rawDirector === 'object' && !Array.isArray(rawDirector));
+  const director = hadDirector ? obj(rawDirector) : {};
+  let cooldown = Math.max(0, Math.floor(Number(director['余震冷却']) || 0));
+  const queue = Array.isArray(director['待引爆'])
+    ? director['待引爆'].filter((x) => x && typeof x === 'object' && !Array.isArray(x)).map((x) => ({ ...x }))
+    : [];
+  let touched = false;
+
+  for (const { entry, id } of removedEntries) {
+    const lead = extractDirectorLead(entry, id, stat, board, currentCount, current);
+    if (lead) {
+      const dup = queue.some((q) => text(q['标题']).trim() === lead['标题']);
+      const aftershockCount = queue.filter((q) => q['类型'] === '假象余震').length;
+      if (!dup && queue.length < 2 && (lead['类型'] !== '假象余震' || aftershockCount < 1)) {
+        queue.push(lead);
+        if (lead['类型'] === '假象余震' && cooldown < 3) {
+          cooldown = 3;
+        }
+        touched = true;
+      }
+    }
+    const cat = normalizeQuestCategory(obj(entry)['类别']);
+    if ((cat === '剧情任务' || cat === '本地主线') && !isAftershockQuestEntry(entry, lead) && cooldown > 0) {
+      cooldown -= 1;
+      touched = true;
+    }
+  }
+
+  if (!hadDirector && !touched) return;
+  if (queue.length > 0) {
+    director['待引爆'] = queue;
+    director['余震冷却'] = cooldown;
+    board['导演状态'] = director;
+    return;
+  }
+  delete director['待引爆'];
+  if (cooldown > 0) {
+    director['余震冷却'] = cooldown;
+    board['导演状态'] = director;
+    return;
+  }
+  delete director['余震冷却'];
+  if (Object.keys(director).length > 0) {
+    board['导演状态'] = director;
+  } else {
+    delete board['导演状态'];
+  }
+}
+
+function isDirectorLeadExpired(lead, curCount) {
+  if (!lead || typeof lead !== 'object' || Array.isArray(lead) || curCount === null) return false;
+  const rawExp = text(lead['过期消息数']).trim();
+  if (!rawExp) return false;
+  const expNum = Number(rawExp);
+  return Number.isFinite(expNum) && curCount > expNum;
+}
+
+/** 导演状态队列里是否存在已超过过期消息数窗口的待引爆引信。 */
+export function hasExpiredDirectorLeads(stat, current = {}) {
+  const eff = effectiveChatCount(current.chat, current.chatCount);
+  const curCount = eff !== undefined && eff !== null ? eff : null;
+  if (curCount === null) return false;
+  const director = boardNode(stat)['导演状态'];
+  if (!director || typeof director !== 'object' || Array.isArray(director)) return false;
+  const queue = Array.isArray(director['待引爆']) ? director['待引爆'] : [];
+  return queue.some((lead) => isDirectorLeadExpired(lead, curCount));
+}
+
+/** 静默清理导演状态中已过期的待引爆引信；队列清空且无冷却时移除导演状态节点。 */
+export function sweepExpiredDirectorLeads(stat, current = {}) {
+  const next = draft(stat);
+  const board = ensureBoard(next);
+  const director = board['导演状态'];
+  if (!director || typeof director !== 'object' || Array.isArray(director)) {
+    return { stat: next, done: '无需清理导演状态' };
+  }
+  const eff = effectiveChatCount(current.chat, current.chatCount);
+  const curCount = eff !== undefined && eff !== null ? eff : null;
+  if (curCount === null) {
+    return { stat: next, done: '无需清理导演状态' };
+  }
+  const queue = Array.isArray(director['待引爆']) ? director['待引爆'] : [];
+  const kept = queue.filter((lead) => !isDirectorLeadExpired(lead, curCount));
+  const cooldown = Math.max(0, Math.floor(Number(director['余震冷却']) || 0));
+
+  if (kept.length > 0) {
+    director['待引爆'] = kept;
+    return { stat: next, done: '已清理过期导演状态引信' };
+  }
+  delete director['待引爆'];
+  if (cooldown <= 0) {
+    delete director['余震冷却'];
+    if (Object.keys(director).length === 0) {
+      delete board['导演状态'];
+    }
+  }
+  return { stat: next, done: '已清理过期导演状态引信' };
+}
+
+/** 静默清理任务板里已完结的残留条目（含其意向、已兑现、已失效与曾接取键，并提取隐藏导演引信）。 */
 export function sweepClosedQuests(stat, current = {}) {
   const next = draft(stat);
   const board = ensureBoard(next);
@@ -684,9 +942,12 @@ export function sweepClosedQuests(stat, current = {}) {
   const historyStats = Array.isArray(current.historyStats)
     ? current.historyStats
     : extractHistoryStats(current.chat || current.messages);
+  const eff = effectiveChatCount(current.chat, current.chatCount);
+  const currentCount = eff !== undefined && eff !== null ? eff : null;
   const removedIds = new Set();
   const removedTitles = new Set();
   const removedNorms = new Set();
+  const removedEntries = [];
 
   if (Array.isArray(board['列表'])) {
     board['列表'] = board['列表'].filter((entry, idx) => {
@@ -701,6 +962,7 @@ export function sweepClosedQuests(stat, current = {}) {
           const n = stripTaskTitle(title);
           if (n) removedNorms.add(n);
         }
+        removedEntries.push({ entry, id });
       }
       return !closed;
     });
@@ -714,10 +976,13 @@ export function sweepClosedQuests(stat, current = {}) {
           const n = stripTaskTitle(title);
           if (n) removedNorms.add(n);
         }
+        removedEntries.push({ entry: v, id: k });
         delete board['列表'][k];
       }
     }
   }
+
+  updateDirectorAfterSweep(board, stat, removedEntries, currentCount, current);
 
   if (Array.isArray(board['意向'])) {
     board['意向'] = board['意向'].filter((x) => !removedIds.has(x) && !removedTitles.has(x));
@@ -754,21 +1019,23 @@ export function sweepClosedQuests(stat, current = {}) {
   return { stat: next, done: '已清理已完结的任务情报' };
 }
 
-/** 合并后台维护：单次顺序执行清重扫 → 扫完结残留 → 登记曾接取 → 清全地图过期词条，无改动时返回 { skip: true }。 */
+/** 合并后台维护：单次顺序执行清重扫 → 扫完结残留 → 登记曾接取 → 清全地图过期词条 → 清过期关注方向与导演引信，无改动时返回 { skip: true }。 */
 export function maintainQuestBoard(
   stat,
   { floor, chatCount, chat, historyStats, extraFinished = false, extraAnalyzing = false, allowGrace = false, lastIsAssistant } = {},
 ) {
   let cur = stat;
   let changed = false;
+  let rescanCleared = false;
   if (questRescanDone(cur, floor, chatCount, { extraFinished, extraAnalyzing, allowGrace, chat, lastIsAssistant })) {
     cur = clearQuestRescan(cur).stat;
     changed = true;
+    rescanCleared = true;
   }
   const board = boardNode(cur);
   if (board['列表']) {
     if (hasClosedQuestLeftovers(cur, { chat, historyStats })) {
-      cur = sweepClosedQuests(cur, { chat, historyStats }).stat;
+      cur = sweepClosedQuests(cur, { chat, historyStats, chatCount }).stat;
       changed = true;
     }
     if (needsQuestAcceptedRecord(cur)) {
@@ -778,6 +1045,15 @@ export function maintainQuestBoard(
   }
   if (hasExpiredAftermath(cur)) {
     cur = sweepExpiredAftermath(cur).stat;
+    changed = true;
+  }
+  const focusOpts = { floor, chatCount, chat, extraAnalyzing, extraFinished, allowGrace, rescanCleared };
+  if (hasExpiredOnceFocus(cur, focusOpts)) {
+    cur = clearExpiredOnceFocus(cur, focusOpts).stat;
+    changed = true;
+  }
+  if (hasExpiredDirectorLeads(cur, { chatCount, chat })) {
+    cur = sweepExpiredDirectorLeads(cur, { chatCount, chat }).stat;
     changed = true;
   }
   if (!changed) return { skip: true };

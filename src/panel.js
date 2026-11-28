@@ -2,16 +2,19 @@
 // 点击操作经 commit.js 写回最新楼层 /事件/任务情报板。
 
 import { DATA, SCRIPT_VERSION } from './data.js';
-import { readState, effectiveChatCount, CORE_NAME, SPEAKER } from './state.js';
+import { readState, effectiveChatCount, boardNode, CORE_NAME, SPEAKER } from './state.js';
 import {
   toggleQuestIntent,
   cycleQuestRewardState,
   deleteAftermathEntry,
   ignoreQuest,
+  setQuestFocus,
   requestQuestRescan,
   questRescanDone,
   hasClosedQuestLeftovers,
   hasExpiredAftermath,
+  hasExpiredOnceFocus,
+  hasExpiredDirectorLeads,
   needsQuestAcceptedRecord,
   maintainQuestBoard,
 } from './actions.js';
@@ -47,6 +50,9 @@ const ui = {
     local: false,
     world: false,
   },
+  focusExpanded: false,
+  focusDraftText: null,
+  focusDraftMode: null,
 };
 
 let tagFetchPromise = null;
@@ -302,7 +308,69 @@ function renderContent(state) {
   bandMain.append(el('div', qb.rescanPending ? 'qh-stat-foot is-gold' : 'qh-stat-foot', footText));
   band.append(bandMain);
 
+  const focus = qb.focus || { text: '', mode: 'long', active: false };
+  const focusShort = focus.text.length > 8 ? `${focus.text.slice(0, 8)}…` : focus.text;
+  const focusModeTag = focus.mode === 'once' ? '本次' : '长期';
+  const focusToggleText = focus.active && focus.text
+    ? `方向：${focusShort} · ${focusModeTag}`
+    : '关注方向';
+  const focusToggleTitle = focus.active && focus.text
+    ? `当前关注方向（${focusModeTag}）：${focus.text}（点击展开编辑或清空）`
+    : '设定下一回合情报生成倾向（默认折叠，留空=通用）';
+
+  const triggerRescan = (isNullCore) => {
+    ui.confirmDeleteTrait = '';
+    const opts = {
+      nullCore: isNullCore,
+      chat: chatArray(),
+      extraAnalyzing: extraAnalysisActive(),
+    };
+    if (ui.focusExpanded) {
+      const inputEl = root && root.querySelector('.qh-focus-input');
+      opts.focusText = inputEl ? inputEl.value : (ui.focusDraftText ?? focus.text ?? '');
+      opts.focusMode = ui.focusDraftMode || (focus.active && focus.mode === 'once' ? 'once' : 'long');
+    }
+    return run(
+      '已预约重扫',
+      (s) => requestQuestRescan(s, lastFloor(), chatCount(), opts),
+      {
+        redraw: true,
+        after: () => {
+          if (ui.focusExpanded) {
+            ui.focusDraftText = null;
+            ui.focusDraftMode = null;
+            ui.focusExpanded = false;
+          }
+        },
+      },
+    );
+  };
+
   const actBox = el('div', 'qh-quest-rescan');
+  actBox.append(
+    el(
+      'button',
+      'qh-focus-toggle' + (focus.active ? ' is-active' : '') + (ui.focusExpanded ? ' is-open' : ''),
+      focusToggleText,
+      {
+        type: 'button',
+        title: focusToggleTitle,
+        'aria-expanded': ui.focusExpanded ? 'true' : 'false',
+      },
+      {
+        click: () => {
+          if (!ui.focusExpanded && ui.focusDraftText === null) {
+            ui.focusDraftText = focus.active ? focus.text : '';
+          }
+          if (!ui.focusExpanded && !ui.focusDraftMode) {
+            ui.focusDraftMode = focus.active && focus.mode === 'once' ? 'once' : 'long';
+          }
+          ui.focusExpanded = !ui.focusExpanded;
+          render();
+        },
+      },
+    ),
+  );
   if (qb.rescanPending) {
     actBox.append(el('button', 'qh-btn qh-btn--primary', '已预约重扫，等待下一回合', { type: 'button', disabled: true }));
   } else if (qb.nullCore) {
@@ -315,20 +383,7 @@ function renderContent(state) {
           'qh-btn qh-btn--primary',
           '重扫本地情报 · 每日 1 次',
           { type: 'button' },
-          {
-            click: () => {
-              ui.confirmDeleteTrait = '';
-              return run(
-                '已预约重扫',
-                (s) => requestQuestRescan(s, lastFloor(), chatCount(), {
-                  nullCore: true,
-                  chat: chatArray(),
-                  extraAnalyzing: extraAnalysisActive(),
-                }),
-                { redraw: true },
-              );
-            },
-          },
+          { click: () => triggerRescan(true) },
         ),
       );
     }
@@ -341,24 +396,137 @@ function renderContent(state) {
         'qh-btn qh-btn--primary',
         `重扫本地情报 · ${qb.rescanFp} FP`,
         { type: 'button' },
-        {
-          click: () => {
-            ui.confirmDeleteTrait = '';
-            return run(
-              '已预约重扫',
-              (s) => requestQuestRescan(s, lastFloor(), chatCount(), {
-                nullCore: false,
-                chat: chatArray(),
-                extraAnalyzing: extraAnalysisActive(),
-              }),
-              { redraw: true },
-            );
-          },
-        },
+        { click: () => triggerRescan(false) },
       ),
     );
   }
   band.append(actBox);
+
+  if (ui.focusExpanded) {
+    const draftText = ui.focusDraftText !== null ? ui.focusDraftText : (focus.active ? focus.text : '');
+    let draftMode = ui.focusDraftMode || (focus.active && focus.mode === 'once' ? 'once' : 'long');
+
+    const submitFocus = (textVal, modeVal) => run(
+      '已更新关注方向',
+      (s) => setQuestFocus(s, textVal, {
+        mode: modeVal,
+        chatCount: chatCount(),
+        chat: chatArray(),
+      }),
+      {
+        redraw: true,
+        after: () => {
+          ui.focusDraftText = null;
+          ui.focusDraftMode = null;
+          ui.focusExpanded = false;
+        },
+      },
+    );
+
+    let clearBtn = null;
+    const focusInput = el(
+      'input',
+      'qh-focus-input',
+      null,
+      {
+        type: 'text',
+        maxlength: '40',
+        value: draftText,
+        placeholder: '如：经营魔药铺 / 典狱长押运（留空=通用，0 Token）',
+        'aria-label': '关注方向输入',
+      },
+      {
+        input: (ev) => {
+          ui.focusDraftText = ev.target.value;
+          if (clearBtn) {
+            clearBtn.hidden = !(ev.target.value.trim() || focus.active);
+          }
+        },
+        keydown: (ev) => {
+          if (ev.key === 'Enter') {
+            ev.preventDefault();
+            void submitFocus(focusInput.value, draftMode);
+          } else if (ev.key === 'Escape') {
+            ev.stopPropagation();
+            ui.focusExpanded = false;
+            render();
+          }
+        },
+      },
+    );
+
+    const longModeBtn = el(
+      'button',
+      'qh-focus-mode' + (draftMode === 'long' ? ' is-active' : ''),
+      '长期',
+      { type: 'button', 'aria-pressed': draftMode === 'long' ? 'true' : 'false' },
+    );
+    const onceModeBtn = el(
+      'button',
+      'qh-focus-mode' + (draftMode === 'once' ? ' is-active' : ''),
+      '仅本次',
+      { type: 'button', 'aria-pressed': draftMode === 'once' ? 'true' : 'false' },
+    );
+    const setModeUI = (mode) => {
+      draftMode = mode;
+      ui.focusDraftMode = mode;
+      longModeBtn.className = 'qh-focus-mode' + (mode === 'long' ? ' is-active' : '');
+      longModeBtn.setAttribute('aria-pressed', mode === 'long' ? 'true' : 'false');
+      onceModeBtn.className = 'qh-focus-mode' + (mode === 'once' ? ' is-active' : '');
+      onceModeBtn.setAttribute('aria-pressed', mode === 'once' ? 'true' : 'false');
+    };
+    longModeBtn.addEventListener('click', () => setModeUI('long'));
+    onceModeBtn.addEventListener('click', () => setModeUI('once'));
+
+    clearBtn = el(
+      'button',
+      'qh-btn qh-btn--sm qh-btn--ghost qh-focus-clear',
+      '清空',
+      {
+        type: 'button',
+        ...(draftText.trim() || focus.active ? {} : { hidden: '' }),
+      },
+      {
+        click: () => {
+          if (!focus.text && !focus.active) {
+            focusInput.value = '';
+            ui.focusDraftText = '';
+            clearBtn.hidden = true;
+            focusInput.focus();
+            return;
+          }
+          void run(
+            '已清空关注方向',
+            (s) => setQuestFocus(s, ''),
+            {
+              redraw: true,
+              after: () => {
+                ui.focusDraftText = '';
+                ui.focusDraftMode = 'long';
+              },
+            },
+          );
+        },
+      },
+    );
+    if (!(draftText.trim() || focus.active)) clearBtn.hidden = true;
+
+    const saveBtn = el(
+      'button',
+      'qh-btn qh-btn--sm qh-btn--focus-save',
+      '保存',
+      { type: 'button' },
+      { click: () => void submitFocus(focusInput.value, draftMode) },
+    );
+
+    band.append(
+      el('div', 'qh-focus-bar', [
+        focusInput,
+        el('div', 'qh-focus-modes', [longModeBtn, onceModeBtn]),
+        el('div', 'qh-focus-actions', [saveBtn, clearBtn]),
+      ]),
+    );
+  }
   wrap.append(band);
 
   // 状态提示
@@ -852,13 +1020,33 @@ function render() {
   const allowGrace = !extraAnalyzing
     && !extraFinished
     && !isMsgRecvWithinGrace({ chatCount: curCount, chatId: curChatId });
+  const rescanDone = questRescanDone(stat, curFloor, curCount, {
+    extraFinished,
+    extraAnalyzing,
+    allowGrace,
+    chat: chatSnapshot,
+  });
+  const pendingRescanNode = boardNode(stat)['待重扫'];
+  const hasPendingRescan = !!(pendingRescanNode && typeof pendingRescanNode === 'object'
+    && Object.keys(pendingRescanNode).length > 0);
+  const canCheckOnceFocus = !hasPendingRescan || rescanDone || allowGrace || extraFinished;
   if (
     !sweeping &&
     !generating() &&
-    (questRescanDone(stat, curFloor, curCount, { extraFinished, extraAnalyzing, allowGrace, chat: chatSnapshot })
+    (rescanDone
       || hasClosedQuestLeftovers(stat, { chat: chatSnapshot })
       || needsQuestAcceptedRecord(stat)
-      || hasExpiredAftermath(stat))
+      || hasExpiredAftermath(stat)
+      || (canCheckOnceFocus && hasExpiredOnceFocus(stat, {
+        floor: curFloor,
+        chatCount: curCount,
+        chat: chatSnapshot,
+        extraAnalyzing,
+        extraFinished,
+        allowGrace,
+        rescanCleared: rescanDone,
+      }))
+      || hasExpiredDirectorLeads(stat, { chatCount: curCount, chat: chatSnapshot }))
   ) {
     sweeping = true;
     commit(

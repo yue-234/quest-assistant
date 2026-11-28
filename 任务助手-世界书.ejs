@@ -198,6 +198,66 @@ const _hasAftermath = !!(
   !Array.isArray(_qb['余波'])
 );
 const _aftermathRoot = _hasAftermath ? _qb['余波'] : {};
+const _rawFocus = _qb['关注方向'];
+const _qbFocus = _txt(
+  _rawFocus && typeof _rawFocus === 'object' && !Array.isArray(_rawFocus)
+    ? (_rawFocus['文本'] ?? _rawFocus.text)
+    : (Array.isArray(_rawFocus) ? '' : _rawFocus),
+).replace(/\s+/g, ' ').replace(/\*{2,}/g, '').trim().slice(0, 40).trim();
+const _hasDirector = !!(
+  _hasQb &&
+  Object.prototype.hasOwnProperty.call(_qb, '导演状态') &&
+  _qb['导演状态'] &&
+  typeof _qb['导演状态'] === 'object' &&
+  !Array.isArray(_qb['导演状态'])
+);
+const _director = _hasDirector ? _qb['导演状态'] : {};
+const _aftershockCooldown = Math.max(0, Math.floor(Number(_director['余震冷却']) || 0));
+const _rawLeads = Array.isArray(_director['待引爆']) ? _director['待引爆'] : [];
+const _hasPendingLeads = _hasDirector && Array.isArray(_director['待引爆']);
+const _hasCooldownKey = _hasDirector && Object.prototype.hasOwnProperty.call(_director, '余震冷却');
+const _skeletonDefs = [
+  {
+    tag: '悬疑反转',
+    genDesc: '认知错位、旧线索重解（初段仅露微矛盾，中段推翻表面认知）',
+    beatDesc: '【悬疑反转】初段仅露微矛盾，NPC 不首轮揭示 `真相`；中段触发旧线索重解并推翻认知；终局复用前文线索完成揭示与不可逆代价取舍',
+  },
+  {
+    tag: '多方竞速',
+    genDesc: '时间窗口与共享筹码争夺（多方明牌竞价或抢跑，不必设幕后黑手）',
+    beatDesc: '【多方竞速】多方明牌竞价或抢占时间窗口与共享筹码（不必设幕后黑手），拖延将被对手夺走先机，中后段围绕竞夺与让步取舍展开',
+  },
+  {
+    tag: '灾变探索',
+    genDesc: '自然异变、未知古迹或机制失控（无阴谋欺诈，重在规律揭露、恶化控损与逆转灾源）',
+    beatDesc: '【灾变探索】自然异变、未知古迹或机制失控（无阴谋欺诈），初段探明异常表象，中段揭露运行规律并控制恶化，终局逆转或封堵灾源',
+  },
+  {
+    tag: '护送破局',
+    genDesc: '正面攻坚、线路布防与准备度考验（遭遇伏击或断链变数，准备充分且关键条件达成时可直接全胜并全额获得核心奖励，不强行设置二选一）',
+    beatDesc: '【护送破局】正面攻坚、线路布防与准备度考验，中途遭遇伏击或断链变数，准备充分且关键条件达成时可直接全胜并全额获得核心奖励，不强行设置二选一',
+  },
+];
+const _hasAftershockTag = (s) => /【假象余震】/.test(_txt(s));
+const _hasAftershockFuse = (s) => /余震引信\s*[：:]/.test(_txt(s));
+const _extractFuse = (truthRaw) => {
+  const s = _txt(truthRaw).trim();
+  if (!s) return null;
+  const am = s.match(/(?:[｜|]\s*)?余震引信\s*[：:]\s*([^｜|\n]+)/);
+  if (am && am[1].trim()) {
+    return { kind: '假象余震', text: am[1].trim(), isAftershock: true };
+  }
+  const sm = s.match(/(?:[｜|]\s*)?后续引信\s*[：:]\s*([^｜|\n]+)/);
+  if (sm && sm[1].trim()) {
+    return { kind: '因果后续', text: sm[1].trim(), isAftershock: _hasAftershockTag(s) };
+  }
+  return null;
+};
+const _stripPlotTruth = (truthRaw) => _txt(truthRaw)
+  .replace(/【假象余震】\s*/g, '')
+  .replace(/(?:[｜|]\s*)?(?:余震引信|后续引信)\s*[：:][^｜|\n]*/g, '')
+  .replace(/^\s*[｜|；;]+\s*|\s*[｜|；;]+\s*$/g, '')
+  .trim();
 const _aftermathArr = (raw) => (Array.isArray(raw)
   ? raw.map((x) => _txt(x).trim()).filter(Boolean)
   : (typeof raw === 'string' && raw.trim() ? [raw.trim()] : []));
@@ -664,6 +724,7 @@ const _qbItems = _qbRawList
     const mentioned = !accepted && !!_lastMsgRaw && (
       _lastMsgRaw.includes(title) || (normTitle.length >= 2 && _lastMsgNorm.includes(normTitle))
     );
+    const truth = _txt(r['真相'] || r['幕后真相']).trim();
     return {
       id,
       rawKey,
@@ -676,7 +737,8 @@ const _qbItems = _qbRawList
       location: _txt(r['地点']).trim(),
       deadline: _txt(r['时限']).trim(),
       summary: _txt(r['摘要']).trim(),
-      truth: _txt(r['真相'] || r['幕后真相']).trim(),
+      truth,
+      fuseInfo: _extractFuse(truth),
       progress: accepted ? (formal.progress || _txt(r['进展'] || r['动态'] || r['最新进展']).trim()) : '',
       updatedDay,
       accepted,
@@ -810,6 +872,141 @@ const _qbPlotItems = _qbNeedResetList
 const _qbNeedInitAftermathRule = (_qbMode === 'init' || _qbMode === 'relocate' || _qbMode === 'rescan') && _localAftermathShown.length === 0;
 const _qbNeedRevisitAftermathRule = _qbMode === 'relocate' && _localAftermathShown.length > 0;
 const _qbHasLocked = _qbItems.some((it) => it.intent);
+const _dueLead = (() => {
+  if (_isSkipRescanGen || !_rawLeads.length) return null;
+  for (let i = 0; i < _rawLeads.length; i += 1) {
+    const ld = _obj(_rawLeads[i]);
+    const text = _txt(ld['引信'] || ld['内容'] || ld['矛盾'] || ld['异常']).trim();
+    if (!text) continue;
+    const title = _txt(ld['标题'] || ld['任务标题'] || ld['原标题']).trim() || '既往委托';
+    const kind = _txt(ld['类型']).trim() || '假象余震';
+    const rawExp = _txt(ld['过期消息数']).trim();
+    if (rawExp !== '' && Number.isFinite(Number(rawExp)) && _msgCount > Number(rawExp)) continue;
+    const rawTrig = _txt(ld['触发后消息数']).trim();
+    let triggered = false;
+    if (rawTrig !== '' && Number.isFinite(Number(rawTrig))) {
+      triggered = _msgCount >= Number(rawTrig);
+    } else {
+      const trigDay = _txt(ld['触发日']).trim();
+      if (trigDay) {
+        const trigOrd = _dayOrdinal(trigDay);
+        if (_curDayOrd !== null && trigOrd !== null) {
+          triggered = _curDayOrd >= trigOrd;
+        } else if (_day) {
+          const normTrigDay = _normalizeDay(trigDay);
+          triggered = !!normTrigDay && normTrigDay === _day;
+        }
+      } else {
+        const leadDay = _txt(ld['写入日'] || ld['结案日'] || ld['日期'] || ld['更新日']).trim();
+        const leadOrd = _dayOrdinal(leadDay);
+        if (_curDayOrd !== null && leadOrd !== null) {
+          triggered = _curDayOrd > leadOrd;
+        } else if (_day && leadDay) {
+          const normLeadDay = _normalizeDay(leadDay);
+          triggered = !!normLeadDay && normLeadDay !== _day;
+        }
+      }
+    }
+    if (!triggered) continue;
+    return { idx: i, title, text, kind };
+  }
+  return null;
+})();
+const _usedSkeletonTags = new Set();
+if (_qbNeedGen) {
+  for (const it of _qbShownItems) {
+    for (const sk of _skeletonDefs) {
+      const tagToken = `【${sk.tag}】`;
+      if (it.truth.includes(tagToken) || it.title.includes(tagToken)) {
+        _usedSkeletonTags.add(sk.tag);
+      }
+    }
+  }
+}
+const _genRng = _qbNeedGen ? _makeRng(`gen|${_region.key}|${_day}|${_qbItems.length}`) : null;
+const _unusedSkeletons = _qbNeedGen ? _skeletonDefs.filter((sk) => !_usedSkeletonTags.has(sk.tag)) : [];
+const _usedSkeletons = _qbNeedGen ? _skeletonDefs.filter((sk) => _usedSkeletonTags.has(sk.tag)) : [];
+const _recSkeletons = _qbNeedGen
+  ? [
+    ..._pickFrom(_unusedSkeletons, _unusedSkeletons.length, _genRng),
+    ..._pickFrom(_usedSkeletons, _usedSkeletons.length, _genRng),
+  ].slice(0, 2)
+  : [];
+const _altSkeletons = _qbNeedGen
+  ? _skeletonDefs.filter((sk) => !_recSkeletons.includes(sk))
+  : [];
+const _hasBoardAftershock = _qbNeedGen && _qbShownItems.some(
+  (it) => _hasAftershockTag(it.truth) || _hasAftershockTag(it.title) || _hasAftershockFuse(it.truth),
+);
+const _allowAftershockSlot = _emitUpdate
+  && _qbNeedGen
+  && _aftershockCooldown <= 0
+  && _rawLeads.length === 0
+  && !_hasBoardAftershock
+  && _makeRng(`aftershock|${_region.key || _region.name || 'default'}|${_day}`)() < 0.25;
+const _activeSkeletonSet = new Set();
+let _hasPlainAftershock = false;
+let _hasLegacyNonAftershock = false;
+if (_qbHasStoryOrLocalActive) {
+  for (const it of _qbPlotItems) {
+    if (it.category === '支线任务') continue;
+    const isAftershock = _hasAftershockTag(it.truth) || _hasAftershockTag(it.title) || _hasAftershockFuse(it.truth);
+    let matchedAny = false;
+    for (const sk of _skeletonDefs) {
+      if (isAftershock && sk.tag === '悬疑反转') continue;
+      const tagToken = `【${sk.tag}】`;
+      if (it.truth.includes(tagToken) || it.title.includes(tagToken)) {
+        _activeSkeletonSet.add(sk);
+        matchedAny = true;
+      }
+    }
+    if (!matchedAny) {
+      if (isAftershock) _hasPlainAftershock = true;
+      else _hasLegacyNonAftershock = true;
+    }
+  }
+}
+const _activeSkeletons = _skeletonDefs.filter((sk) => _activeSkeletonSet.has(sk));
+const _twistBeatDefault = '剧情与本地主线按 `预期收益` 累计已结算份额（已兑现与已失效合计，栏位高价值在前、基础在后）控制节奏：初段先发后排基础或中坚报酬并埋下可回收细节，前 1~2 次接触只露疑点与矛盾，NPC 不首轮揭示 `真相`；中段（累计已结算 3~6 栏 / 本地主线 2~3 栏份额）触发旧线索重新解释或第三方争夺筹码；终局前（累计已结算 7~9 栏 / 本地主线 4 栏份额）触发不可逆代价取舍（牺牲盟友关系、立场声望或以替代战利品置换约定尾款，守住剩余有效收益底线，不能无代价兼得），终局结算前排核心层奖励；反转复用前文元素，终局不临时引入缺乏铺垫的反派或万能解法';
+const _twistBeatPositive = '剧情与本地主线按 `预期收益` 累计已结算份额（高价值在前、基础在后；初段 0~2 / 中段 3~6 栏或主线 2~3 栏 / 终局前 7~9 栏或主线 4 栏）正面推进，按正派立场与既定目标解决事态并结算对应奖励，不设隐瞒与暗中疑点，终局不临时引入缺乏铺垫的反派或万能解法';
+const _twistBeatLine = _activeSkeletons.length > 0
+  ? `剧情与本地主线按 \`预期收益\` 累计已结算份额（高价值在前、基础在后；初段 0~2 / 中段 3~6 栏或主线 2~3 栏 / 终局前 7~9 栏或主线 4 栏）控制推进节奏，禁止对外透出后台骨架标签；当前活跃骨架：${_activeSkeletons.map((sk) => sk.beatDesc).join('；')}；终局结算前排核心层奖励，不临时引入缺乏铺垫的反派或万能解法`
+  : (_hasPlainAftershock && !_hasLegacyNonAftershock ? _twistBeatPositive : _twistBeatDefault);
+const _leadTitleSet = new Set(
+  _rawLeads
+    .map((ld) => _txt(_obj(ld)['标题'] || _obj(ld)['任务标题'] || _obj(ld)['原标题']).trim())
+    .filter(Boolean),
+);
+const _seedFuseHint = (it) => {
+  if (!_emitUpdate || !_hasQb || !it.accepted || !it.fuseInfo || _leadTitleSet.has(it.title)) return '';
+  const leadObj = {
+    '标题': it.title,
+    '类型': it.fuseInfo.kind,
+    '引信': it.fuseInfo.text || '一阶段遗留物理矛盾',
+    '写入日': _day,
+    '触发后消息数': _msgCount + 3,
+    '过期消息数': _msgCount + 9,
+  };
+  const cdVal = it.fuseInfo.isAftershock ? 3 : _aftershockCooldown;
+  if (!_hasDirector) {
+    const val = it.fuseInfo.isAftershock
+      ? { '余震冷却': cdVal, '待引爆': [leadObj] }
+      : { '待引爆': [leadObj] };
+    return `｜若本轮结案留种：${JSON.stringify({ op: 'insert', path: '/事件/任务情报板/导演状态', value: val })}`;
+  }
+  const leadPatch = _hasPendingLeads
+    ? JSON.stringify({ op: 'insert', path: '/事件/任务情报板/导演状态/待引爆/-', value: leadObj })
+    : JSON.stringify({ op: 'insert', path: '/事件/任务情报板/导演状态/待引爆', value: [leadObj] });
+  if (it.fuseInfo.isAftershock) {
+    const cdPatch = JSON.stringify({
+      op: _hasCooldownKey ? 'replace' : 'insert',
+      path: '/事件/任务情报板/导演状态/余震冷却',
+      value: cdVal,
+    });
+    return `｜若本轮结案留种：${leadPatch} 与 ${cdPatch}`;
+  }
+  return `｜若本轮结案留种：${leadPatch}`;
+};
 const _ind = '';
 const _tierMapText = 'D一层/C二层/B三层/A四层/S五层';
 const _tierGuardRule = `任务中正面敌对、阻拦、主动攻击或追杀 <user> 的角色，生命层级不得超过任务对应层级（${_tierMapText}）；如果 <user> 主动挑衅、袭击或强闯高于本任务等级的人物与核心禁地，对方按真实生命层级反击`;
@@ -891,8 +1088,8 @@ _%>
     层级与串联: <%- _tierSequelRule %>
 <% } _%>
 <% if (_qbHasStoryOrLocalActive) { _%>
-    节奏: 已接取的剧情任务按跨城/跨大区三段式长线推进，多线错开骨架（跨区或搁置满 <%- _storyAdvanceDays %> 天演进恶化 1 步，长期放任波及大区与世界）；本地主线限本区推进并含 1 次偏差或取舍，限时项拖过关键节点关闭最优窗口转入补救；支线限本区单点闭环直接推进，不设反转
-    波折节拍: 剧情与本地主线按 `预期收益` 累计已结算份额（已兑现与已失效合计，栏位高价值在前、基础在后）控制节奏：初段先发后排基础或中坚报酬并埋下可回收细节，前 1~2 次接触只露疑点与矛盾，NPC 不首轮揭示 `真相`；中段（累计已结算 3~6 栏 / 本地主线 2~3 栏份额）触发旧线索重新解释或第三方争夺筹码；终局前（累计已结算 7~9 栏 / 本地主线 4 栏份额）触发不可逆代价取舍（牺牲盟友关系、立场声望或以替代战利品置换约定尾款，守住剩余有效收益底线，不能无代价兼得），终局结算前排核心层奖励；反转复用前文元素，终局不临时引入缺乏铺垫的反派或万能解法
+    节奏: 已接取的剧情任务按跨城/跨大区三段式长线推进，多线错开骨架（跨区或搁置满 <%- _storyAdvanceDays %> 天演进恶化 1 步，长期放任波及大区与世界）；本地主线限本区<% if (_twistBeatLine === _twistBeatPositive) { %>正面推进<% } else { %>推进并含 1 次偏差或取舍<% } %>，限时项拖过关键节点关闭最优窗口转入补救；支线限本区单点闭环直接推进，不设反转
+    波折节拍: <%- _twistBeatLine %>
     演化与完结: 按 <user> 介入顺序依据 `真相` 演化（直接介入暗线时反向影响明面进展）；交涉破裂、潜入暴露或击杀关键 NPC 时不阻断推进、不靠巧合化解，情报转入遗物、地下渠道或敌对势力，改走高代价替代路径；`真相` 未解或 `预期收益` 主要部分仍为 `[□]` 时不草率完结，不合并多条主线一战收尾
     层级与串联: <%- _tierSequelRule %>
 <% } _%>
@@ -901,6 +1098,9 @@ _%>
 <% } _%>
 <% if (_qbNeedAdv) { _%>
     剧情演进: 下方标注 `待演进` 的已接取剧情任务已到搁置演进节点（第 1 步筹码转移或原路失效；第 2 步冲突公开化、中间站恶化；第 3 步造成不可逆后果并转入止损，继续搁置按失败结案）<% if (!_qbNeedGen || !_genHintRule) { %>，需要时在正文中通过当地传闻或情报渠道自然带出一句<% } %>
+<% } _%>
+<% if (_dueLead) { _%>
+    异常细节: 原已结案的「<%- _dueLead.title.replace(/【假象余震】\s*/g, '') %>」在无关日常细节、战利品或环境变化中露出物理裂痕（<%- _dueLead.text %>）；本轮在正文中自然带出这一处客观异常细节供 <user> 追查，不动已发奖励
 <% } _%>
 <% if (_qbPlotItems.length) { _%>
   已跟踪任务:
@@ -911,8 +1111,10 @@ _%>
   if (it.deadline) _metaParts.push(`时限 ${it.deadline}`);
   const _metaBit = _metaParts.join('，');
   const _statusBit = it.accepted ? `已接取:${it.formalTaskName}` : (it.intent ? '★已锁定' : it.way);
+  const _plotTitle = it.title.replace(/【假象余震】\s*/g, '');
+  const _plotTruth = _stripPlotTruth(it.truth);
 _%>
-    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜<%- _statusBit %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>] <%- it.title %><% if (_metaBit) { %>（<%- _metaBit %>）<% } %><% if (it.summary) { %>｜摘要：<%- it.summary %><% } %><% if (it.truth) { %>｜幕后真相：<%- it.truth %><% } %><% if (!it.accepted && it.guide) { %>｜引导：<%- it.guide %><% } %><% if (it.rewardItems.length) { %>｜预期收益：<%- _fmtRewards(it) %><% } %>
+    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜<%- _statusBit %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>] <%- _plotTitle %><% if (_metaBit) { %>（<%- _metaBit %>）<% } %><% if (it.summary) { %>｜摘要：<%- it.summary %><% } %><% if (_plotTruth) { %>｜幕后真相：<%- _plotTruth %><% } %><% if (!it.accepted && it.guide) { %>｜引导：<%- it.guide %><% } %><% if (it.rewardItems.length) { %>｜预期收益：<%- _fmtRewards(it) %><% } %>
 <% }) _%>
 <% } _%>
 <% if (_localAftermathShown.length || _worldAftermathShown.length) { _%>
@@ -939,7 +1141,7 @@ _%>
 - 除 `/事件/任务情报板` 及本规则联动的 `/任务列表` 外，不借本协议修改其他无关变量。
 </任务情报板变量更新协议>
 <任务情报板当前状态>
-任务情报板: <% if (!_hasQb) { %>未创建<% } else { %>已存在（当前板区：<%- _qbRegionName || _qbRegionKey || '未记录' %>；列表形态：<%- _qbExistKeys.includes('列表') ? (_qbListIsArr ? '数组' : '对象') : '未建立' %>；在板任务：<%- _qbItems.length %> 条<% if (_qbNeedResetList) { %>（需保留：<%- _qbShownItems.length %> 条）<% } %>；已兑现键：<%- _hasClaimed ? Object.keys(_claimedMap).length : 0 %>；已失效键：<%- _hasLost ? Object.keys(_lostMap).length : 0 %>；当前区余波键：<%- _localAftermathKey ? '已存在（' + _localAftermathKey + '）' : '未建立' %>）<% } %>
+任务情报板: <% if (!_hasQb) { %>未创建<% } else { %>已存在（当前板区：<%- _qbRegionName || _qbRegionKey || '未记录' %>；列表形态：<%- _qbExistKeys.includes('列表') ? (_qbListIsArr ? '数组' : '对象') : '未建立' %>；在板任务：<%- _qbItems.length %> 条<% if (_qbNeedResetList) { %>（需保留：<%- _qbShownItems.length %> 条）<% } %>；已兑现键：<%- _hasClaimed ? Object.keys(_claimedMap).length : 0 %>；已失效键：<%- _hasLost ? Object.keys(_lostMap).length : 0 %>；当前区余波键：<%- _localAftermathKey ? '已存在（' + _localAftermathKey + '）' : '未建立' %><% if (_aftershockCooldown > 0 || _rawLeads.length > 0) { %>；余震冷却：<%- _aftershockCooldown %>；待引爆：<%- _rawLeads.length %> 条<% } %>）<% } %>
 </任务情报板当前状态>
 任务情报板变量更新规则（路径为 `事件.任务情报板`）:
 <% } else { _%>
@@ -956,16 +1158,23 @@ _%>
 <% } _%>
 <%- _ind %>    剧情追加: 剧情中 NPC 给出新委托或触发 `/任务列表` 新任务时不受参考配额限制，用 `insert` 追加至 `/事件/任务情报板/列表/-`（对象型用 `insert` 新键），已写 `/任务列表` 的保持同 `标题`；按体量定级：剧情任务（B~S 级｜10 栏｜仅核心层+1 档）、本地主线（5 栏｜仅核心层+1 档）、支线任务（3 栏｜无+1 档）<% if (_qbNeedGen) { %>，按下方字段补全<% } else { %>；补全 `id`/`类别`/`等级`/`标题`/`方式`/`引导`/`地点`（单站）/`时限`/`摘要`（平实公开，不泄露真相与私下疑点）/`预期收益`，剧情与主线附隐藏 `真相`（并附 `更新日`）<% } %>
 <%- _ind %>    区域与世界词条: 保存在 `/事件/任务情报板/余波`，格式 `[绿/黄/红]【2~6字短标签】30~50字客观现状`（绿=利好稳定、黄=隐患波动、红=危机封锁）；只写当前可见实体变化（控制权、封锁、物价、环境、法令、商路等），禁止以 <user> 或冒险者为主语写战绩记录，禁止空泛描述。<% if (_qbNeedInitAftermathRule) { %>首次进入尚未记录词条的区域（初始化、跨区迁入或重扫且当前区域无词条）时，按当前世界书设定与近期剧情为当前区域默认写入 3 条常驻词条（分属不同维度，如商贸、治安、设施、环境、势力等，彼此逻辑自洽，不重复、不自相矛盾）；禁止 3 绿、3 黄、3 红（每区至少包含 2 种色阶），也不得每区机械套用 1 绿 1 黄 1 红，按各地实际繁荣度、秩序与局势做差异化组合（如安定商都偏 2 绿 1 黄或 2 绿 1 红，隐患较多的城镇偏 1 绿 2 黄或 2 黄 1 红，动荡前线偏 1 黄 2 红或 1 绿 2 红）。<% } %>`世界` 词条同样使用 `[绿/黄/红]` 色阶，不默认生成，仅剧情任务或重大剧情与事件链引发的跨大区或全大陆级重大后果允许写入或改写 `世界`（常驻每区与 `世界` 各自最多 <%- _maxAftermath %> 条，超出替换最旧项）。有明确截止期的短期活动、盛会、招生、临时戒严或短期灾害写为限时词条（额外叠加，不占常驻名额，每区与 `世界` 最多额外叠加 <%- _maxTempAftermath %> 条<% if (_qbNeedInitAftermathRule) { %>；当地正有短期活动时应先写满 3 条常驻词条，再额外追加 1~<%- _maxTempAftermath %> 条限时词条<% } %>），格式 `[绿/黄/红][至YYYY年-M月-D日]【2~6字短标签】30~50字客观现状`，到期自动失效移除。剧情任务、本地主线（完结、失败或搁置恶化）或非任务的重大剧情与事件链变故（如敌对势力袭击城镇、灾害、政变、控制权变更等）造成实质后果时，无论停留当地还是返回旧区域，都可以即时新增、改写替换或移除对应区域词条，并随局势同步升降色阶（恶化转黄或升红，好转降黄或转绿；本地主线按具体城市或区域名归档；支线任务与日常琐事不改写词条）；重大任务完结写入 `[绿]` 词条时，如果 `真相` 留有受损势力或权力真空，可在对应区域同步写入 1 条 `[黄]` 隐患词条。<% if (_qbNeedRevisitAftermathRule) { %>返回已有词条的旧区域时：离开满 <%- _regionRevisitDays %> 天时，可根据期间剧情与局势演进或改写 1 条词条（没有明显变化时保持不变）；离开不足 <%- _regionRevisitDays %> 天时不得无故改动词条，但如果期间已有明确剧情变故、已到期的预告事件（如预告的袭击、灾害、政变等）或任务后果实际波及该区域，仍按剧情改写对应词条。<% } %><% if (!_hasQb) { %>首次初始化整板时，将首批词条直接写入下方 `insert /事件/任务情报板` 的 `余波` 字段中，不再单独 `insert /事件/任务情报板/余波`<% } else if (!_hasAftermath) { %>首次写入用 `{ "op": "insert", "path": "/事件/任务情报板/余波", "value": { "<区域名或世界>": ["[绿/黄/红]【短标签】..."] } }`（同轮多键合并写入同一对象）<% } else { %>对已有区域键用 `replace`、新区域键用 `insert` 更新 `/事件/任务情报板/余波/<区域名或世界>`<% } %>
-<%- _ind %>    路径: <% if (!_hasQb) { %>`/事件/任务情报板` 未创建，用 `{ "op": "insert", "path": "/事件/任务情报板", "value": { "区域键": <%- JSON.stringify(_region.key || 'unknown') %>, "区域": <%- JSON.stringify(_region.name || '当前区域') %>, "更新日": <%- JSON.stringify(_day) %>,<% if (_day) { %> "区域访问日": { <%- JSON.stringify(_visitRegionKey) %>: <%- JSON.stringify(_day) %> },<% } %> "列表": [ ... ]<% if (_qbNeedInitAftermathRule) { %>, "余波": { <%- JSON.stringify(_visitRegionKey) %>: [ "[绿/黄/红]【短标签】..." ] }<% } %> } }`；**禁止对 `/事件` 执行 insert 或 replace**<% } else if (!_qbTouchBoard && _qbExistKeys.length > 0 && !_visitPatchHint) { %>仅按需更新 `/事件/任务情报板` 下对应子字段（保留其余全部控制键；**禁止整块覆写 `/事件` 或 `/事件/任务情报板`**）<% } else if (_qbMissKeys.length === 0) { %>分别用 `replace` 更新 `/事件/任务情报板` 下的 `区域键`<% if (_qbRegionChanged && _region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」；**禁止整块覆写 `/事件`**）<% } else if (_qbExistKeys.length === 0) { %>`/事件/任务情报板` 仅含控制字段，分别用 `insert` 写入 `/事件/任务情报板` 下的 `区域键`<% if (_region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」；**禁止整块覆写 `/事件`**）<% } else { %>对已存在键（<%- _qbExistKeys.map((k) => '`' + k + '`').join('、') %>）用 `replace`、对缺失键（<%- _qbMissKeys.map((k) => '`' + k + '`').join('、') %>）用 `insert` 更新 `/事件/任务情报板` 下对应字段<% if (_qbRegionChanged && _region.key) { %>（`区域键` 写 `<%- _region.key %>`）<% } %>（保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」；**禁止整块覆写 `/事件`**）<% } %><% if (_visitPatchHint) { %>；同步区域访问日用 <%- _visitPatchHint %><% } %>
+<%- _ind %>    路径: <% if (!_hasQb) { %>`/事件/任务情报板` 未创建，用 `{ "op": "insert", "path": "/事件/任务情报板", "value": { "区域键": <%- JSON.stringify(_region.key || 'unknown') %>, "区域": <%- JSON.stringify(_region.name || '当前区域') %>, "更新日": <%- JSON.stringify(_day) %>,<% if (_day) { %> "区域访问日": { <%- JSON.stringify(_visitRegionKey) %>: <%- JSON.stringify(_day) %> },<% } %> "列表": [ ... ]<% if (_qbNeedInitAftermathRule) { %>, "余波": { <%- JSON.stringify(_visitRegionKey) %>: [ "[绿/黄/红]【短标签】..." ] }<% } %> } }`；**禁止对 `/事件` 执行 insert 或 replace**<% } else if (!_qbTouchBoard && _qbExistKeys.length > 0 && !_visitPatchHint) { %>仅按需更新 `/事件/任务情报板` 下对应子字段（保留其余全部控制键；**禁止整块覆写 `/事件` 或 `/事件/任务情报板`**）<% } else if (_qbMissKeys.length === 0) { %>分别用 `replace` 更新 `/事件/任务情报板` 下的 `区域键`<% if (_qbRegionChanged && _region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」「关注方向」「导演状态」；**禁止整块覆写 `/事件`**）<% } else if (_qbExistKeys.length === 0) { %>`/事件/任务情报板` 仅含控制字段，分别用 `insert` 写入 `/事件/任务情报板` 下的 `区域键`<% if (_region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」「关注方向」「导演状态」；**禁止整块覆写 `/事件`**）<% } else { %>对已存在键（<%- _qbExistKeys.map((k) => '`' + k + '`').join('、') %>）用 `replace`、对缺失键（<%- _qbMissKeys.map((k) => '`' + k + '`').join('、') %>）用 `insert` 更新 `/事件/任务情报板` 下对应字段<% if (_qbRegionChanged && _region.key) { %>（`区域键` 写 `<%- _region.key %>`）<% } %>（保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」「关注方向」「导演状态」；**禁止整块覆写 `/事件`**）<% } %><% if (_visitPatchHint) { %>；同步区域访问日用 <%- _visitPatchHint %><% } %>
 <% if (_qbNeedGen) { _%>
 <%- _ind %>  生成规格（品质与禁项沿用<任务与委托规则>，仅核心层可+1 档，其余按原等级；下列条数为参考配额，剧情追加不受上限限制）:
 <%- _ind %>    字段:
 <%- _ind %>      基础: `id`、`类别`（剧情任务/本地主线/支线任务）、`等级`（D~S）、`标题`（纯任务名，不带 `（个人/团队）` 后缀）、`方式`（委托/悬赏/调查/探索/危机/周旋/异象）、`引导`（委托/悬赏写联络人与去处；其余写地点与起始线索）、`地点`（仅写当前阶段已知的单个起始地点或首个外部去处，禁止用 `→` 串联多站路线或提前透露后续与最终目的地）、`时限`（对照当前世界时间匹配紧迫度与路程，紧急事件不写数天，跨区长线留足路程）、`摘要`（按普通委托单或公开传闻口吻平实陈述已知需求、事件起因与委托诉求，写法上与普通支线保持一致，不泄露幕后真相；不得在结尾用「但/可/却……私下……」点破异常疑点、暗中插手的势力或内部隐患，疑点留到接取后的实地接触中暴露）、`预期收益`（字符串数组）
-<%- _ind %>      附加: 剧情任务与本地主线附加 `真相`（1~3 句隐藏设定，按体量包含①表里落差：公开 `摘要` 与实情错位；②多方筹码：剧情任务或博弈型主线中另有势力争夺的共享人质/物件/商路；③未解代价：单纯清场或折中会引爆的后果；剧情任务另含多地脉络，不写线性步骤，仅后台保存不展示给 <user>）；并附 `更新日`（`<%- _day %>`）；未接取时不写 `进展` 字段（不填「尚未接取」「暂无」等占位文本）
+<%- _ind %>      附加: 剧情任务与本地主线附加 `真相`（1~3 句隐藏设定，仅后台保存不展示也不泄露给 <user>）：开头写定所选骨架标签 `【悬疑反转】`/`【多方竞速】`/`【灾变探索】`/`【护送破局】`（禁止写入公开 `标题` 或 `摘要`），再按所选骨架选配 1~2 项实质内核——仅 `悬疑反转` 需包含 ①表里落差（公开 `摘要` 与实情错位），另外三种分别围绕明牌竞速筹码、灾变规律逆转或护送破局准备度展开；可按需选配 ②多方筹码（另有势力争夺的共享人质/物件/商路）或 ③未解代价（单纯清场或折中会引爆的后果，准备充分的 `护送破局` 可全胜，不强行设置二选一）；剧情任务另含多地脉络，不写线性步骤。同步附 `更新日`（`<%- _day %>`）；未接取时不写 `进展` 字段（不填「尚未接取」「暂无」等占位文本）
+<%- _ind %>      骨架轮换: <% if (_usedSkeletonTags.size > 0) { %>当前保留任务已占骨架：<%- Array.from(_usedSkeletonTags).map((t) => '【' + t + '】').join('、') %>，新生成尽量错开；<% } %>本轮优先推荐骨架：<%- _recSkeletons.map((sk) => `【${sk.tag}】${sk.genDesc}`).join('；') %>（备选骨架：<%- _altSkeletons.map((sk) => `【${sk.tag}】${sk.genDesc}`).join('；') %>）
 <%- _ind %>    剧情任务（1~2 条，B~S 级，跨区保留｜数周~数月或无固定时限｜仅核心层+1 档｜收益 10 栏）: 高危、大范围的跨城或跨大区连环长线（如重大灾害、封印松动、跨国阴谋、势力冲突等），不得写成局限于当前城镇的局部事务。`引导`可由本地传闻或线索引入，促使 <user> 前往别处并串联多个城市或区域的完整脉络只写在后台 `真相` 中；采用三段式波折，随阶段引出新局势、远方目的地或深层线索，多线轮换悬疑反转、多方竞价、危机倒计时等骨架<% if (_emitPlot) { %>，不在单次遭遇内完结<% } %>。接取后具备明确紧迫性，跨区或搁置满 <%- _storyAdvanceDays %> 天时自行演进 1 步，长期放任会导致局势失控并波及多个区域与世界
-<%- _ind %>    本地主线（1~2 条，限本区｜3~15 天或绑定当地事件节点｜仅核心层+1 档｜收益 5 栏）: 区域级多阶段事件，含 1 次认知偏差或利益取舍，完结后留当地可见影响<% if (_emitPlot) { %>；不在击败敌方或处理表象后草率完结，也不将多条主线合并为一战收尾<% } %>
+<%- _ind %>    本地主线（1~2 条，限本区｜3~15 天或绑定当地事件节点｜仅核心层+1 档｜收益 5 栏）: 区域级多阶段事件，按所选骨架含 1 次认知偏差或利益取舍（或限时竞夺、机制规律逆转、伏击破局考验），完结后留当地可见影响<% if (_emitPlot) { %>；不在击败敌方或处理表象后草率完结，也不将多条主线合并为一战收尾<% } %>
+<% if (_allowAftershockSlot) { _%>
+<%- _ind %>    稀缺伏笔槽（本轮至多 1 条本地主线可选）: 可为至多 1 条新建 `本地主线` 在 `真相` 开头附加 `【假象余震】` 前置（可单用或搭配 `【护送破局】`/`【灾变探索】` 等正向骨架，不搭配 `【悬疑反转】`）：第一阶段保持完全正直自洽，按正常流程推进并在结案时全额发齐 5 栏 `预期收益`（已发收益不倒扣，第一阶段不设计反转剥夺奖励）；仅在 `真相` 末尾附一句 `｜余震引信：<25字以内客观物理矛盾>`，暂不在此轮设计第二阶段内容
+<% } _%>
 <%- _ind %>    支线任务（2~3 条，限本区｜数小时~7 天｜全栏原等级，无+1 档｜收益 3 栏）: 单点闭环的一次性委托或短途探索，直接推进不设反转
 <%- _ind %>    事件承接: 生成任务（尤其是剧情任务与本地主线）时，优先承接当前上下文中已激活且未完成的世界书事件或事件链线索（包括原版与创意工坊自制事件链），转化为不泄露幕后真相的公开情报（传闻、委托、悬赏或异常目击）；未在上下文中激活的事件链不得凭空捏造，没有可用线索时优先从本区与世界现有 `[黄]/[红]` 词条矛盾中衍生委托或线索，再按局势原创
+<% if (_qbFocus) { _%>
+<%- _ind %>    关注方向（<%- _qbFocus %>）: 按「已激活事件链 > 本区与世界现有 [黄]/[红] 词条矛盾 > 关注方向 > 常规原创」的优先级软倾斜；支线任务安排 1~2 条贴合该方向，至少保留 1 条常规本地委托；本地主线至多 1 条借该方向作切入视角且服从当地核心矛盾；剧情任务保持跨城大格局，至多借该方向引出线索；不点名抓走核心角色、不新增营收或名册数值字段，按原等级与层级生成
+<% } _%>
 <%- _ind %>    层级匹配: 任务等级与正面敌对生命层级对应（<%- _tierMapText %>），设计任务与 `真相` 时，正面敌对、阻拦、主动攻击或追杀 <user> 的角色不得高于任务对应层级；更高层级的人物与势力只作为背景存在、幕后授意者或线索来源，留作后续高阶任务引子
 <%- _ind %>    预期收益: 每栏写概括性独立品类与数量区间（如「史诗级武器 ×1」「稀有级魔导材料 ×4~6」），品类不重复，品质与货币沿用<技能装备道具生成规则>与<经济价格指南>；剧情任务（10 栏）与本地主线（5 栏）按高价值在前、基础在后排布（剧情第 1~3 栏为核心层、第 4~7 栏为中坚层进阶装备/配方/实用资源、第 8~10 栏为基础层金币/常规材料/补给/普通声望；本地主线第 1 栏为核心层、第 2~3 栏为中坚层、第 4~5 栏为基础层），仅核心层可+1 档且不得超限，中坚层、基础层与全部支线任务（3 栏）均按任务原等级品质发放；推进已锁定或已接取任务时在中途与结算分批兑现，总兑现不低于剩余有效栏位底线<% if (_qbHasTracked && _qbClaimRule) { %><%- _qbClaimRule %><% } %><% if (_qbHasTracked && _hasQb) { %>；因失败或局势恶化折损未兑现栏位时，按该条 `失效Patch` 写入 `/事件/任务情报板/已失效`（已标记 `[✓]` 不转为失效）<% if (_qbLostMergeInBody) { %><%- _qbLostMergeNote %><% } %><% } %>
 <% } else if (_emitPlot) { _%>
@@ -979,8 +1188,8 @@ _%>
 <%- _ind %>    分批兑现: 推进已锁定或已接取任务时，在中途与结算分批兑现 `预期收益`（总兑现不低于剩余有效栏位底线，品质与货币沿用<技能装备道具生成规则>与<经济价格指南>）<% if (_qbHasTracked && _qbClaimRule) { %><%- _qbClaimRule %><% } %>
 <% } else { _%>
 <%- _ind %>  推进与兑现:
-<%- _ind %>    节奏: 已接取的剧情任务按跨城/跨大区三段式长线推进，多线错开骨架（跨区或搁置满 <%- _storyAdvanceDays %> 天演进恶化 1 步，长期放任波及大区与世界）；本地主线限本区推进并含 1 次偏差或取舍，限时项拖过关键节点关闭最优窗口转入补救；支线限本区单点闭环直接推进，不设反转
-<%- _ind %>    波折节拍: 剧情与本地主线按 `预期收益` 累计已结算份额（已兑现与已失效合计，栏位高价值在前、基础在后）控制节奏：初段先发后排基础或中坚报酬并埋下可回收细节，前 1~2 次接触只露疑点与矛盾，NPC 不首轮揭示 `真相`；中段（累计已结算 3~6 栏 / 本地主线 2~3 栏份额）触发旧线索重新解释或第三方争夺筹码；终局前（累计已结算 7~9 栏 / 本地主线 4 栏份额）触发不可逆代价取舍（牺牲盟友关系、立场声望或以替代战利品置换约定尾款，守住剩余有效收益底线，不能无代价兼得），终局结算前排核心层奖励；反转复用前文元素，终局不临时引入缺乏铺垫的反派或万能解法
+<%- _ind %>    节奏: 已接取的剧情任务按跨城/跨大区三段式长线推进，多线错开骨架（跨区或搁置满 <%- _storyAdvanceDays %> 天演进恶化 1 步，长期放任波及大区与世界）；本地主线限本区<% if (_twistBeatLine === _twistBeatPositive) { %>正面推进<% } else { %>推进并含 1 次偏差或取舍<% } %>，限时项拖过关键节点关闭最优窗口转入补救；支线限本区单点闭环直接推进，不设反转
+<%- _ind %>    波折节拍: <%- _twistBeatLine %>
 <%- _ind %>    演化与完结: 按 <user> 介入顺序依据 `真相` 演化（直接介入暗线时反向影响明面进展）；交涉破裂、潜入暴露或击杀关键 NPC 时不阻断推进、不靠巧合化解，情报转入遗物、地下渠道或敌对势力，改走高代价替代路径；`真相` 未解或 `预期收益` 主要部分仍为 `[□]` 时不草率完结，不合并多条主线一战收尾
 <%- _ind %>    层级与串联: <%- _tierSequelRule %>
 <%- _ind %>    分批兑现: 推进已锁定或已接取任务时，在中途与结算分批兑现 `预期收益`（总兑现不低于剩余有效栏位底线，品质与货币沿用<技能装备道具生成规则>与<经济价格指南>）<% if (_qbHasTracked && _qbClaimRule) { %><%- _qbClaimRule %><% } %>
@@ -1003,6 +1212,13 @@ _%>
 <% } _%>
 <% } _%>
 <%- _ind %>  本轮指令（<%- _region.name || '未记录' %><% if (_worldTime) { %>｜<%- _worldTime %><% } %>）: <% if (_qbMode === 'rescan') { %><% if (_isNullCore) { %><user> 已启动今日免费地区情报重扫（每日 1 次）：<% } else { %><user> 已支付 <%- _data.questBoard.rescanFp %> FP 启动地区情报重扫：<% } %><% if (_qbShownItems.length > 0) { %>保留剧情任务、已接取与 `★已锁定` 项，按当前区域重新生成 1~2 条本地主线 + 2~3 条支线任务<% } else { %>当前没有需保留的旧任务，按当前区域全新生成 1~2 条本地主线 + 2~3 条支线任务<% } %><% if (!_qbHasStoryItem) { %>（没有剧情任务时补 1 条剧情任务）<% } %>（<% if (_qbShownItems.length > 0) { %>下方列出的保留项在 `列表` 中保持原 `id`/等级/内容/更新日不变，不重编、不添 `进展`，写回 `预期收益` 时去掉 `[n□]`/`[n✓]`/`[n✕]` 前缀；<% } %>未列出的旧未接取未锁定本地任务不保留，整表 `<%- _qbExistKeys.includes('列表') ? 'replace' : 'insert' %>` 写入 `列表`）<% if (_localAftermathShown.length === 0) { %>，为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日<% } %><% } else if (_qbMode === 'init') { %>首次初始化任务情报板：生成 1 条剧情任务 + 1~2 条本地主线 + 2~3 条支线任务<% if (_localAftermathShown.length === 0) { %>，为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日<% } else { %>，并记录区域访问日<% } %><% } else if (_qbMode === 'relocate') { %>已跨区域迁入「<%- _region.name %>」（原「<%- _qbRegionName %>」）：<% if (_qbShownItems.length > 0) { %>保留下方现有项（写回 `预期收益` 时去掉 `[n□]`/`[n✓]`/`[n✕]` 前缀）<% if (_qbNeedAdv) { %>并推进标注 `待演进` 的剧情任务<% } %>，<% } else { %>当前没有需保留的旧任务，<% if (_qbNeedAdv) { %>推进标注 `待演进` 的剧情任务并<% } %><% } %>按新区生成 1~2 条本地主线 + 2~3 条支线任务（没有剧情任务时补 1 条）<% if (_localAftermathShown.length === 0) { %>，为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日<% } else if (_awayDays === null) { %>；返回旧区域（首次记录访问日）：无明确剧情变故或到期预告事件时保持原词条不变，并记录区域访问日<% } else if (_revisitDue) { %>；返回旧区域（已离开 <%- _awayDays %> 天）：按上方词条规则演进或改写本区最多 1 条词条（没有明显变化时保持不变），并更新区域访问日<% } else { %>；返回旧区域（离开不足 <%- _regionRevisitDays %> 天）：无明确剧情变故或到期预告事件时保持原词条不变，并更新区域访问日<% } %><% } else if (_qbMode === 'refill') { %>补足空缺：按当前区域补足未接取的剧情任务、本地主线或支线空缺<% if (_qbNeedAdv) { %>，并推进标注 `待演进` 的剧情任务<% } %><% } else if (_qbMode === 'advance') { %>剧情任务搁置演进：按上方「剧情演进」推进标注 `待演进` 的条目<% } else { %>同区域常规停留：<% if (_qbHasTracked && _hasQb) { %>发放板上收益时按 `兑现Patch` 写入，发生折损失效时按 `失效Patch` 写入，<% } %>发生重大剧情或事件链变故时按规则更新区域或世界词条，其余仅移除过期或已完结项；没有变动（含本轮刚跨城）时跳过写板<% } %><% if (_qbClosedTitles.length) { %>（同步将已完结任务移出任务情报板：<%- _qbClosedTitles.join('、') %>）<% } %>
+<% if (_dueLead) {
+  const _leadRemovePath = _rawLeads.length <= 1
+    ? (_aftershockCooldown > 0 ? '/事件/任务情报板/导演状态/待引爆' : '/事件/任务情报板/导演状态')
+    : `/事件/任务情报板/导演状态/待引爆/${_dueLead.idx}`;
+_%>
+<%- _ind %>    因果引爆: 原已结案的「<%- _dueLead.title %>」露出物理裂痕（<%- _dueLead.text %>）；<% if (_emitPlot) { %>正文在无关日常细节、战利品或环境变化中自然带出这一处异常细节供 <user> 追查，<% } %>按「剧情追加」直接追加 1 条 B~A 级高阶追查或补救任务（<%- _dueLead.kind %><% if (_dueLead.kind === '假象余震') { %>，在新建条目的 `真相` 开头标注 `【假象余震二段】` 以便与日常任务区分<% } %>），一阶段已兑现奖励保留不倒扣，并执行 `{ "op": "remove", "path": "<%- _leadRemovePath %>" }`
+<% } _%>
 <% if (_qbShownItems.length) { _%>
 <%- _ind %>  板上任务:
 <% _qbShownItems.forEach((it) => {
@@ -1017,9 +1233,9 @@ _%>
   const _metaBit = _metaParts.join('，');
 _%>
 <% if (it.accepted && !_qbTouchBoard) { _%>
-<%- _ind %>    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜已接取:<%- it.formalTaskName %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>]<% if (it.category !== '支线任务' && it.summary) { %> 摘要：<%- it.summary %><% } %><% if (it.category !== '支线任务' && it.truth) { %>｜幕后真相：<%- it.truth %><% } %><% if (it.rewardItems.length) { %>｜预期收益：<%- _fmtRewards(it) %>｜兑现Patch：<%- _claimPatchHint(it) %><% if (it.advanceLoss) { %><%- _fmtAdvLoss(it) %><% } else if (it.category !== '支线任务' && _hasQb) { %>｜失效Patch：<%- _lostPatchHint(it) %><% } %><% } %><% if (_removePatchHint(it)) { %>｜完结移出：<%- _removePatchHint(it) %><% } %>
+<%- _ind %>    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜已接取:<%- it.formalTaskName %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>]<% if (it.category !== '支线任务' && it.summary) { %> 摘要：<%- it.summary %><% } %><% if (it.category !== '支线任务' && it.truth) { %>｜幕后真相：<%- it.truth %><% } %><% if (it.rewardItems.length) { %>｜预期收益：<%- _fmtRewards(it) %>｜兑现Patch：<%- _claimPatchHint(it) %><% if (it.advanceLoss) { %><%- _fmtAdvLoss(it) %><% } else if (it.category !== '支线任务' && _hasQb) { %>｜失效Patch：<%- _lostPatchHint(it) %><% } %><% } %><% if (_removePatchHint(it)) { %>｜完结移出：<%- _removePatchHint(it) %><% } %><%- _seedFuseHint(it) %>
 <% } else { _%>
-<%- _ind %>    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜<%- it.way %><% if (it.accepted) { %>｜已接取:<%- it.formalTaskName %><% } else if (it.intent) { %>｜★已锁定<% } %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>] <%- it.title %><% if (_metaBit) { %>（<%- _metaBit %>）<% } %><% if ((_showDetail || (it.accepted && it.category !== '支线任务')) && it.summary) { %>｜摘要：<%- it.summary %><% } %><% if ((_showDetail || it.accepted) && it.truth) { %>｜幕后真相：<%- it.truth %><% } %><% if ((!it.accepted || _preserveFull) && it.guide) { %>｜引导：<%- it.guide %><% } %><% if ((it.intent || it.accepted) && it.rewardItems.length) { %>｜预期收益：<%- _fmtRewards(it) %>｜兑现Patch：<%- _claimPatchHint(it) %><% if (it.advanceLoss) { %><%- _fmtAdvLoss(it) %><% } else if (it.category !== '支线任务' && _hasQb) { %>｜失效Patch：<%- _lostPatchHint(it) %><% } %><% } else if (_showDetail && it.rewards.length) { %>｜预期收益：<%- it.rewards.join('、') %><% } %><% if (it.accepted && _removePatchHint(it)) { %>｜完结移出：<%- _removePatchHint(it) %><% } %>
+<%- _ind %>    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜<%- it.way %><% if (it.accepted) { %>｜已接取:<%- it.formalTaskName %><% } else if (it.intent) { %>｜★已锁定<% } %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>] <%- it.title %><% if (_metaBit) { %>（<%- _metaBit %>）<% } %><% if ((_showDetail || (it.accepted && it.category !== '支线任务')) && it.summary) { %>｜摘要：<%- it.summary %><% } %><% if ((_showDetail || it.accepted) && it.truth) { %>｜幕后真相：<%- it.truth %><% } %><% if ((!it.accepted || _preserveFull) && it.guide) { %>｜引导：<%- it.guide %><% } %><% if ((it.intent || it.accepted) && it.rewardItems.length) { %>｜预期收益：<%- _fmtRewards(it) %>｜兑现Patch：<%- _claimPatchHint(it) %><% if (it.advanceLoss) { %><%- _fmtAdvLoss(it) %><% } else if (it.category !== '支线任务' && _hasQb) { %>｜失效Patch：<%- _lostPatchHint(it) %><% } %><% } else if (_showDetail && it.rewards.length) { %>｜预期收益：<%- it.rewards.join('、') %><% } %><% if (it.accepted && _removePatchHint(it)) { %>｜完结移出：<%- _removePatchHint(it) %><% } %><%- _seedFuseHint(it) %>
 <% } _%>
 <% }) _%>
 <% } _%>

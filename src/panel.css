@@ -778,6 +778,129 @@
 
 .qh-quest-rescan {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.qh-focus-toggle {
+  appearance: none;
+  padding: 6px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(124, 152, 190, 0.28);
+  background: rgba(14, 24, 44, 0.55);
+  color: var(--qh-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.qh-focus-toggle:hover {
+  border-color: rgba(90, 169, 255, 0.55);
+  color: #edf5ff;
+}
+
+.qh-focus-toggle.is-open {
+  border-color: rgba(90, 169, 255, 0.6);
+  background: rgba(24, 42, 74, 0.8);
+  color: #dbeafe;
+}
+
+.qh-focus-toggle.is-active {
+  border-color: rgba(240, 169, 44, 0.65);
+  background: rgba(240, 169, 44, 0.16);
+  color: #ffe08a;
+  box-shadow: 0 0 12px rgba(240, 169, 44, 0.16);
+}
+
+.qh-focus-bar {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  margin-top: 2px;
+  border-top: 1px solid rgba(74, 128, 200, 0.22);
+}
+
+.qh-focus-input {
+  flex: 1 1 240px;
+  min-width: 0;
+  padding: 7px 11px;
+  border-radius: 6px;
+  border: 1px solid rgba(74, 128, 200, 0.36);
+  background: rgba(8, 12, 20, 0.9);
+  color: var(--qh-text);
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+.qh-focus-input::placeholder {
+  color: var(--qh-faint);
+}
+
+.qh-focus-input:focus {
+  outline: none;
+  border-color: rgba(240, 169, 44, 0.72);
+}
+
+.qh-focus-modes {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(10, 16, 28, 0.85);
+  border: 1px solid rgba(74, 128, 200, 0.25);
+}
+
+.qh-focus-mode {
+  appearance: none;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--qh-muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.qh-focus-mode:hover {
+  color: var(--qh-text);
+}
+
+.qh-focus-mode.is-active {
+  background: rgba(240, 169, 44, 0.2);
+  color: #ffe08a;
+}
+
+.qh-focus-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.qh-btn--focus-save {
+  background: rgba(90, 169, 255, 0.2);
+  border-color: rgba(90, 169, 255, 0.5);
+  color: #d6ecff;
+}
+
+.qh-btn--focus-save:hover:not(:disabled) {
+  background: rgba(90, 169, 255, 0.32);
+  border-color: rgba(90, 169, 255, 0.75);
+}
+
+.qh-focus-clear[hidden] {
+  display: none;
 }
 
 /* 提示条 */
@@ -1788,9 +1911,21 @@
     font-size: 22px;
   }
 
-  .qh-quest-rescan,
-  .qh-quest-rescan .qh-btn--primary {
+  .qh-quest-rescan {
     width: 100%;
+    justify-content: space-between;
+  }
+
+  .qh-quest-rescan .qh-btn--primary {
+    flex: 1 1 200px;
+  }
+
+  .qh-focus-bar {
+    gap: 8px;
+  }
+
+  .qh-focus-input {
+    flex: 1 0 100%;
   }
 
   .qh-traits-grid {

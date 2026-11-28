@@ -10,6 +10,8 @@ import { DATA, SCRIPT_VERSION } from './src/data.js';
 import {
   questBoardState,
   effectiveChatCount,
+  normalizeQuestFocus,
+  isOnceFocusExpired,
   rescanFresh,
   lastNonSystemIsAssistant,
   readState,
@@ -34,6 +36,11 @@ import {
   deleteAftermathEntry,
   hasExpiredAftermath,
   sweepExpiredAftermath,
+  setQuestFocus,
+  hasExpiredOnceFocus,
+  clearExpiredOnceFocus,
+  hasExpiredDirectorLeads,
+  sweepExpiredDirectorLeads,
   requestQuestRescan,
   questRescanDone,
   clearQuestRescan,
@@ -3719,4 +3726,343 @@ test('jsDelivr 远程自动更新脚本：默认 main 追新、多节点回退�
   assert.equal(failErrors.length, 1);
   assert.match(failErrors[0], /jsDelivr/);
   assert.match(failErrors[0], /⭐粘这个-任务助手脚本\.js/);
+});
+
+test('轻量关注方向：归一化、重扫联动提交、仅本次宽限期保护与过期自动清理', () => {
+  // 1) normalizeQuestFocus：字符串/对象兼容、换行压缩与 40 字截断
+  assert.deepEqual(normalizeQuestFocus('  经营\n魔药铺  '), { text: '经营 魔药铺', mode: 'long', messageCount: '' });
+  const longText = '一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十超出';
+  assert.equal(normalizeQuestFocus({ 文本: longText, 模式: 'once', 消息数: '8' }).text.length, 40);
+  assert.equal(normalizeQuestFocus({ 文本: '  \n ', 模式: 'once' }).text, '');
+
+  // 2) setQuestFocus 写入与清空、requestQuestRescan 协同保存/刷新消息数
+  let stat = {
+    命运点数: 300,
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-10日' },
+    事件: { 任务情报板: { 区域键: '雾晶港', 区域: '雾晶港', 列表: [] } },
+  };
+  stat = setQuestFocus(stat, '典狱长追捕与押运', { mode: 'long' }).stat;
+  assert.deepEqual(stat['事件']['任务情报板']['关注方向'], { 文本: '典狱长追捕与押运', 模式: 'long' });
+  assert.deepEqual(questBoardState(stat).focus, { text: '典狱长追捕与押运', mode: 'long', active: true });
+
+  // 不传 focusText 时，requestQuestRescan 不得误删原有长期关注方向
+  stat = requestQuestRescan(stat, 9, 10).stat;
+  assert.equal(stat['事件']['任务情报板']['关注方向']['文本'], '典狱长追捕与押运');
+  stat = clearQuestRescan(stat).stat;
+
+  // 传入 focusText & focusMode: 'once' 时，在单次重扫内原子切换
+  stat = requestQuestRescan(stat, 9, 10, {
+    focusText: '魔药铺供货',
+    focusMode: 'once',
+  }).stat;
+  assert.deepEqual(stat['事件']['任务情报板']['关注方向'], { 文本: '魔药铺供货', 模式: 'once', 消息数: '10' });
+
+  // 在 nc+1 AI 尾与 nc+2 落楼宽限期内（allowGrace: false, extraFinished: false），仅本次方向不得被提前清空
+  const aiTailChat11 = Array.from({ length: 11 }, (_, idx) => ({
+    is_user: idx !== 10 && idx % 2 === 0,
+    is_system: false,
+    mes: 'x',
+  }));
+  assert.equal(
+    isOnceFocusExpired(stat['事件']['任务情报板'], {
+      chat: aiTailChat11,
+      chatCount: 11,
+      allowGrace: false,
+      extraFinished: false,
+    }),
+    false,
+  );
+  // 宽限期满且额外模型非运行态后，maintainQuestBoard 同步清掉 待重扫 与 once 关注方向
+  const maint = maintainQuestBoard(stat, {
+    floor: 10,
+    chatCount: 11,
+    chat: aiTailChat11,
+    allowGrace: true,
+    extraFinished: true,
+  });
+  assert.ok(!maint.skip);
+  assert.equal(maint.stat['事件']['任务情报板']['待重扫'], undefined);
+  assert.equal(maint.stat['事件']['任务情报板']['关注方向'], undefined);
+
+  // 空文本调用 setQuestFocus 删除关注方向节点
+  const cleared = setQuestFocus(setQuestFocus(stat, '测试').stat, '').stat;
+  assert.equal(Object.prototype.hasOwnProperty.call(cleared['事件']['任务情报板'], '关注方向'), false);
+});
+
+test('隐藏导演状态：完结自动截获引信、假象余震冷却隔离与过期引信清理（零界面暴露）', () => {
+  const baseStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-10日' },
+    任务列表: {
+      '守门人正名': { 状态: '已完成' },
+      '普通城防': { 状态: '已完成' },
+      '港口急信': { 状态: '已完成' },
+      '密库后续': { 状态: '已完成' },
+    },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        列表: [
+          {
+            id: 'q_shock',
+            类别: '本地主线',
+            等级: 'C',
+            标题: '守门人正名',
+            方式: '调查',
+            地点: '雾晶港-西门',
+            真相: '【假象余震】【护送破局】镇长与治安官共同裁剪了档案｜余震引信：守门人账本造册早于案发前三日，真正被害另有其人',
+            预期收益: ['金币 ×150'],
+          },
+          {
+            id: 'q_seq1',
+            类别: '本地主线',
+            等级: 'C',
+            标题: '普通城防',
+            方式: '委托',
+            真相: '【护送破局】押运途中遭遇夜袭｜后续引信：没收的暗纹箱被秘密转送往王都某密库',
+            预期收益: ['金币 ×120'],
+          },
+          {
+            id: 'q_seq2',
+            类别: '支线任务',
+            等级: 'D',
+            标题: '港口急信',
+            方式: '委托',
+            真相: '后续引信：不应突破上限 2 的第三条引信',
+            预期收益: ['金币 ×50'],
+          },
+          {
+            id: 'q_shock2',
+            类别: '本地主线',
+            等级: 'C',
+            标题: '密库后续',
+            方式: '调查',
+            真相: '【假象余震】另一条余震｜余震引信：只能保留 1 条假象余震',
+            预期收益: ['金币 ×100'],
+          },
+        ],
+      },
+    },
+  };
+
+  // questBoardState 不暴露 导演状态 与 真相/骨架/引信
+  const beforeState = questBoardState(baseStat);
+  assert.equal(beforeState.director, undefined);
+  assert.equal(beforeState.items[0]?.truth, undefined);
+
+  // sweepClosedQuests 截获引信：上限最多 2 条、假象余震至多 1 条，并自动置入冷却 3；普通主线 q_seq1 同步递减冷却 1 -> 2
+  const swept = sweepClosedQuests(baseStat, { chatCount: 10 }).stat;
+  const director = swept['事件']['任务情报板']['导演状态'];
+  assert.ok(director);
+  assert.equal(director['余震冷却'], 2);
+  assert.equal(director['待引爆'].length, 2);
+  assert.equal(director['待引爆'][0]['标题'], '守门人正名');
+  assert.equal(director['待引爆'][0]['类型'], '假象余震');
+  assert.equal(director['待引爆'][0]['触发后消息数'], '12');
+  assert.equal(director['待引爆'][0]['过期消息数'], '22');
+  assert.equal(director['待引爆'][0]['触发日'], '复兴纪元488年-6月-11日');
+  assert.equal(director['待引爆'][1]['标题'], '普通城防');
+  assert.equal(director['待引爆'][1]['类型'], '因果后续');
+
+  // 消息数未超过期窗口（12 <= 22）时不清理；超窗（23 > 22）时清理待引爆并保留余震冷却
+  assert.equal(hasExpiredDirectorLeads(swept, { chatCount: 12 }), false);
+  assert.equal(hasExpiredDirectorLeads(swept, { chatCount: 23 }), true);
+  const expSwept = sweepExpiredDirectorLeads(swept, { chatCount: 23 }).stat;
+  assert.equal(expSwept['事件']['任务情报板']['导演状态']['待引爆'], undefined);
+  assert.equal(expSwept['事件']['任务情报板']['导演状态']['余震冷却'], 2);
+
+  // 冷却降至 0 且队列为空时，自动销毁整个 导演状态 节点
+  const objCleanStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { '主线乙': { 状态: '已完成' }, '主线丙': { 状态: '已完成' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        导演状态: expSwept['事件']['任务情报板']['导演状态'],
+        列表: {
+          a: { 类别: '本地主线', 等级: 'C', 标题: '主线乙', 真相: '【灾变探索】普通主线一' },
+          b: { 类别: '剧情任务', 等级: 'B', 标题: '主线丙', 真相: '【多方竞速】普通剧情二' },
+        },
+      },
+    },
+  };
+  const zeroCd = sweepClosedQuests(objCleanStat, { chatCount: 24 }).stat;
+  assert.equal(zeroCd['事件']['任务情报板']['导演状态'], undefined);
+});
+
+test('EJS 关注方向、多骨架避重轮盘、假象余震 plot 物理盲演与延迟引爆', () => {
+  const dual = buildWorldbookJson(ejsSource, SCRIPT_VERSION);
+  const plotSrc = dual.entries['0'].content;
+  const updateSrc = dual.entries['1'].content;
+
+  // 1) gatingIdle（日常 0 接取）下即使挂着 关注方向 也必须 0 字节注入（不污染日常上下文）
+  const idleBaseStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-10日' },
+    任务列表: {},
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        列表: [
+          { id: 'q1', 类别: '剧情任务', 等级: 'B', 标题: '迷雾港湾', 方式: '调查', 预期收益: ['史诗杖 ×1'] },
+          { id: 'q2', 类别: '本地主线', 等级: 'C', 标题: '港务核账', 方式: '委托', 预期收益: ['金币 ×150'] },
+          { id: 'q3', 类别: '支线任务', 等级: 'D', 标题: '修补缆绳', 方式: '委托', 预期收益: ['金币 ×40'] },
+          { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '清点海货', 方式: '委托', 预期收益: ['金币 ×50'] },
+        ],
+      },
+    },
+  };
+  const idleFocusStat = JSON.parse(JSON.stringify(idleBaseStat));
+  idleFocusStat['事件']['任务情报板']['关注方向'] = { 文本: '经营魔药铺', 模式: 'long' };
+  const chat2 = [{ is_user: true, mes: '四处逛逛' }, { is_user: false, mes: '海风阵阵' }];
+  assert.equal(
+    renderEjs(idleFocusStat, { chat: chat2, lastUserMessageId: 1, source: plotSrc }),
+    renderEjs(idleBaseStat, { chat: chat2, lastUserMessageId: 1, source: plotSrc }),
+  );
+  assert.equal(
+    renderEjs(idleFocusStat, { chat: chat2, lastUserMessageId: 1, source: updateSrc }),
+    renderEjs(idleBaseStat, { chat: chat2, lastUserMessageId: 1, source: updateSrc }),
+  );
+
+  // 2) 生成期：存在 关注方向 时输出定量软倾斜规则 + 避重轮盘推荐未使用骨架 + 控制键保留 关注方向/导演状态
+  const genStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-10日' },
+    任务列表: { '已接旧案': { 状态: '进行中', 进展: '[6月-10日] 刚刚接取' } },
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        关注方向: { 文本: '经营魔药铺', 模式: 'long' },
+        待重扫: { 楼层: '1', 消息数: '2' },
+        列表: [
+          {
+            id: 'q_keep',
+            类别: '剧情任务',
+            等级: 'A',
+            标题: '已接旧案',
+            方式: '调查',
+            真相: '【悬疑反转】王庭线另有隐情',
+            预期收益: ['传说武器 ×1'],
+          },
+        ],
+      },
+    },
+  };
+  const genOut = renderEjs(genStat, { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+  assertCleanOutput(genOut, 'gen-focus-skeleton');
+  assert.equal((genOut.match(/\*\*[^*]+\*\*/g) || []).length, 1);
+  assert.match(genOut, /关注方向（经营魔药铺）:/);
+  assert.match(genOut, /支线任务安排 1~2 条贴合该方向，至少保留 1 条常规本地委托/);
+  assert.match(genOut, /当前保留任务已占骨架：【悬疑反转】，新生成尽量错开/);
+  assert.match(genOut, /保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」「关注方向」「导演状态」/);
+
+  // 3) 一阶段 plot 物理盲演：活跃任务带 【假象余震】+ 余震引信 时，plot 不露标签/引信且走正面推进节奏；update/all 附带若本轮结案留种
+  const aftershockStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { '守门人风波': { 状态: '进行中', 进展: '[6月-11日] 正在查验文书' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        列表: [
+          {
+            id: 'q_as',
+            类别: '本地主线',
+            等级: 'C',
+            标题: '【假象余震】守门人风波',
+            方式: '调查',
+            摘要: '治安官委托调查西门失职守门人。',
+            真相: '【假象余震】所有证词与档案表面自洽｜余震引信：守门人账本早于案发前三日',
+            预期收益: ['稀有披风 ×1', '金币 ×200'],
+          },
+          { id: 'q2', 类别: '支线任务', 等级: 'D', 标题: '清理货栈', 方式: '委托', 预期收益: ['金币 ×50'] },
+          { id: 'q3', 类别: '支线任务', 等级: 'D', 标题: '运送炭石', 方式: '委托', 预期收益: ['金币 ×60'] },
+          { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '修补渔网', 方式: '委托', 预期收益: ['金币 ×40'] },
+          { id: 'q5', 类别: '支线任务', 等级: 'D', 标题: '清点海盐', 方式: '委托', 预期收益: ['金币 ×45'] },
+        ],
+      },
+    },
+  };
+  const blindPlotOut = renderEjs(aftershockStat, { chat: chat2, lastUserMessageId: 1, source: plotSrc });
+  assert.doesNotMatch(blindPlotOut, /undefined|NaN|variables_update_rules|兑现Patch|失效Patch/);
+  assert.equal((blindPlotOut.match(/\*\*[^*]+\*\*/g) || []).length, 0);
+  assert.doesNotMatch(blindPlotOut, /假象余震|余震引信|守门人账本早于案发前三日|只露疑点/);
+  assert.match(blindPlotOut, /守门人风波/);
+  assert.match(blindPlotOut, /正面推进/);
+
+  const blindUpdateOut = renderEjs(aftershockStat, { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+  assertCleanOutput(blindUpdateOut, 'aftershock-update');
+  assert.equal((blindUpdateOut.match(/\*\*[^*]+\*\*/g) || []).length, 1);
+  assert.match(blindUpdateOut, /若本轮结案留种：.*"op":"insert","path":"\/事件\/任务情报板\/导演状态"/);
+
+  // 4) 推进期多骨架精准匹配：场上只有 【多方竞速】 与 【护送破局】 时，只输出该两种骨架节拍且无 悬疑反转 阴谋要求
+  const multiSkelStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: {
+      '商路争锋': { 状态: '进行中', 进展: '[6月-11日] 两家商会开始竞价' },
+      '北境押运': { 状态: '进行中', 进展: '[6月-11日] 车队启程' },
+    },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        列表: [
+          { id: 'q1', 类别: '剧情任务', 等级: 'B', 标题: '商路争锋', 真相: '【多方竞速】南北航线权争夺', 预期收益: ['史诗罗盘 ×1'] },
+          { id: 'q2', 类别: '本地主线', 等级: 'C', 标题: '北境押运', 真相: '【护送破局】暴雪前赶过山口', 预期收益: ['稀有重铠 ×1'] },
+          { id: 'q3', 类别: '支线任务', 等级: 'D', 标题: '修灯塔', 预期收益: ['金币 ×50'] },
+          { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '取海图', 预期收益: ['金币 ×50'] },
+          { id: 'q5', 类别: '支线任务', 等级: 'D', 标题: '购干粮', 预期收益: ['金币 ×50'] },
+        ],
+      },
+    },
+  };
+  const multiPlotOut = renderEjs(multiSkelStat, { chat: chat2, lastUserMessageId: 1, source: plotSrc });
+  assert.match(multiPlotOut, /【多方竞速】/);
+  assert.match(multiPlotOut, /【护送破局】/);
+  assert.doesNotMatch(multiPlotOut, /【悬疑反转】|【灾变探索】/);
+
+  // 5) 延迟引爆：到触发消息数后 plot 输出无加粗异常细节，update 输出 因果引爆 与清理 导演状态 Patch（swipe 时屏蔽）
+  const dueStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-14日' },
+    任务列表: {},
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        导演状态: {
+          余震冷却: 0,
+          待引爆: [
+            {
+              标题: '守门人风波',
+              类型: '假象余震',
+              引信: '守门人私印账簿造册早于案发前三日',
+              触发后消息数: '4',
+              过期消息数: '14',
+            },
+          ],
+        },
+        列表: [
+          { id: 'q1', 类别: '剧情任务', 等级: 'B', 标题: '其他剧情线', 预期收益: ['史诗饰品 ×1'] },
+          { id: 'q2', 类别: '本地主线', 等级: 'C', 标题: '其他主线', 预期收益: ['稀有盾 ×1'] },
+          { id: 'q3', 类别: '支线任务', 等级: 'D', 标题: '支线A', 预期收益: ['金币 ×40'] },
+          { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '支线B', 预期收益: ['金币 ×40'] },
+        ],
+      },
+    },
+  };
+  const chat5 = Array.from({ length: 5 }, (_, idx) => ({ is_user: idx % 2 === 0, is_system: false, mes: '日常走动' }));
+  const duePlotOut = renderEjs(dueStat, { chat: chat5, lastUserMessageId: 4, source: plotSrc });
+  const dueUpdateOut = renderEjs(dueStat, { chat: chat5, lastUserMessageId: 4, source: updateSrc });
+  const dueSwipeOut = renderEjs(dueStat, { chat: chat5, lastUserMessageId: 4, generateType: 'swipe', source: updateSrc });
+  assert.equal((duePlotOut.match(/\*\*[^*]+\*\*/g) || []).length, 0);
+  assert.match(duePlotOut, /异常细节: 原已结案的「守门人风波」在无关日常细节、战利品或环境变化中露出物理裂痕/);
+  assert.match(dueUpdateOut, /因果引爆: 原已结案的「守门人风波」露出物理裂痕.*【假象余震二段】.*remove.*"path": "\/事件\/任务情报板\/导演状态"/);
+  assert.doesNotMatch(dueSwipeOut, /因果引爆:/);
+
+  // 语体红线终检
+  assert.doesNotMatch(
+    `${genOut}\n${blindPlotOut}\n${blindUpdateOut}\n${duePlotOut}\n${dueUpdateOut}`,
+    /严禁|务必|切勿|属于必执行的|另行额外|大部中坚|截胡|虐心|耍赖/,
+  );
 });

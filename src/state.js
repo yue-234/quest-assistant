@@ -64,6 +64,71 @@ export function worldDay(stat) {
   return normalizeDay(obj(obj(stat)['世界'])['时间']);
 }
 
+const MONTH_DAYS_STD = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/** 将标准世界日字符串按自然历法推移指定天数（无法解析时原样回退）。 */
+export function addWorldDays(rawDay, deltaDays = 1) {
+  const norm = normalizeDay(rawDay);
+  if (!norm) return '';
+  const delta = Math.trunc(Number(deltaDays) || 0);
+  if (delta === 0) return norm;
+
+  const shiftYmd = (y, mo, d, step) => {
+    let year = y;
+    let month = mo;
+    let day = d + step;
+    while (day > MONTH_DAYS_STD[month - 1]) {
+      day -= MONTH_DAYS_STD[month - 1];
+      month += 1;
+      if (month > 12) {
+        month = 1;
+        year += 1;
+      }
+    }
+    while (day < 1) {
+      month -= 1;
+      if (month < 1) {
+        month = 12;
+        year = Math.max(0, year - 1);
+      }
+      day += MONTH_DAYS_STD[month - 1];
+    }
+    return { y: year, mo: month, d: day };
+  };
+
+  const ymd = norm.match(/^(.*?)(\d+)年-(\d{1,2})月-(\d{1,2})日$/);
+  if (ymd) {
+    const mo = Number(ymd[3]);
+    const d = Number(ymd[4]);
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      const shifted = shiftYmd(Number(ymd[2]), mo, d, delta);
+      return `${ymd[1]}${shifted.y}年-${shifted.mo}月-${shifted.d}日`;
+    }
+  }
+
+  const md = norm.match(/^(.*?)(\d{1,2})月-(\d{1,2})日$/);
+  if (md) {
+    const mo = Number(md[2]);
+    const d = Number(md[3]);
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      const shifted = shiftYmd(0, mo, d, delta);
+      return `${md[1]}${shifted.mo}月-${shifted.d}日`;
+    }
+  }
+
+  const iso = norm.match(/^(.*?)(\d{1,6})-(\d{1,2})-(\d{1,2})$/);
+  if (iso) {
+    const mo = Number(iso[3]);
+    const d = Number(iso[4]);
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      const shifted = shiftYmd(Number(iso[2]), mo, d, delta);
+      return `${iso[1]}${shifted.y}-${String(shifted.mo).padStart(2, '0')}-${String(shifted.d).padStart(2, '0')}`;
+    }
+  }
+
+  return norm;
+}
+
 /** 读取独立任务情报板节点（/事件/任务情报板）。 */
 export function boardNode(stat) {
   return obj(obj(obj(stat)['事件'])[BOARD_KEY]);
@@ -186,7 +251,7 @@ function sameRegion(region, boardKeyRaw, boardNameRaw, geoData = null) {
   return false;
 }
 
-function normalizeQuestCategory(raw) {
+export function normalizeQuestCategory(raw) {
   const s = text(raw).trim();
   if (s.includes('剧情')) return '剧情任务';
   if (s.includes('主线')) return '本地主线';
@@ -350,6 +415,69 @@ export function rescanFresh(pending, current = {}) {
     return false;
   }
   return false;
+}
+
+const FOCUS_MAX_LEN = 40;
+
+function cleanFocusText(raw) {
+  return text(raw)
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .slice(0, FOCUS_MAX_LEN)
+    .trim();
+}
+
+/** 归一化任务情报板「关注方向」设置，兼容对象形态与纯字符串形态。 */
+export function normalizeQuestFocus(raw) {
+  if (typeof raw === 'string') {
+    const clean = cleanFocusText(raw);
+    return clean
+      ? { text: clean, mode: 'long', messageCount: '' }
+      : { text: '', mode: 'long', messageCount: '' };
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { text: '', mode: 'long', messageCount: '' };
+  }
+  const clean = cleanFocusText(raw['文本'] ?? raw.text ?? '');
+  if (!clean) {
+    return { text: '', mode: 'long', messageCount: '' };
+  }
+  const modeRaw = raw['模式'] ?? raw.mode;
+  const mode = modeRaw === 'once' ? 'once' : 'long';
+  const messageCount = mode === 'once' ? text(raw['消息数'] ?? raw.messageCount).trim() : '';
+  return { text: clean, mode, messageCount };
+}
+
+/** 判断「仅本次」关注方向是否已过期（长期模式恒返回 false）。 */
+export function isOnceFocusExpired(board, current = {}) {
+  if (current.extraAnalyzing) return false;
+  const b = obj(board);
+  const focus = normalizeQuestFocus(b['关注方向']);
+  if (!focus.text || focus.mode !== 'once') return false;
+  const nowCount = effectiveChatCount(current.chat, current.chatCount);
+  if (focus.messageCount) {
+    if (nowCount === null || nowCount === undefined) return false;
+    const atCount = Number(focus.messageCount);
+    if (
+      Number.isFinite(atCount)
+      && current.allowGrace === false
+      && !current.extraFinished
+      && (nowCount === atCount + 2
+        || (nowCount === atCount + 1 && lastNonSystemIsAssistant(current.chat) === true))
+    ) {
+      return false;
+    }
+    return !rescanFresh({ 消息数: focus.messageCount }, current);
+  }
+  if (current.rescanCleared) return true;
+  const pending = obj(b['待重扫']);
+  if (!Object.keys(pending).length) return true;
+  const hasNowFloor = current.floor !== undefined && current.floor !== null && current.floor !== '';
+  const canCheckPending = (pending['消息数'] !== undefined && pending['消息数'] !== '' && nowCount !== null && nowCount !== undefined)
+    || (pending['楼层'] !== undefined && pending['楼层'] !== '' && hasNowFloor);
+  if (!canCheckPending) return false;
+  return !rescanFresh(pending, current);
 }
 
 const CLOSED_TASK_RE = /(?:已完成|完成|已失败|失败|已结束|已取消|放弃)/;
@@ -793,6 +921,13 @@ export function questBoardState(stat, current = {}) {
     progressed: items.filter((x) => x.progress).length,
   };
 
+  const focusInfo = normalizeQuestFocus(board['关注方向']);
+  const focus = {
+    text: focusInfo.text,
+    mode: focusInfo.mode,
+    active: !!focusInfo.text && !isOnceFocusExpired(board, current),
+  };
+
   return {
     regionKey: region.key,
     regionName: region.name,
@@ -806,6 +941,7 @@ export function questBoardState(stat, current = {}) {
     rescanCooldownToday,
     rescanPending: rescanFresh(obj(board['待重扫']), current),
     rescanFp: DATA.questBoard.rescanFp,
+    focus,
     progressSignature,
     intents,
     ignored,
