@@ -18,7 +18,7 @@ import {
   needsQuestAcceptedRecord,
   maintainQuestBoard,
 } from './actions.js';
-import { commit, extraAnalysisActive, generating, isMsgRecvWithinGrace, isMvuUpdateEndedFor } from './commit.js';
+import { commit, generating } from './commit.js';
 import * as host from './host.js';
 import { ENTRY_MODES, readEntryMode, writeEntryMode } from './entryMode.js';
 import {
@@ -353,7 +353,6 @@ function renderContent(state) {
       (s) => requestQuestRescan(s, lastFloor(), chatCount(), {
         nullCore: isNullCore,
         chat: chatArray(),
-        extraAnalyzing: extraAnalysisActive(),
         ...(hasFocusChoice ? { focusText: pickedFocusText, focusMode: pickedFocusMode } : {}),
       }),
       {
@@ -1076,24 +1075,13 @@ function render(options = {}) {
   const chatSnapshot = chatArray();
 
   const curChatId = host.readChatId?.() || '';
-  const extraAnalyzing = extraAnalysisActive();
-  const extraFinished = isMvuUpdateEndedFor({
-    chatCount: curCount,
-    chatId: curChatId,
-  });
-  const allowGrace = !extraAnalyzing
-    && !extraFinished
-    && !isMsgRecvWithinGrace({ chatCount: curCount, chatId: curChatId });
   const rescanDone = questRescanDone(stat, curFloor, curCount, {
-    extraFinished,
-    extraAnalyzing,
-    allowGrace,
     chat: chatSnapshot,
   });
   const pendingRescanNode = boardNode(stat)['待重扫'];
   const hasPendingRescan = !!(pendingRescanNode && typeof pendingRescanNode === 'object'
     && Object.keys(pendingRescanNode).length > 0);
-  const canCheckOnceFocus = !hasPendingRescan || rescanDone || allowGrace || extraFinished;
+  const canCheckOnceFocus = !hasPendingRescan || rescanDone;
   if (
     !sweeping &&
     !generating() &&
@@ -1105,9 +1093,6 @@ function render(options = {}) {
         floor: curFloor,
         chatCount: curCount,
         chat: chatSnapshot,
-        extraAnalyzing,
-        extraFinished,
-        allowGrace,
         rescanCleared: rescanDone,
       }))
       || hasExpiredDirectorLeads(stat, { chatCount: curCount, chat: chatSnapshot }))
@@ -1118,22 +1103,10 @@ function render(options = {}) {
         const liveChat = chatArray();
         const liveFloor = lastFloor();
         const liveCount = chatCount();
-        const liveChatId = host.readChatId?.() || '';
-        const liveAnalyzing = extraAnalysisActive();
-        const liveExtraFinished = isMvuUpdateEndedFor({
-          chatCount: liveCount,
-          chatId: liveChatId,
-        });
-        const liveAllowGrace = !liveAnalyzing
-          && !liveExtraFinished
-          && !isMsgRecvWithinGrace({ chatCount: liveCount, chatId: liveChatId });
         return maintainQuestBoard(statNow, {
           floor: liveFloor,
           chatCount: liveCount,
           chat: liveChat,
-          extraFinished: liveExtraFinished,
-          extraAnalyzing: liveAnalyzing,
-          allowGrace: liveAllowGrace,
         });
       },
       { core: CORE_NAME, speaker: SPEAKER, redraw: false, expectedChatId: curChatId },
@@ -1172,9 +1145,6 @@ function render(options = {}) {
       geoData: currentGeoData(),
       chat: chatSnapshot,
       nullCore: host.isNullCore(),
-      extraAnalyzing,
-      extraFinished,
-      allowGrace,
     });
     view = renderContent(stateNow);
   } catch (error) {

@@ -77,11 +77,6 @@ import {
   fetchScriptByRef,
 } from './src/scriptRef.js';
 import {
-  recordMvuUpdateEnded,
-  clearMvuUpdateEnded,
-  isMvuUpdateEndedFor,
-} from './src/commit.js';
-import {
   readMessages,
   readActiveWorldbookInfo,
 } from './src/host.js';
@@ -324,10 +319,6 @@ test('EJS rescan 模式：100 FP 地区情报重扫（仅保留剧情/已接取/
     ...new Array(5).fill({ is_user: false, mes: '' }),
     { is_user: true, is_system: false, mes: '我想顺手看看校准风向仪的任务。' },
   ];
-  const chatMentionExtraTurn = [
-    ...chatMentionUserTurn,
-    { is_user: false, is_system: false, mes: 'AI 正文' },
-  ];
   const allDropAll = renderEjs(allDroppedRescanStat, { chat: chatMentionUserTurn, lastUserMessageId: 5 });
   const allDropPlot = renderEjs(allDroppedRescanStat, {
     chat: chatMentionUserTurn,
@@ -335,9 +326,8 @@ test('EJS rescan 模式：100 FP 地区情报重扫（仅保留剧情/已接取/
     source: ejsSource.replace("const _wbRole = 'all';", "const _wbRole = 'plot';").replace('// @role all', '// @role plot'),
   });
   const allDropUpdate = renderEjs(allDroppedRescanStat, {
-    chat: chatMentionExtraTurn,
+    chat: chatMentionUserTurn,
     lastUserMessageId: 5,
-    Mvu: { isDuringExtraAnalysis: () => true },
     source: ejsSource.replace("const _wbRole = 'all';", "const _wbRole = 'update';").replace('// @role all', '// @role update'),
   });
   assert.doesNotMatch(allDropPlot, /校准风向仪/);
@@ -482,36 +472,21 @@ test('actions 全流程：锁定、忽略、100 FP 重扫、修改模式打勾',
   const dup = requestQuestRescan(stat, 10, 12);
   assert.ok(dup.error);
 
-  // 主回复刚落楼（chatCount = 12 + 2 = 14）：额外模型仍在分析时需保留待重扫；额外模型结束或宽限期满或进入下一轮（>= 15）时清理
-  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { floor: 12, chatCount: 14, extraAnalyzing: true }), true);
-  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { floor: 12, chatCount: 14, extraAnalyzing: false }), false);
-  assert.equal(questRescanDone(stat, 12, 14, { extraAnalyzing: true }), false);
-  assert.equal(questRescanDone(stat, 12, 14, { extraAnalyzing: false }), false);
-  assert.equal(questRescanDone(stat, 12, 14, { extraFinished: true, extraAnalyzing: false }), true);
-  assert.equal(questRescanDone(stat, 12, 14, { allowGrace: true, extraAnalyzing: false }), true);
-  assert.equal(questRescanDone(stat, 12, 15, { extraAnalyzing: true }), false);
-  assert.equal(questRescanDone(stat, 12, 15, { extraAnalyzing: false }), true);
+  // 主模型单轮重扫语义：chatCount <= 12 或 13 且末尾为用户消息时保持待重扫；AI 回复落楼（chatCount = 13 AI 尾）或 >= 14 时清理
+  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { floor: 10, chatCount: 12 }), true);
+  assert.equal(questRescanDone(stat, 10, 12), false);
+  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { floor: 12, chatCount: 14 }), false);
+  assert.equal(questRescanDone(stat, 12, 14), true);
 
   // 用户消息之后点重扫再 Regenerate（atCount = 12 → AI 回复落楼 chatCount = 13，末尾 is_user: false）同样可结束与清理
   const waitUserChat13 = [{ is_user: true, is_system: false, mes: '用户刚发消息等AI' }];
   const aiTailChat13 = [{ is_user: true, is_system: false, mes: '问' }, { is_user: false, is_system: false, mes: 'AI已恢复' }];
   assert.equal(lastNonSystemIsAssistant(waitUserChat13), false);
   assert.equal(lastNonSystemIsAssistant(aiTailChat13), true);
-  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { chatCount: 13, chat: waitUserChat13, extraAnalyzing: false }), true);
-  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { chatCount: 13, chat: aiTailChat13, extraAnalyzing: true }), true);
-  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { chatCount: 13, chat: aiTailChat13, extraAnalyzing: false }), false);
-  assert.equal(questRescanDone(stat, 11, 13, { extraFinished: true, chat: waitUserChat13 }), false);
-  assert.equal(questRescanDone(stat, 11, 13, { extraFinished: true, chat: aiTailChat13 }), true);
-  assert.equal(questRescanDone(stat, 11, 13, { allowGrace: true, chat: aiTailChat13 }), true);
-
-  // 宿主共享 MVU 变量更新完成信号按 chatId 与 chatCount 隔离
-  clearMvuUpdateEnded();
-  assert.equal(isMvuUpdateEndedFor({ chatCount: 14, chatId: 'c1' }), false);
-  recordMvuUpdateEnded(14, 'c1');
-  assert.equal(isMvuUpdateEndedFor({ chatCount: 14, chatId: 'c1' }), true);
-  assert.equal(isMvuUpdateEndedFor({ chatCount: 15, chatId: 'c1' }), false);
-  assert.equal(isMvuUpdateEndedFor({ chatCount: 14, chatId: 'c2' }), false);
-  clearMvuUpdateEnded();
+  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { chatCount: 13, chat: waitUserChat13 }), true);
+  assert.equal(rescanFresh(stat['事件']['任务情报板']['待重扫'], { chatCount: 13, chat: aiTailChat13 }), false);
+  assert.equal(questRescanDone(stat, 11, 13, { chat: waitUserChat13 }), false);
+  assert.equal(questRescanDone(stat, 11, 13, { chat: aiTailChat13 }), true);
 
   stat = clearQuestRescan(stat).stat;
   assert.equal(stat['事件']['任务情报板']['待重扫'], undefined);
@@ -2913,7 +2888,7 @@ test(`构建产物 ⭐粘这个-任务助手脚本.js、.txt、dist/quest-assist
   assert.equal(wbJson?.entries?.['0']?.order, 1150);
   assert.equal(wbJson?.entries?.['0']?.constant, true);
   assert.equal(wbJson?.entries?.['0']?.disable, false);
-  assert.equal(wbJson?.entries?.['1']?.comment, `[mvu_update]任务助手-变量更新${SCRIPT_VERSION}`);
+  assert.equal(wbJson?.entries?.['1']?.comment, `[mvu_plot]任务助手-变量更新${SCRIPT_VERSION}`);
   assert.equal(wbJson?.entries?.['1']?.order, 99999);
   assert.equal(wbJson?.entries?.['1']?.constant, true);
   assert.equal(wbJson?.entries?.['1']?.disable, false);
@@ -3002,28 +2977,44 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
     true,
   );
 
-  // 双条目世界书（[mvu_plot] + [mvu_update]）检测：完整匹配 / 半启用提醒 / 版本冲突提醒
+  // 双条目世界书（双 [mvu_plot]）检测：完整匹配 / 半启用提醒 / 旧 [mvu_update] 迁移提醒 / 版本冲突提醒
   const wbDualOk = inspectWorldbookEntries([
     {
       bookName: '命定任务助手世界书',
+      entries: [
+        { name: '[mvu_plot]任务助手-剧情引导v1.4.8', enabled: true, content: '// @role plot\n/事件/任务情报板' },
+        { name: '[mvu_plot]任务助手-变量更新v1.4.8', enabled: true, content: '// @role update\n<任务情报板变量更新协议>\n/事件/任务情报板' },
+      ],
+    },
+  ]);
+  assert.equal(wbDualOk.dualMode, true);
+  assert.equal(wbDualOk.enabled, true);
+  assert.equal(wbDualOk.legacyMvuUpdate, undefined);
+  assert.equal(wbDualOk.version, 'v1.4.8');
+  assert.deepEqual(wbDualOk.titles, ['[mvu_plot]任务助手-剧情引导v1.4.8', '[mvu_plot]任务助手-变量更新v1.4.8']);
+  assert.equal(checkWorldbookCompatibility(wbDualOk, { loadedRef: 'v1.4.8', scriptVersion: 'v1.4.8' }).status, 'matched');
+
+  const wbDualLegacyUpdate = inspectWorldbookEntries([
+    {
+      bookName: '旧版命定任务助手世界书',
       entries: [
         { name: '[mvu_plot]任务助手-剧情引导v1.4.8', enabled: true, content: '// @role plot\n/事件/任务情报板' },
         { name: '[mvu_update]任务助手-变量更新v1.4.8', enabled: true, content: '// @role update\n<任务情报板变量更新协议>\n/事件/任务情报板' },
       ],
     },
   ]);
-  assert.equal(wbDualOk.dualMode, true);
-  assert.equal(wbDualOk.enabled, true);
-  assert.equal(wbDualOk.version, 'v1.4.8');
-  assert.deepEqual(wbDualOk.titles, ['[mvu_plot]任务助手-剧情引导v1.4.8', '[mvu_update]任务助手-变量更新v1.4.8']);
-  assert.equal(checkWorldbookCompatibility(wbDualOk, { loadedRef: 'v1.4.8', scriptVersion: 'v1.4.8' }).status, 'matched');
+  assert.equal(wbDualLegacyUpdate.dualMode, true);
+  assert.equal(wbDualLegacyUpdate.legacyMvuUpdate, true);
+  const compatLegacyUpdate = checkWorldbookCompatibility(wbDualLegacyUpdate, { loadedRef: 'v1.4.8', scriptVersion: 'v1.4.8' });
+  assert.equal(compatLegacyUpdate.status, 'legacy_mvu_update');
+  assert.equal(compatLegacyUpdate.mismatch, true);
 
   const wbDualPartial = inspectWorldbookEntries([
     {
       bookName: '命定任务助手世界书',
       entries: [
         { name: '[mvu_plot]任务助手-剧情引导v1.4.8', enabled: true, content: '// @role plot\n/事件/任务情报板' },
-        { name: '[mvu_update]任务助手-变量更新v1.4.8', enabled: false, content: '// @role update\n<任务情报板变量更新协议>' },
+        { name: '[mvu_plot]任务助手-变量更新v1.4.8', enabled: false, content: '// @role update\n<任务情报板变量更新协议>' },
       ],
     },
   ]);
@@ -3052,7 +3043,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
       bookName: '主世界书',
       entries: [
         { name: '[mvu_plot][mvu_update]任务助手v1.4.8', enabled: true, content: '// @version v1.4.8\n/事件/任务情报板' },
-        { name: '[mvu_update]任务助手-变量更新v1.4.9', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+        { name: '[mvu_plot]任务助手-变量更新v1.4.9', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
       ],
     },
   ]);
@@ -3065,8 +3056,8 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
       bookName: '主世界书',
       entries: [
         { name: '[mvu_plot]任务助手-剧情引导v1.4.9', enabled: true, content: '// @role plot\n/事件/任务情报板' },
-        { name: '[mvu_update]任务助手-变量更新v1.4.9', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
-        { name: '[mvu_update]任务助手-变量更新副本', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+        { name: '[mvu_plot]任务助手-变量更新v1.4.9', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+        { name: '[mvu_plot]任务助手-变量更新副本', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
       ],
     },
   ]);
@@ -3079,7 +3070,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
       bookName: '命定任务助手世界书',
       entries: [
         { name: '[mvu_plot]任务助手-剧情引导v1.4.9', enabled: true, content: '// @role plot\n/事件/任务情报板' },
-        { name: '[mvu_update]任务助手-变量更新', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+        { name: '[mvu_plot]任务助手-变量更新', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
       ],
     },
   ]);
@@ -3093,7 +3084,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
       bookName: '命定任务助手世界书',
       entries: [
         { name: '[mvu_plot]任务助手-剧情引导v1.4.8', enabled: true, content: '// @role plot\n/事件/任务情报板' },
-        { name: '[mvu_update]任务助手-变量更新v1.4.9', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+        { name: '[mvu_plot]任务助手-变量更新v1.4.9', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
       ],
     },
   ]);
@@ -3102,7 +3093,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.equal(compatConflict.status, 'mismatch');
   assert.equal(compatConflict.mismatch, true);
 
-  // 主世界书防误伤 & 版本提取边界（多数字标题取末段、主世界书书名不污染、缺 [mvu_*] 标签告警、多书合并、partial_disabled 指明角色）
+  // 主世界书防误伤 & 版本提取边界（多数字标题取末段、主世界书书名不污染、缺 [mvu_plot] 标签告警、多书合并、partial_disabled 指明角色）
   assert.equal(extractVersionFromText('2.0版 任务助手v1.4.8'), 'v1.4.8');
   assert.equal(isQuestAssistantEntry({ name: '事件链路与任务情报板适配说明', enabled: true, content: '请勿手改 /事件/任务情报板 字段。' }), false);
   // 命定之诗原版主世界书自带的 [mvu_update] 条目（含"变量更新"字样）绝不能被误判为任务助手条目
@@ -3135,7 +3126,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
     {
       bookName: '自建补充书',
       entries: [
-        { name: '[mvu_update]任务助手-变量更新', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+        { name: '[mvu_plot]任务助手-变量更新', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
       ],
     },
   ]);
@@ -3149,7 +3140,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
       bookName: '主世界书',
       entries: [
         { name: '剧情引导v1.4.8', enabled: true, content: '// @role plot\n<任务情报板>...</任务情报板>' },
-        { name: '[mvu_update]任务助手-变量更新v1.4.8', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+        { name: '[mvu_plot]任务助手-变量更新v1.4.8', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
       ],
     },
   ]);
@@ -3157,25 +3148,29 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   const compatMissingTag = checkWorldbookCompatibility(wbMissingMvuTag, { loadedRef: 'v1.4.8', scriptVersion: 'v1.4.8' });
   assert.equal(compatMissingTag.status, 'missing_mvu_tag');
   assert.equal(compatMissingTag.mismatch, true);
-  assert.match(compatPartial.message, /变量更新 \[mvu_update\]/);
+  assert.match(compatPartial.message, /变量更新 \[mvu_plot\]/);
 
-  // buildWorldbookJson 双条目派生、版本一致性校验、角色隔离、额外模型重扫时序与标准协议校验
+  // buildWorldbookJson 双 [mvu_plot] 子条目派生、版本一致性校验、角色隔离、主模型单轮重扫时序与标准协议校验
   assert.throws(() => buildWorldbookJson('no role marker', SCRIPT_VERSION), /_wbRole/);
   assert.throws(() => buildWorldbookJson(ejsSource, 'v9.9.9'), /@version/);
   const dualJson = buildWorldbookJson(ejsSource, SCRIPT_VERSION);
   assert.equal(dualJson.entries['0'].comment, `[mvu_plot]任务助手-剧情引导${SCRIPT_VERSION}`);
   assert.equal(dualJson.entries['0'].order, 1150);
-  assert.equal(dualJson.entries['1'].comment, `[mvu_update]任务助手-变量更新${SCRIPT_VERSION}`);
+  assert.equal(dualJson.entries['1'].comment, `[mvu_plot]任务助手-变量更新${SCRIPT_VERSION}`);
   assert.equal(dualJson.entries['1'].order, 99999);
   const plotSrc = dualJson.entries['0'].content;
   const updateSrc = dualJson.entries['1'].content;
 
-  // 额外模型重扫时序：点重扫时消息数=10，用户发消息=11，AI正文落楼=12（末尾 is_user: false）→ update 命中 rescan 且空板补剧情与词条
-  const extraChat12 = Array.from({ length: 12 }, (_, idx) => ({
+  // 主模型单轮重扫时序：点重扫时消息数=10，用户发消息后消息数=11（末尾 is_user: true）→ plot 与 update 同步命中 rescan 且空板补剧情与词条
+  const mainTurnChat11 = Array.from({ length: 11 }, (_, idx) => ({
     is_user: idx % 2 === 0,
     is_system: false,
-    mes: idx === 10 ? '我们先打听一下潮汐后续的情况。' : (idx === 11 ? 'AI 正文刚落地' : '对话'),
+    mes: idx === 10 ? '我们先打听一下潮汐后续的情况。' : '对话',
   }));
+  const extraChat12 = [
+    ...mainTurnChat11,
+    { is_user: false, is_system: false, mes: 'AI 正文刚落地' },
+  ];
   const extraRescanStat = {
     世界: { 地点: '卡拉什利亚斯-巡天王庭', 时间: '复兴纪元488年-5月-26日' },
     任务列表: {},
@@ -3233,7 +3228,8 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
     },
   };
   const plotOut = renderEjs(storyRelocateStat, { chat: extraChat12, lastUserMessageId: 10, source: plotSrc });
-  const updateOut = renderEjs(extraRescanStat, { chat: extraChat12, lastUserMessageId: 10, source: updateSrc });
+  const plotRescanOut = renderEjs(extraRescanStat, { chat: mainTurnChat11, lastUserMessageId: 10, source: plotSrc });
+  const updateOut = renderEjs(extraRescanStat, { chat: mainTurnChat11, lastUserMessageId: 10, source: updateSrc });
 
   // plot 零加粗、零 Patch、零变量协议，且在 relocate + 活跃剧情任务下仍保留波折节拍、收益边界与当前环境
   assert.equal((plotOut.match(/\*\*[^*]+\*\*/g) || []).length, 0, 'plot 模式不得包含加粗红线');
@@ -3242,8 +3238,9 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.match(plotOut, /波折节拍:/);
   assert.match(plotOut, /收益边界:/);
   assert.match(plotOut, /支线限本区单点闭环直接推进，不设反转/);
+  assert.match(plotRescanOut, /已启动地区情报重扫|已预约地区情报重扫|正在刷新本区情报/);
 
-  // update 严格 1 处加粗、含标准隐形节点变量更新协议、零纯剧情波折重复、能识别前置用户消息提及的锁定任务、精准命中 rescan 且补剧情与词条
+  // update 严格 1 处加粗、含标准隐形节点变量更新协议、零纯剧情波折重复、能识别用户消息提及的锁定任务、精准命中 rescan 且补剧情与词条
   assert.equal((updateOut.match(/\*\*[^*]+\*\*/g) || []).length, 1, 'update 模式应严格保留 1 处加粗红线');
   assert.match(updateOut, /<任务情报板变量更新协议>/);
   assert.match(updateOut, /<任务情报板当前状态>/);
@@ -3297,13 +3294,13 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   extraChat11Ai[10] = { is_user: false, is_system: false, mes: 'AI在nc+1直接落地' };
   for (const genType of ['continue', 'swipe', 'append', 'appendFinal']) {
     const gatedPlotOut = renderEjs(extraRescanStat, {
-      chat: extraChat12,
+      chat: mainTurnChat11,
       lastUserMessageId: 10,
       generateType: genType,
       source: plotSrc,
     });
     const gatedUpdateOut = renderEjs(extraRescanStat, {
-      chat: extraChat12,
+      chat: mainTurnChat11,
       lastUserMessageId: 10,
       generateType: genType,
       source: updateSrc,
@@ -3318,31 +3315,15 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
     assert.doesNotMatch(gatedUpdateOut, /启动地区情报重扫/, `${genType} 不应放宽 update 重扫窗口`);
     assert.doesNotMatch(gatedWithinWindow, /启动地区情报重扫/, `${genType} 在 <= nc+1 内同样不应触发重扫`);
   }
-  // nc+1 末尾为 AI 回复时，主 API（isDuringExtraAnalysis=false）不再二次触发，仅额外模型轮触发
+  // nc+1 末尾为 AI 回复或 nc+2 时，plot 与 update 均不再触发重扫（单主模型窗口，不再放宽到额外模型）
   assert.doesNotMatch(
-    renderEjs(extraRescanStat, { chat: extraChat11Ai, lastUserMessageId: 9, Mvu: { isDuringExtraAnalysis: () => false }, source: updateSrc }),
-    /启动地区情报重扫/,
-  );
-  assert.match(
     renderEjs(extraRescanStat, { chat: extraChat11Ai, lastUserMessageId: 9, Mvu: { isDuringExtraAnalysis: () => true }, source: updateSrc }),
     /启动地区情报重扫/,
   );
-
-  // Mvu.isDuringExtraAnalysis() 可用时：主 API 回合（false）下 update 条目不得放宽到 nc+2，避免与 plot 分裂；仅额外模型轮（true）放宽
-  const updateMainTurnOut = renderEjs(extraRescanStat, {
-    chat: extraChat12,
-    lastUserMessageId: 10,
-    Mvu: { isDuringExtraAnalysis: () => false },
-    source: updateSrc,
-  });
-  assert.doesNotMatch(updateMainTurnOut, /启动地区情报重扫/);
-  const updateExtraTurnOut = renderEjs(extraRescanStat, {
-    chat: extraChat12,
-    lastUserMessageId: 10,
-    Mvu: { isDuringExtraAnalysis: () => true },
-    source: updateSrc,
-  });
-  assert.match(updateExtraTurnOut, /启动地区情报重扫/);
+  assert.doesNotMatch(
+    renderEjs(extraRescanStat, { chat: extraChat12, lastUserMessageId: 10, Mvu: { isDuringExtraAnalysis: () => true }, source: updateSrc }),
+    /启动地区情报重扫/,
+  );
 
   // plot 通用规则兼容原版 <task_info> 单据
   assert.match(plotOut, /正文不打印任务情报板清单/);
@@ -3354,7 +3335,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
     事件: { 任务情报板: { 区域键: '铁炉堡', 区域: '铁炉堡', 待重扫: { 楼层: '9' }, 列表: [] } },
   };
   assert.doesNotMatch(
-    renderEjs(floorOnlyRescanStat, { chat: extraChat12, lastUserMessageId: 10, generateType: 'swipe', source: updateSrc }),
+    renderEjs(floorOnlyRescanStat, { chat: mainTurnChat11, lastUserMessageId: 10, generateType: 'swipe', source: updateSrc }),
     /启动地区情报重扫/,
   );
 
@@ -3364,7 +3345,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.doesNotMatch(updateNextOut, /启动地区情报重扫/);
 
   // 语体红线回归：plot / update / all 输出均不得出现已清理的冗余防备或文言残余
-  const allOut = renderEjs(extraRescanStat, { chat: extraChat12, lastUserMessageId: 10 });
+  const allOut = renderEjs(extraRescanStat, { chat: mainTurnChat11, lastUserMessageId: 10 });
   assert.doesNotMatch(
     `${plotOut}\n${updateOut}\n${allOut}`,
     /属于必执行的|另行额外|严禁|务必|切勿|大部中坚|不泄真相|不另行重复|无可用线索时|一并移出/,
@@ -3372,14 +3353,13 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
 
   // effectiveChatCount & EJS system 隐藏消息排除 + rescan 保留同区 地点/引导/更新日 及 预期收益 去前缀说明
   const chatWithHiddenSys = [
-    ...extraChat12,
+    ...mainTurnChat11,
     { is_user: false, is_system: true, mes: '系统摘要提示' },
   ];
-  assert.equal(effectiveChatCount(chatWithHiddenSys), 12);
+  assert.equal(effectiveChatCount(chatWithHiddenSys), 11);
   const rescanAfterSysOut = renderEjs(extraRescanStat, {
     chat: chatWithHiddenSys,
     generateType: 'normal',
-    Mvu: { isDuringExtraAnalysis: () => true },
     source: updateSrc,
   });
   assert.match(rescanAfterSysOut, /启动地区情报重扫/, '结尾 is_system 隐藏楼层不得破坏消息计数窗口');
@@ -3395,7 +3375,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
     },
     10,
     11,
-    { chat: rescanAiRecoveredChat, extraAnalyzing: false },
+    { chat: rescanAiRecoveredChat },
   );
   assert.ok(!allowRetryRescan.error, '上一轮 nc+1 AI 落楼结束后，应允许再次预约重扫');
   const rescanPreserveFieldStat = {
@@ -3425,9 +3405,8 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
     },
   };
   const rescanPreserveOut = renderEjs(rescanPreserveFieldStat, {
-    chat: extraChat12,
+    chat: mainTurnChat11,
     lastUserMessageId: 10,
-    Mvu: { isDuringExtraAnalysis: () => true },
     source: updateSrc,
   });
   assert.match(rescanPreserveOut, /铁炉堡，更新日 复兴纪元488年-5月-20日/, '整表 replace 时应保留同区域 地点 与非剧情保留项 更新日');
@@ -3458,7 +3437,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
       if (name === '人设绑定任务书') {
         return [
           { name: '[mvu_plot]任务助手-剧情引导v1.4.8', enabled: true, content: '// @role plot\n<任务情报板>...</任务情报板>' },
-          { name: '[mvu_update]任务助手-变量更新v1.4.8', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+          { name: '[mvu_plot]任务助手-变量更新v1.4.8', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
         ];
       }
       return [];
@@ -3466,6 +3445,7 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
     const personaWbInfo = await readActiveWorldbookInfo();
     assert.equal(personaWbInfo.found, true);
     assert.equal(personaWbInfo.dualMode, true);
+    assert.equal(personaWbInfo.legacyMvuUpdate, undefined);
     assert.equal(personaWbInfo.version, 'v1.4.8');
     assert.equal(personaWbInfo.duplicateConflict, undefined);
     assert.equal(personaWbInfo.bookName, '人设绑定任务书');
@@ -3758,7 +3738,12 @@ test('轻量关注方向：归一化、重扫联动提交、仅本次宽限期�
   }).stat;
   assert.deepEqual(stat['事件']['任务情报板']['关注方向'], { 文本: '魔药铺供货', 模式: 'once', 消息数: '10' });
 
-  // 在 nc+1 AI 尾与 nc+2 落楼宽限期内（allowGrace: false, extraFinished: false），仅本次方向不得被提前清空
+  // 在 nc+1 用户尾等待回复时，仅本次方向不得提前清空；AI 回复落地成 nc+1 AI 尾后立即清理
+  const waitUserChat11 = Array.from({ length: 11 }, (_, idx) => ({
+    is_user: idx % 2 === 0,
+    is_system: false,
+    mes: 'x',
+  }));
   const aiTailChat11 = Array.from({ length: 11 }, (_, idx) => ({
     is_user: idx !== 10 && idx % 2 === 0,
     is_system: false,
@@ -3766,20 +3751,23 @@ test('轻量关注方向：归一化、重扫联动提交、仅本次宽限期�
   }));
   assert.equal(
     isOnceFocusExpired(stat['事件']['任务情报板'], {
-      chat: aiTailChat11,
+      chat: waitUserChat11,
       chatCount: 11,
-      allowGrace: false,
-      extraFinished: false,
     }),
     false,
   );
-  // 宽限期满且额外模型非运行态后，maintainQuestBoard 同步清掉 待重扫 与 once 关注方向
+  assert.equal(
+    isOnceFocusExpired(stat['事件']['任务情报板'], {
+      chat: aiTailChat11,
+      chatCount: 11,
+    }),
+    true,
+  );
+  // 主模型回复落地成 AI 尾后，maintainQuestBoard 同步清掉 待重扫 与 once 关注方向
   const maint = maintainQuestBoard(stat, {
     floor: 10,
     chatCount: 11,
     chat: aiTailChat11,
-    allowGrace: true,
-    extraFinished: true,
   });
   assert.ok(!maint.skip);
   assert.equal(maint.stat['事件']['任务情报板']['待重扫'], undefined);
@@ -4001,7 +3989,8 @@ test('EJS 关注方向、多骨架避重轮盘、假象余震 plot 物理盲演�
   const blindUpdateOut = renderEjs(aftershockStat, { chat: chat2, lastUserMessageId: 1, source: updateSrc });
   assertCleanOutput(blindUpdateOut, 'aftershock-update');
   assert.equal((blindUpdateOut.match(/\*\*[^*]+\*\*/g) || []).length, 1);
-  assert.match(blindUpdateOut, /若本轮结案留种：.*"op":"insert","path":"\/事件\/任务情报板\/导演状态"/);
+  assert.doesNotMatch(blindUpdateOut, /【假象余震】守门人风波|幕后真相：[^｜\n]*(?:假象余震|余震引信)/);
+  assert.match(blindUpdateOut, /若本轮结案留种：.*"op":"insert","path":"\/事件\/任务情报板\/导演状态".*正文正面推进，不提前点破引信/);
 
   // 4) 推进期多骨架精准匹配：场上只有 【多方竞速】 与 【护送破局】 时，只输出该两种骨架节拍且无 悬疑反转 阴谋要求
   const multiSkelStat = {
@@ -4162,7 +4151,7 @@ test('审计回归：前端导演/关注方向契约（displayTitle、顺序无�
     事件: { 任务情报板: { 区域键: '雾晶港', 区域: '雾晶港', 列表: [] } },
   }, '炼金采集', { mode: 'once' }).stat;
   assert.equal(isOnceFocusExpired(emptyOnceStat['事件']['任务情报板'], { chatCount: 10 }), false);
-  assert.deepEqual(maintainQuestBoard(emptyOnceStat, { floor: 9, chatCount: 10, allowGrace: true, extraFinished: true }), { skip: true });
+  assert.deepEqual(maintainQuestBoard(emptyOnceStat, { floor: 9, chatCount: 10 }), { skip: true });
   const notExpOnce = clearExpiredOnceFocus(emptyOnceStat, { chatCount: 10 });
   assert.equal(notExpOnce.done, '关注方向尚未过期');
   assert.equal(notExpOnce.stat['事件']['任务情报板']['关注方向']['文本'], '炼金采集');
@@ -4176,8 +4165,6 @@ test('审计回归：前端导演/关注方向契约（displayTitle、顺序无�
     floor: 6,
     chatCount: 8,
     chat: Array.from({ length: 8 }, (_, i) => ({ is_user: i % 2 === 0, is_system: false, mes: 'x' })),
-    allowGrace: true,
-    extraFinished: true,
   }).stat;
   assert.equal(wipedOnce['事件']['任务情报板']['待重扫'], undefined);
   assert.equal(wipedOnce['事件']['任务情报板']['关注方向'], undefined);
@@ -4568,7 +4555,6 @@ test('二轮终审回归：多前缀映射、余震二段降冷、僵尸导演�
     globalThis.Mvu = {
       getMvuData: () => ({ stat_data: { 主角: {}, 事件: { 任务情报板: { 列表: [] } } } }),
       replaceMvuData: async () => { replacedCount += 1; },
-      isDuringExtraAnalysis: () => false,
     };
     const swipeAbort = await commit((s) => {
       curSwipeId = 1;
@@ -4720,7 +4706,6 @@ test('三轮收口回归：toastr.ok映射、入队队列级swipe锁、额外键
         replaceCount += 1;
         await gate;
       },
-      isDuringExtraAnalysis: () => false,
     };
     const p1 = commit((s) => ({ stat: s, done: 'first' }), { redraw: false });
     const p2 = commit((s) => ({ stat: s, done: 'second' }), { redraw: false });

@@ -92,7 +92,7 @@ export function worldbookFilename(version = SCRIPT_VERSION) {
   return `命定任务助手世界书${ver}.json`;
 }
 
-/** 从单一 EJS 源码导出双条目标准酒馆世界书 JSON（剧情引导 + 变量更新）。 */
+/** 从单一 EJS 源码导出双条目标准酒馆世界书 JSON（剧情引导 + 变量更新，统一使用 [mvu_plot] 供主模型注入）。 */
 export function buildWorldbookJson(ejsContent, version = SCRIPT_VERSION) {
   const normalized = String(ejsContent ?? '').replace(/\r\n/g, '\n');
   const roleConstRe = /const\s+_wbRole\s*=\s*['"]all['"]\s*;/;
@@ -129,7 +129,7 @@ export function buildWorldbookJson(ejsContent, version = SCRIPT_VERSION) {
       }),
       '1': createWorldbookEntry({
         uid: 1,
-        comment: `[mvu_update]任务助手-变量更新${ver}`,
+        comment: `[mvu_plot]任务助手-变量更新${ver}`,
         order: 99999,
         content: renderRole('update'),
       }),

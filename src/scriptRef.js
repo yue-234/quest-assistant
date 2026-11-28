@@ -106,22 +106,31 @@ function detectEntryRole(entry) {
   const content = String(entry?.content ?? '');
   const hasPlotTag = /\[mvu_plot\]/i.test(title);
   const hasUpdateTag = /\[mvu_update\]/i.test(title);
-  if (hasPlotTag && hasUpdateTag) return { role: 'all', hasMvuTag: true };
-  if (hasPlotTag) return { role: 'plot', hasMvuTag: true };
-  if (hasUpdateTag) return { role: 'update', hasMvuTag: true };
+
+  let role = 'all';
   const roleMeta = content.match(/\/\/\s*@role\s+(plot|update|all)\b/i);
+  const roleConst = !roleMeta && content.match(/const\s+_wbRole\s*=\s*['"](plot|update|all)['"]/);
   if (roleMeta) {
     const r = roleMeta[1].toLowerCase();
-    return { role: r === 'plot' || r === 'update' ? r : 'all', hasMvuTag: false };
-  }
-  const roleConst = content.match(/const\s+_wbRole\s*=\s*['"](plot|update|all)['"]/);
-  if (roleConst) {
+    role = r === 'plot' || r === 'update' ? r : 'all';
+  } else if (roleConst) {
     const r = roleConst[1];
-    return { role: r === 'plot' || r === 'update' ? r : 'all', hasMvuTag: false };
+    role = r === 'plot' || r === 'update' ? r : 'all';
+  } else if (title.includes('剧情引导')) {
+    role = 'plot';
+  } else if (title.includes('变量更新')) {
+    role = 'update';
+  } else if (hasPlotTag && !hasUpdateTag) {
+    role = 'plot';
+  } else if (hasUpdateTag && !hasPlotTag) {
+    role = 'update';
   }
-  if (title.includes('剧情引导')) return { role: 'plot', hasMvuTag: false };
-  if (title.includes('变量更新')) return { role: 'update', hasMvuTag: false };
-  return { role: 'all', hasMvuTag: false };
+
+  return {
+    role,
+    hasMvuTag: hasPlotTag,
+    hasLegacyUpdateTag: hasUpdateTag,
+  };
 }
 
 /** 从当前启用的世界书集合中定位任务助手条目，并优先从其子标题提取版本号。 */
@@ -138,8 +147,8 @@ export function inspectWorldbookEntries(bookEntriesList = []) {
       const contentVer = extractEntryContentVersion(entry.content);
       const bookVer = bookName.includes('任务助手') ? extractVersionFromText(bookName) : '';
       const version = titleVer || contentVer || bookVer;
-      const { role, hasMvuTag } = detectEntryRole(entry);
-      candidates.push({ bookName, title, enabled, version, role, hasMvuTag });
+      const { role, hasMvuTag, hasLegacyUpdateTag } = detectEntryRole(entry);
+      candidates.push({ bookName, title, enabled, version, role, hasMvuTag, hasLegacyUpdateTag });
     }
   }
 
@@ -196,6 +205,7 @@ export function inspectWorldbookEntries(bookEntriesList = []) {
   const missingRoleVersion = hasVersioned && hasUnversioned;
   const versionConflict = distinctVersions.length > 1;
 
+  const legacyMvuUpdate = enabledCandidates.some((c) => c.hasLegacyUpdateTag);
   const missingMvuTag = hasDualEnabled
     && enabledCandidates.some((c) => (c.role === 'plot' || c.role === 'update') && !c.hasMvuTag);
 
@@ -223,6 +233,7 @@ export function inspectWorldbookEntries(bookEntriesList = []) {
   }
   if (legacyDualMixed) result.legacyDualMixed = true;
   if (duplicateConflict) result.duplicateConflict = true;
+  if (legacyMvuUpdate) result.legacyMvuUpdate = true;
   if (missingMvuTag) result.missingMvuTag = true;
   if (missingRoleVersion) result.missingRoleVersion = true;
   if (versionConflict) {
@@ -286,7 +297,7 @@ export function checkWorldbookCompatibility(wbInfo, scriptMeta = {}) {
   if (wbInfo.partialDisabled) {
     const missingLabel = wbInfo.missingRole === 'plot'
       ? '「剧情引导 [mvu_plot]」'
-      : (wbInfo.missingRole === 'update' ? '「变量更新 [mvu_update]」' : '另一半');
+      : (wbInfo.missingRole === 'update' ? '「变量更新 [mvu_plot]」' : '另一半');
     return {
       status: 'partial_disabled',
       mismatch: true,
@@ -295,13 +306,22 @@ export function checkWorldbookCompatibility(wbInfo, scriptMeta = {}) {
       message: `任务助手双条目世界书仅启用了部分条目，缺少${missingLabel}，请同时启用两个条目`,
     };
   }
+  if (wbInfo.legacyMvuUpdate) {
+    return {
+      status: 'legacy_mvu_update',
+      mismatch: true,
+      worldbookVersion: wbInfo.version || '',
+      scriptVersion: scriptVer,
+      message: '检测到世界书条目标题仍包含 [mvu_update] 前缀，当前版本已改为双条目统一使用 [mvu_plot] 随主模型运行，请将前缀改为 [mvu_plot] 或重新导入最新世界书',
+    };
+  }
   if (wbInfo.missingMvuTag) {
     return {
       status: 'missing_mvu_tag',
       mismatch: true,
       worldbookVersion: wbInfo.version || '',
       scriptVersion: scriptVer,
-      message: '分拆条目标题缺少 [mvu_plot] 或 [mvu_update] 前缀，MVU 无法自动分流，请补上标签或重新导入世界书',
+      message: '分拆条目标题缺少 [mvu_plot] 前缀，请补上 [mvu_plot] 标签或重新导入世界书',
     };
   }
   if (wbInfo.versionConflict) {

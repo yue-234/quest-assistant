@@ -13,17 +13,7 @@ import {
   questRescanDone,
   maintainQuestBoard,
 } from './actions.js';
-import {
-  clearMsgReceived,
-  clearMvuUpdateEnded,
-  commit,
-  extraAnalysisActive,
-  generating,
-  isMvuUpdateEndedFor,
-  msgRecvGraceRemainingMs,
-  recordMsgReceived,
-  recordMvuUpdateEnded,
-} from './commit.js';
+import { commit, generating } from './commit.js';
 import { SCRIPT_VERSION } from './data.js';
 import * as host from './host.js';
 import { mountFab } from './fab.js';
@@ -339,7 +329,6 @@ export function start() {
         geoData: readHostGeoData(),
         chat,
         nullCore: host.isNullCore(),
-        extraAnalyzing: extraAnalysisActive(),
       });
       const sig = st && st.questBoard ? st.questBoard.progressSignature : '';
       const seen = host.readStorage(seenProgressKey());
@@ -401,32 +390,14 @@ export function start() {
   let bgCooldownUntil = 0;
   let graceRetry = 0;
 
-  const RESCAN_GRACE_MS = 1800;
-
-  const refreshOpenPanel = () => {
-    if (!panelOpened || !frame) return;
-    try {
-      frame.contentWindow?.questHelperPanel?.refresh?.();
-    } catch {
-      /* 忽略跨域或卸载态 */
-    }
-  };
-
-  const evalGrace = (curCount, extraFinished, extraAnalyzing, curChatId = host.readChatId()) => {
-    if (extraAnalyzing || extraFinished) return { allowGrace: false, waitGraceMs: 0 };
-    const rem = msgRecvGraceRemainingMs({ chatCount: curCount, chatId: curChatId, graceMs: RESCAN_GRACE_MS });
-    if (rem > 0) return { allowGrace: false, waitGraceMs: rem + 50 };
-    return { allowGrace: true, waitGraceMs: 0 };
-  };
-
   const runQuestBoardMaintenance = async () => {
     if (generating()) {
-      if (graceRetry < 60) {
+      if (graceRetry < 20) {
         graceRetry += 1;
         clearTimeout(bgTimer);
         bgTimer = setTimeout(() => {
           void runQuestBoardMaintenance();
-        }, graceRetry <= 20 ? 1500 : 5000);
+        }, 1500);
       }
       return;
     }
@@ -462,43 +433,24 @@ export function start() {
     const curFloor = readHostFloor();
     const curCount = effectiveChatCount(chatSnapshot);
     const curChatId = host.readChatId();
-    const extraAnalyzing = extraAnalysisActive();
-    const extraFinished = isMvuUpdateEndedFor({ chatCount: curCount, chatId: curChatId });
-    const { allowGrace, waitGraceMs } = evalGrace(curCount, extraFinished, extraAnalyzing, curChatId);
 
     const needClearRescan = questRescanDone(stat, curFloor, curCount, {
-      extraFinished,
-      extraAnalyzing,
-      allowGrace,
       chat: chatSnapshot,
     });
     const needSweep = !!board['列表'] && hasClosedQuestLeftovers(stat, { chat: chatSnapshot });
     const needRecord = !!board['列表'] && needsQuestAcceptedRecord(stat);
     const needSweepExpired = hasExpiredAftermath(stat);
     const hasPendingRescan = !!(board['待重扫'] && typeof board['待重扫'] === 'object' && Object.keys(board['待重扫']).length);
-    const canCheckOnceFocus = !hasPendingRescan || needClearRescan || allowGrace || extraFinished;
+    const canCheckOnceFocus = !hasPendingRescan || needClearRescan;
     const needClearOnceFocus = canCheckOnceFocus && hasExpiredOnceFocus(stat, {
       floor: curFloor,
       chatCount: curCount,
       chat: chatSnapshot,
-      extraAnalyzing,
-      extraFinished,
-      allowGrace,
       rescanCleared: needClearRescan,
     });
     const needSweepLeads = hasExpiredDirectorLeads(stat, { chatCount: curCount, chat: chatSnapshot });
-    const hasOnceFocus = normalizeQuestFocus(board['关注方向']).mode === 'once'
-      && !!normalizeQuestFocus(board['关注方向']).text;
 
     if (!needClearRescan && !needSweep && !needRecord && !needSweepExpired && !needClearOnceFocus && !needSweepLeads) {
-      if ((hasPendingRescan || hasOnceFocus) && waitGraceMs > 0) {
-        clearTimeout(bgTimer);
-        bgTimer = setTimeout(() => {
-          void runQuestBoardMaintenance();
-        }, waitGraceMs);
-      } else if (extraFinished && !hasPendingRescan) {
-        clearMvuUpdateEnded();
-      }
       return;
     }
 
@@ -506,54 +458,32 @@ export function start() {
     try {
       const result = await commit(
         (statNow) => {
-          // 在写锁回调内重读最新宿主页快照，防止排队期间聊天与分析状态变化
+          // 在写锁回调内重读最新宿主页快照，防止排队期间聊天变化
           const liveChat = readHostChat();
           const liveFloor = readHostFloor();
           const liveCount = effectiveChatCount(liveChat);
-          const liveChatId = host.readChatId();
-          const liveAnalyzing = extraAnalysisActive();
-          const liveExtraFinished = isMvuUpdateEndedFor({ chatCount: liveCount, chatId: liveChatId });
-          const liveGrace = evalGrace(liveCount, liveExtraFinished, liveAnalyzing, liveChatId).allowGrace;
           return maintainQuestBoard(statNow, {
             floor: liveFloor,
             chatCount: liveCount,
             chat: liveChat,
-            extraFinished: liveExtraFinished,
-            extraAnalyzing: liveAnalyzing,
-            allowGrace: liveGrace,
           });
         },
         { core: CORE_NAME, speaker: SPEAKER, redraw: false, expectedChatId: curChatId },
       );
       if (stopped || (curChatId && host.readChatId() !== curChatId)) return;
       if (result && result.error && result.error.includes('生成')) {
-        if (graceRetry < 60) {
+        if (graceRetry < 20) {
           graceRetry += 1;
           clearTimeout(bgTimer);
           bgTimer = setTimeout(() => {
             void runQuestBoardMaintenance();
-          }, 2000);
+          }, 1500);
         }
         return;
       }
-      if (result && !result.error) {
-        const latestBoard = host.readStat?.()?.['事件']?.[BOARD_KEY] || {};
-        const stillHasPendingRescan = !!(latestBoard['待重扫'] && typeof latestBoard['待重扫'] === 'object' && Object.keys(latestBoard['待重扫']).length);
-        const latestFocus = normalizeQuestFocus(latestBoard['关注方向']);
-        const stillHasOnceFocus = latestFocus.mode === 'once' && !!latestFocus.text;
-        if (extraFinished || !stillHasPendingRescan) {
-          clearMvuUpdateEnded();
-        }
-        if ((stillHasPendingRescan || stillHasOnceFocus) && waitGraceMs > 0) {
-          clearTimeout(bgTimer);
-          bgTimer = setTimeout(() => {
-            void runQuestBoardMaintenance();
-          }, Math.max(waitGraceMs, 1550));
-        }
-        if (!result.skipped) {
-          syncEntryUnread();
-          refreshOpenPanel();
-        }
+      if (result && !result.error && !result.skipped) {
+        syncEntryUnread();
+        refreshOpenPanel();
       }
       bgCooldownUntil = Date.now() + 1500;
     } catch {
@@ -563,17 +493,9 @@ export function start() {
     }
   };
 
-  const scheduleMaintenance = (fromMvuEnd = false) => {
-    const snap = readHostChat();
-    const curCount = effectiveChatCount(snap);
-    const curChatId = host.readChatId();
-    if (fromMvuEnd) {
-      recordMvuUpdateEnded(curCount, curChatId);
-    } else {
-      recordMsgReceived(curCount, curChatId);
-      graceRetry = 0;
-    }
-    const delay = bgSweeping ? 500 : Math.max(600, bgCooldownUntil - Date.now() + 50);
+  const scheduleMaintenance = () => {
+    graceRetry = 0;
+    const delay = bgSweeping ? 500 : Math.max(400, bgCooldownUntil - Date.now() + 50);
     clearTimeout(bgTimer);
     bgTimer = setTimeout(() => {
       void runQuestBoardMaintenance();
@@ -582,9 +504,7 @@ export function start() {
 
   listen(stEvents && stEvents.CHAT_CHANGED ? stEvents.CHAT_CHANGED : 'chat_id_changed', () => {
     clearTimeout(bgTimer);
-    clearMsgReceived();
     graceRetry = 0;
-    clearMvuUpdateEnded();
     try {
       frame?.contentWindow?.questHelperPanel?.resetForChatChange?.();
     } catch {
@@ -596,44 +516,30 @@ export function start() {
   const onPassiveRefresh = () => {
     clearTimeout(bgTimer);
     graceRetry = 0;
-    const snap = readHostChat();
-    const curCount = effectiveChatCount(snap);
-    const curChatId = host.readChatId();
-    const keepGrace = isMsgRecvWithinGrace({ chatCount: curCount, chatId: curChatId });
-    if (!keepGrace) {
-      clearMsgReceived();
-      clearMvuUpdateEnded();
-    }
     syncEntryUnread();
-    // 若删改楼层前存在 待重扫、仅本次关注方向或待引爆导演引信，宽限后补跑一次过期清理
+    // 若删改楼层前存在待清理项，短延迟后补跑一次过期清理
     try {
       const b = host.readStat?.()?.['事件']?.[BOARD_KEY] || {};
       const hasPending = !!(b['待重扫'] && typeof b['待重扫'] === 'object' && Object.keys(b['待重扫']).length);
       const nf = normalizeQuestFocus(b['关注方向']);
       const hasOnce = nf.mode === 'once' && !!nf.text;
       const hasLeads = Array.isArray(b['导演状态']?.['待引爆']) && b['导演状态']['待引爆'].length > 0;
-      if (hasPending || hasOnce || hasLeads || keepGrace) {
+      if (hasPending || hasOnce || hasLeads) {
         bgTimer = setTimeout(() => {
           void runQuestBoardMaintenance();
-        }, 2200);
+        }, 800);
       }
     } catch {
       /* 忽略 */
     }
   };
   const onSwipeRefresh = () => {
-    // swipe 跳过重扫：仅清除旧回合变量结束信号并留出重Roll额外模型宽限期，不误杀待重扫与仅本次方向
+    // swipe 跳过重扫：仅清除挂起的维护定时器并同步红点，不误杀待重扫与仅本次方向
     clearTimeout(bgTimer);
     graceRetry = 0;
-    clearMvuUpdateEnded();
-    recordMsgReceived(effectiveChatCount(readHostChat()), host.readChatId());
     syncEntryUnread();
-    bgTimer = setTimeout(() => {
-      void runQuestBoardMaintenance();
-    }, 2200);
   };
-  listen(stEvents && stEvents.MESSAGE_RECEIVED ? stEvents.MESSAGE_RECEIVED : 'message_received', () => scheduleMaintenance(false));
-  listen('mag_variable_update_ended', () => scheduleMaintenance(true));
+  listen(stEvents && stEvents.MESSAGE_RECEIVED ? stEvents.MESSAGE_RECEIVED : 'message_received', scheduleMaintenance);
   listen(stEvents && stEvents.MESSAGE_SWIPED ? stEvents.MESSAGE_SWIPED : 'message_swiped', onSwipeRefresh);
   listen(stEvents && stEvents.MESSAGE_EDITED ? stEvents.MESSAGE_EDITED : 'message_edited', onPassiveRefresh);
   listen(stEvents && stEvents.MESSAGE_DELETED ? stEvents.MESSAGE_DELETED : 'message_deleted', onPassiveRefresh);

@@ -6,6 +6,19 @@
 
 ## 2026-11-28
 
+### 待发版（`main` 分支阶段性调整，尚未打包交付物）
+
+#### 重要更新
+- **【移除 MVU 额外模型支持，统一双 `[mvu_plot]` 子条目主模型注入】**【需更新世界书】【需更新脚本】：
+  - 彻底移除 MVU「额外模型更新变量」通路，保留双子条目导出架构（`uid: 0` `[mvu_plot]任务助手-剧情引导`、`order: 1150` 与 `uid: 1` `[mvu_plot]任务助手-变量更新`、`order: 99999`），统一使用 `[mvu_plot]` 随主模型注入，彻底规避部分预设总结模块收集 `[mvu_update]` 整表内容构建正则导致 `Regular expression too large` 报错的问题。
+  - `src/scriptRef.js` 调整 `detectEntryRole` 优先级并新增 `legacy_mvu_update` 兼容告警，检测旧版带 `[mvu_update]` 前缀的双条目世界书时自动提醒迁移。
+  - 精简 `commit.js`、`state.js`、`actions.js`、`runtime.js`、`panel.js` 及 `任务助手-世界书.ejs`，移除 `mag_variable_update_ended`、1800ms 宽限轮询、`nc+2` 与 `isDuringExtraAnalysis()` 判定；`update` 子条目同步开启防剧透与「正文正面推进，不提前点破引信」限制（仅 `若本轮结案留种` 保留客观矛盾 JSON）。
+
+#### 其他
+- **【额外模型还原备份与文档同步】**：新增 [额外模型支持还原参考备份](docs/extra-analysis-backup.md) 记录基线提交 `34ea146` 与还原清单；同步更新 `README.md`、`使用说明.md`、[提示词写作与古风清理](docs/archaic-wording-cleanup.md) 与 `test.mjs` 回归用例。
+
+---
+
 ### `v1.4.11`（`f8c8b47` ~ 本次发版）
 
 #### 修复

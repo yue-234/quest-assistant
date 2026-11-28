@@ -512,13 +512,13 @@ export function requestQuestRescan(
   stat,
   floor,
   chatCount,
-  { nullCore = false, chat, lastIsAssistant, extraAnalyzing, focusText, focusMode } = {},
+  { nullCore = false, chat, lastIsAssistant, focusText, focusMode } = {},
 ) {
   const effectiveCount = effectiveChatCount(chat, chatCount);
   const effCountStr = effectiveCount !== undefined && effectiveCount !== null ? String(effectiveCount) : '';
   const effFloorStr = !effCountStr && floor !== undefined && floor !== null && floor !== '' ? String(floor) : '';
   const boardNow = boardNode(stat);
-  if (rescanFresh(obj(boardNow['待重扫']), { floor, chatCount: effectiveCount, chat, lastIsAssistant, extraAnalyzing })) {
+  if (rescanFresh(obj(boardNow['待重扫']), { floor, chatCount: effectiveCount, chat, lastIsAssistant })) {
     return { error: '本回合已经预约过地区重扫了，等下一回合刷新' };
   }
   const curDay = nullCore ? worldDay(stat) : '';
@@ -549,7 +549,7 @@ export function requestQuestRescan(
     floor,
     chatCount: effectiveCount,
     chat,
-    extraAnalyzing,
+    lastIsAssistant,
   });
   return {
     stat: next,
@@ -559,14 +559,13 @@ export function requestQuestRescan(
   };
 }
 
-/** 重扫请求是否已过完额外模型结算窗口，可由界面或后台维护安全清理。 */
+/** 重扫请求是否已随主模型回复落地消费，可由界面或后台维护安全清理。 */
 export function questRescanDone(
   stat,
   currentFloor,
   currentCount,
-  { extraFinished = false, extraAnalyzing = false, allowGrace = false, chat, lastIsAssistant } = {},
+  { chat, lastIsAssistant } = {},
 ) {
-  if (extraAnalyzing) return false;
   const pending = obj(boardNode(stat)['待重扫']);
   if (!Object.keys(pending).length) return false;
   const num = (v) => {
@@ -577,22 +576,18 @@ export function questRescanDone(
   const isAssistantTail = typeof lastIsAssistant === 'boolean'
     ? lastIsAssistant
     : lastNonSystemIsAssistant(chat);
-  const settled = extraFinished || allowGrace;
   const atCount = num(pending['消息数']);
   const nowCount = num(effectiveChatCount(chat, currentCount));
-  // 额外模型在主回复落楼后才排队执行，需等到变量更新结束事件、落楼宽限期满或进入下一轮后再清理
   if (atCount !== null && nowCount !== null) {
-    if (nowCount > atCount + 2) return true;
-    if (nowCount === atCount + 2) return settled;
-    if (nowCount === atCount + 1 && isAssistantTail === true) return settled;
+    if (nowCount > atCount + 1) return true;
+    if (nowCount === atCount + 1 && isAssistantTail === true) return true;
     return false;
   }
   const atFloor = num(pending['楼层']);
   const nowFloor = num(currentFloor);
   if (atFloor !== null && nowFloor !== null) {
-    if (nowFloor > atFloor + 2) return true;
-    if (nowFloor === atFloor + 2) return settled;
-    if (nowFloor === atFloor + 1 && isAssistantTail === true) return settled;
+    if (nowFloor > atFloor + 1) return true;
+    if (nowFloor === atFloor + 1 && isAssistantTail === true) return true;
     return false;
   }
   return atCount === null && atFloor === null;
@@ -1102,12 +1097,12 @@ export function sweepClosedQuests(stat, current = {}) {
 /** 合并后台维护：单次顺序执行清重扫 → 扫完结残留 → 登记曾接取 → 清全地图过期词条 → 清过期关注方向与导演引信，无改动时返回 { skip: true }。 */
 export function maintainQuestBoard(
   stat,
-  { floor, chatCount, chat, historyStats, extraFinished = false, extraAnalyzing = false, allowGrace = false, lastIsAssistant } = {},
+  { floor, chatCount, chat, historyStats, lastIsAssistant } = {},
 ) {
   let cur = stat;
   let changed = false;
   let rescanCleared = false;
-  if (questRescanDone(cur, floor, chatCount, { extraFinished, extraAnalyzing, allowGrace, chat, lastIsAssistant })) {
+  if (questRescanDone(cur, floor, chatCount, { chat, lastIsAssistant })) {
     cur = clearQuestRescan(cur).stat;
     changed = true;
     rescanCleared = true;
@@ -1127,7 +1122,7 @@ export function maintainQuestBoard(
     cur = sweepExpiredAftermath(cur).stat;
     changed = true;
   }
-  const focusOpts = { floor, chatCount, chat, extraAnalyzing, extraFinished, allowGrace, rescanCleared };
+  const focusOpts = { floor, chatCount, chat, lastIsAssistant, rescanCleared };
   if (hasExpiredOnceFocus(cur, focusOpts)) {
     cur = clearExpiredOnceFocus(cur, focusOpts).stat;
     changed = true;

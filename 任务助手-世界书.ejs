@@ -784,22 +784,14 @@ const _qbItems = _qbRawList
 
 const _qbRescan = _obj(_qb['待重扫']);
 const _lastNonSysMsg = _nonSysMsgs.length ? _nonSysMsgs[_nonSysMsgs.length - 1] : null;
-const _prevNonSysMsg = _nonSysMsgs.length >= 2 ? _nonSysMsgs[_nonSysMsgs.length - 2] : null;
 const _genType = typeof generateType === 'string' ? generateType : '';
-const _hasExtraApi = typeof Mvu === 'object' && Mvu && typeof Mvu.isDuringExtraAnalysis === 'function';
 const _skipRescanGenTypes = ['swipe', 'continue', 'append', 'appendFinal'];
 const _isSkipRescanGen = _skipRescanGenTypes.includes(_genType);
-const _extraRunning = _hasExtraApi ? !!Mvu.isDuringExtraAnalysis() : false;
-const _inExtraUpdateTurn = (_extraRunning
-  || (_wbRole === 'update' && !_hasExtraApi && !!_prevNonSysMsg && _prevNonSysMsg.is_user === true))
-  && !_isSkipRescanGen
-  && !!_lastNonSysMsg && _lastNonSysMsg.is_user === false;
 const _isRescanWindowDue = (curVal, baseVal) => {
   if (curVal <= baseVal) return true;
   if (curVal === baseVal + 1) {
-    return (_lastNonSysMsg && _lastNonSysMsg.is_user === false) ? _inExtraUpdateTurn : true;
+    return !(_lastNonSysMsg && _lastNonSysMsg.is_user === false);
   }
-  if (curVal === baseVal + 2) return _inExtraUpdateTurn;
   return false;
 };
 const _qbRescanDue = (() => {
@@ -1102,9 +1094,7 @@ const _seedFuseHint = (it) => {
   };
   if (leadRegion) leadObj['区域'] = leadRegion;
   const cdVal = it.fuseInfo.isAftershock ? 3 : (_aftershockCooldown > 0 ? _aftershockCooldown - 1 : 0);
-  const seedTail = _emitPlot
-    ? '（仅正常完结写入，彻底失败或放弃时不写；正文正面推进，不提前点破引信）'
-    : '（仅正常完结写入，彻底失败或放弃时不写）';
+  const seedTail = '（仅正常完结写入，彻底失败或放弃时不写；正文正面推进，不提前点破引信）';
   if (!_hasDirector) {
     const val = it.fuseInfo.isAftershock
       ? { '余震冷却': cdVal, '待引爆': [leadObj] }
@@ -1362,8 +1352,8 @@ _%>
   if (it.deadline) _metaParts.push(`时限 ${it.deadline}`);
   if (_keep && it.updatedDay) _metaParts.push(`更新日 ${it.updatedDay}`);
   const _metaBit = _metaParts.join('，');
-  const _dispTitle = _emitPlot ? (_stripBackendTags(it.title) || it.title) : it.title;
-  const _dispTruth = _emitPlot ? _stripPlotTruth(it.truth) : it.truth;
+  const _dispTitle = _stripBackendTags(it.title) || it.title;
+  const _dispTruth = _stripPlotTruth(it.truth);
 _%>
 <% if (it.accepted && !_qbTouchBoard) { _%>
 <%- _ind %>    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜已接取:<%- it.formalTaskName %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>]<% if (it.category !== '支线任务' && it.summary) { %> 摘要：<%- it.summary %><% } %><% if (it.category !== '支线任务' && _dispTruth) { %>｜幕后真相：<%- _dispTruth %><% } %><% if (it.rewardItems.length) { %>｜预期收益：<%- _fmtRewards(it) %>｜兑现Patch：<%- _claimPatchHint(it) %><% if (it.advanceLoss) { %><%- _fmtAdvLoss(it) %><% } else if (it.category !== '支线任务' && _hasQb) { %>｜失效Patch：<%- _lostPatchHint(it) %><% } %><% } %><% if (_removePatchHint(it)) { %>｜完结移出：<%- _removePatchHint(it) %><% } %><%- _seedFuseHint(it) %><%- _cooldownDecHint(it) %>
