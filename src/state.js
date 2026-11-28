@@ -462,6 +462,172 @@ export function stripQuestBackendTags(raw) {
     .trim();
 }
 
+function parseDiaryEntries(rawDiary) {
+  if (!Array.isArray(rawDiary)) return [];
+  const out = [];
+  for (let idx = 0; idx < rawDiary.length; idx += 1) {
+    const r = obj(rawDiary[idx]);
+    const title = text(r['标题'] ?? r.title).trim();
+    const body = text(r['正文'] ?? r['内容'] ?? r.body).trim();
+    if (!title && !body) continue;
+    const id = text(r['id'] ?? r['编号'] ?? '').trim() || `d${idx + 1}`;
+    const questId = text(r['任务id'] ?? r['任务ID'] ?? r['任务编号'] ?? r.questId ?? '').trim();
+    const displayTitle = stripQuestBackendTags(title) || title;
+    const rawCat = text(r['类别'] ?? r.category).trim();
+    const category = rawCat ? normalizeQuestCategory(rawCat) : '';
+    const region = text(r['区域'] ?? r['地点'] ?? r.region).trim();
+    const rawDate = text(r['日期'] ?? r['结案日'] ?? r['记录日'] ?? r.date).trim();
+    const date = normalizeDay(rawDate) || rawDate;
+    const outcome = text(r['结局'] ?? r['终局'] ?? r.outcome).trim();
+    const mood = text(r['心情'] ?? r['情绪'] ?? r.mood).trim();
+    const note = text(r['角注'] ?? r['附注'] ?? r['备注'] ?? r.note).trim();
+    const rawSequels = r['续篇'] ?? r['后续'] ?? r.sequels;
+    const seqArr = Array.isArray(rawSequels)
+      ? rawSequels
+      : (rawSequels && typeof rawSequels === 'object' ? [rawSequels] : (typeof rawSequels === 'string' && rawSequels.trim() ? [rawSequels] : []));
+    const sequels = seqArr
+      .map((item) => {
+        if (typeof item === 'string') {
+          const sb = item.trim();
+          return sb ? { date: '', tag: '', mood: '', body: sb } : null;
+        }
+        const s = obj(item);
+        const sb = text(s['正文'] ?? s['内容'] ?? s.body).trim();
+        if (!sb) return null;
+        const sRawDate = text(s['日期'] ?? s.date).trim();
+        return {
+          date: normalizeDay(sRawDate) || sRawDate,
+          tag: text(s['标签'] ?? s['类型'] ?? s.tag).trim(),
+          mood: text(s['心情'] ?? s['情绪'] ?? s.mood).trim(),
+          body: sb,
+        };
+      })
+      .filter(Boolean);
+    out.push({
+      index: idx,
+      id,
+      questId,
+      title,
+      displayTitle,
+      category,
+      region,
+      date,
+      outcome,
+      mood,
+      body,
+      note,
+      sequels,
+    });
+  }
+  return out;
+}
+
+function findDiaryIndex(diaryEntries, questId, title) {
+  if (!Array.isArray(diaryEntries) || !diaryEntries.length) return -1;
+  const qid = text(questId).trim();
+  if (qid) {
+    const byId = diaryEntries.find((d) => d.questId && d.questId === qid);
+    if (byId) return byId.index;
+  }
+  const clean = stripQuestBackendTags(title) || text(title).trim();
+  const norm = stripTaskTitle(clean);
+  if (!clean && !norm) return -1;
+  const exact = diaryEntries.find((d) => {
+    if (clean && (d.displayTitle === clean || d.title === clean)) return true;
+    const dNorm = stripTaskTitle(d.displayTitle || d.title);
+    return !!(norm && dNorm && dNorm === norm);
+  });
+  if (exact) return exact.index;
+  if (norm.length >= 3) {
+    const sub = diaryEntries.find((d) => {
+      const dNorm = stripTaskTitle(d.displayTitle || d.title);
+      return dNorm.length >= 3 && (norm.includes(dNorm) || dNorm.includes(norm));
+    });
+    if (sub) return sub.index;
+  }
+  return -1;
+}
+
+function normalizeReceiptOutcome(raw) {
+  const s = text(raw).trim();
+  const low = s.toLowerCase();
+  if (low === 'abandoned' || /(?:放弃|已放弃|取消|已取消)/.test(s)) {
+    return { outcome: 'abandoned', outcomeLabel: '已放弃' };
+  }
+  if (low === 'failed' || /(?:失败|已失败)/.test(s)) {
+    return { outcome: 'failed', outcomeLabel: '已失败' };
+  }
+  if (low === 'degraded' || /(?:折损|止损)/.test(s)) {
+    return { outcome: 'degraded', outcomeLabel: '折损结案' };
+  }
+  return { outcome: 'done', outcomeLabel: '已完成' };
+}
+
+function parseReceipts(rawReceipts, diaryEntries) {
+  if (!Array.isArray(rawReceipts)) return [];
+  const out = [];
+  for (let idx = 0; idx < rawReceipts.length; idx += 1) {
+    const r = obj(rawReceipts[idx]);
+    if (r['已收起'] === true || r.dismissed === true) continue;
+    const title = text(r['标题'] ?? r.title).trim();
+    if (!title) continue;
+    const id = text(r['id'] ?? r['编号'] ?? r.id ?? '').trim() || `rcpt${idx + 1}`;
+    const displayTitle = stripQuestBackendTags(title) || title;
+    const category = normalizeQuestCategory(r['类别'] ?? r.category);
+    const rankMatch = text(r['等级'] ?? r.rank).trim().toUpperCase().match(/[SABCD]/);
+    const rank = rankMatch ? rankMatch[0] : 'C';
+    const { outcome, outcomeLabel } = normalizeReceiptOutcome(r['终局'] ?? r['结局'] ?? r.outcomeLabel ?? r.outcome);
+    const reason = text(r['原因'] ?? r.reason).trim();
+    const rawClosedDay = text(r['结案日'] ?? r['日期'] ?? r.closedDay).trim();
+    const closedDay = normalizeDay(rawClosedDay) || rawClosedDay;
+    const rawRewards = Array.isArray(r['收益结算'])
+      ? r['收益结算']
+      : (Array.isArray(r.rewards) ? r.rewards : []);
+    const rewards = rawRewards
+      .map((item, rwIdx) => {
+        if (typeof item === 'string') {
+          const rawStr = item.trim();
+          if (!rawStr) return null;
+          const clean = cleanRewardText(rawStr) || rawStr;
+          const claimed = CLAIMED_MARK_RE.test(rawStr);
+          const lost = !claimed && LOST_MARK_RE.test(rawStr);
+          const state = claimed ? 'claimed' : (lost ? 'lost' : 'open');
+          return { slot: rwIdx + 1, text: clean, state, claimed, lost };
+        }
+        const rw = obj(item);
+        const rwText = text(rw['文本'] ?? rw.text).trim();
+        if (!rwText) return null;
+        const slotNum = toNum(rw['栏号'] ?? rw.slot);
+        const slot = slotNum !== null && slotNum >= 1 ? Math.floor(slotNum) : rwIdx + 1;
+        const rawState = text(rw['状态'] ?? rw.state).trim().toLowerCase();
+        const claimed = rw.claimed === true || rawState === 'claimed' || rawState === '已兑现';
+        const lost = !claimed && (rw.lost === true || rawState === 'lost' || rawState === '已失效');
+        const state = claimed ? 'claimed' : (lost ? 'lost' : 'open');
+        return { slot, text: cleanRewardText(rwText) || rwText, state, claimed, lost };
+      })
+      .filter(Boolean);
+    const read = Boolean(r['已阅'] ?? r.read);
+    const readMsgCount = toNum(r['已阅消息数'] ?? r.readMsgCount);
+    const diaryIndex = findDiaryIndex(diaryEntries, id, title);
+    out.push({
+      id,
+      title,
+      displayTitle,
+      category,
+      rank,
+      outcome,
+      outcomeLabel,
+      reason,
+      closedDay,
+      rewards,
+      read,
+      readMsgCount,
+      diaryIndex,
+    });
+  }
+  return out;
+}
+
 /** 判断「仅本次」关注方向是否已过期（长期模式恒返回 false）。 */
 export function isOnceFocusExpired(board, current = {}) {
   const b = obj(board);
@@ -768,6 +934,14 @@ export function questBoardState(stat, current = {}) {
     worldEntries,
   };
 
+  const diaryEntries = parseDiaryEntries(board['任务日记']);
+  const diaryCount = diaryEntries.length;
+  const diarySignature = diaryEntries
+    .map((d) => `${d.index}|${d.id}|${d.displayTitle}|${d.date}|${d.body.length}|${d.sequels.map((s) => s.body.length).join(',')}`)
+    .join(';;');
+  const receipts = parseReceipts(board['待阅回执'], diaryEntries);
+  const unreadReceiptCount = receipts.filter((r) => !r.read).length;
+
   const matchedFormalKeys = new Set();
 
   const boardItems = rawList
@@ -828,6 +1002,7 @@ export function questBoardState(stat, current = {}) {
       const cfg = DATA.questBoard.categories[category] || DATA.questBoard.categories['支线任务'];
       const intent = intentSet.has(id) || intentSet.has(title) || (!!rawKey && intentSet.has(rawKey));
       const staleRegion = !accepted && !cfg.crossRegion && regionChanged;
+      const diaryIndex = findDiaryIndex(diaryEntries, id, title);
       return {
         id,
         category,
@@ -854,6 +1029,7 @@ export function questBoardState(stat, current = {}) {
         expectedSlots: cfg.rewardSlots,
         intent,
         staleRegion,
+        diaryIndex,
       };
     })
     .filter(Boolean);
@@ -879,6 +1055,7 @@ export function questBoardState(stat, current = {}) {
       const claimedCount = rewardItems.filter((x) => x.claimed).length;
       const lostCount = rewardItems.filter((x) => x.lost).length;
       const cfg = DATA.questBoard.categories[category] || DATA.questBoard.categories['支线任务'];
+      const diaryIndex = findDiaryIndex(diaryEntries, '', f.key);
       return {
         id: `formal:${f.key}`,
         category,
@@ -905,6 +1082,7 @@ export function questBoardState(stat, current = {}) {
         expectedSlots: rewardItems.length || cfg.rewardSlots,
         intent: false,
         staleRegion: false,
+        diaryIndex,
       };
     });
 
@@ -958,6 +1136,11 @@ export function questBoardState(stat, current = {}) {
     intents,
     ignored,
     aftermath,
+    diaryEntries,
+    diaryCount,
+    diarySignature,
+    receipts,
+    unreadReceiptCount,
     items,
     counts,
   };

@@ -1,8 +1,8 @@
-// 独立任务助手单页界面。运行在同源 iframe 中，通过 host.js 读写酒馆数据，
+// 独立任务助手「冒险手账」主界面。运行在同源 iframe 中，通过 host.js 读写酒馆数据，
 // 点击操作经 commit.js 写回最新楼层 /事件/任务情报板。
 
 import { DATA, SCRIPT_VERSION } from './data.js';
-import { readState, effectiveChatCount, boardNode, CORE_NAME, SPEAKER } from './state.js';
+import { readState, effectiveChatCount, CORE_NAME, SPEAKER } from './state.js';
 import {
   toggleQuestIntent,
   cycleQuestRewardState,
@@ -10,17 +10,15 @@ import {
   ignoreQuest,
   setQuestFocus,
   requestQuestRescan,
-  questRescanDone,
-  hasClosedQuestLeftovers,
-  hasExpiredAftermath,
-  hasExpiredOnceFocus,
-  hasExpiredDirectorLeads,
-  needsQuestAcceptedRecord,
+  hasPendingMaintenance,
+  markReceiptsRead,
+  dismissReceipt,
   maintainQuestBoard,
 } from './actions.js';
 import { commit, generating, replySettleRemainingMs } from './commit.js';
 import * as host from './host.js';
 import { ENTRY_MODES, readEntryMode, writeEntryMode } from './entryMode.js';
+import { readMotionEnabled, writeMotionEnabled } from './motionPref.js';
 import {
   BASELINE_SCRIPT_TAG,
   DEFAULT_SCRIPT_REF,
@@ -31,26 +29,44 @@ import {
   readScriptRef,
   worldbookCompatibilityBadge,
 } from './scriptRef.js';
+import {
+  el,
+  renderNoteCallout,
+  createCrestIcon,
+  renderReceiptsStrip,
+  renderLoreView,
+  renderDiaryView,
+} from './panelViews.js';
 
 const QUEST_SEEN_KEY = 'quest_helper_seen_progress_v1';
+const DIARY_SEEN_KEY = 'quest_helper_seen_diary_v1';
 const TAG_CHECK_TTL_MS = 5 * 60 * 1000;
+const TABS = [
+  { id: 'board', label: '委托板', shortLabel: '委托' },
+  { id: 'lore', label: '风物志', shortLabel: '风物' },
+  { id: 'diary', label: '冒险日记', shortLabel: '日记' },
+  { id: 'settings', label: '设置', shortLabel: '设置' },
+];
 
 const ui = {
+  activeTab: 'board',
+  prevTab: 'board',
   questCategory: '全部',
+  selectedQuestKey: '',
+  mobileExpandedQuestKey: '',
+  selectedDiaryIndex: -1,
+  mobileDiaryIndexOpen: false,
   questEditRewards: false,
   confirmDeleteTrait: '',
-  settingsOpen: false,
   entryMode: ENTRY_MODES.FAB,
+  motionEnabled: true,
   latestTag: '',
   latestTagState: 'idle',
   latestCheckedAt: 0,
   worldbookInfo: null,
   worldbookState: 'idle',
   switchingRef: false,
-  traitsExpanded: {
-    local: false,
-    world: false,
-  },
+  verDraftText: null,
   focusExpanded: false,
   focusDraftText: null,
   focusDraftMode: null,
@@ -67,10 +83,25 @@ let busy = false;
 let busySince = 0;
 let busyToken = 0;
 let sweeping = false;
+let markingReceipts = false;
+let receiptMarkAttemptKey = '';
 let focusComposing = false;
+let verComposing = false;
 let pendingDeferredRefresh = false;
+let openTimer = null;
+let openCleanup = null;
 let closeTimer = null;
 let closeCleanup = null;
+let lastRenderedTab = 'board';
+let lastCompactState = false;
+
+function isCompactViewport() {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  return (
+    window.matchMedia('(max-width: 768px)').matches ||
+    window.matchMedia('(max-height: 540px) and (orientation: landscape)').matches
+  );
+}
 
 function resetTransientFocusUi({ focusToggle = false, collapse = true } = {}) {
   if (collapse) ui.focusExpanded = false;
@@ -81,12 +112,12 @@ function resetTransientFocusUi({ focusToggle = false, collapse = true } = {}) {
   render({ force: true, skipInputRestore: true });
   if (focusToggle && root) {
     const toggleBtn = root.querySelector('.qh-focus-toggle');
-    if (toggleBtn && typeof toggleBtn.focus === 'function') toggleBtn.focus();
+    if (toggleBtn && typeof toggleBtn.focus === 'function') host.safeFocus(toggleBtn);
   }
 }
 
 // ---------------------------------------------------------------------------
-// 宿主读取
+// 宿主读取与已阅存储
 // ---------------------------------------------------------------------------
 
 function chatArray() {
@@ -121,6 +152,16 @@ function chatCount() {
   return effectiveChatCount(chatArray());
 }
 
+function lastSwipeId(chat) {
+  if (!Array.isArray(chat)) return '';
+  for (let i = chat.length - 1; i >= 0; i -= 1) {
+    const msg = chat[i];
+    if (!msg || msg.is_system) continue;
+    return msg.swipe_id ?? '';
+  }
+  return '';
+}
+
 function currentStat() {
   try {
     return host.readStat() || {};
@@ -150,56 +191,28 @@ function seenProgressKey() {
   return cid ? `${QUEST_SEEN_KEY}:${cid}` : QUEST_SEEN_KEY;
 }
 
-function readSeenProgress() {
-  return host.readStorage(seenProgressKey());
-}
-
 function markSeenProgress(sig) {
   if (!sig) return;
   host.writeStorage(seenProgressKey(), sig);
 }
 
-// ---------------------------------------------------------------------------
-// DOM 工具与 Toast
-// ---------------------------------------------------------------------------
-
-function el(tag, className, children, attrs, events) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (attrs) {
-    for (const key in attrs) {
-      if (attrs[key] !== undefined && attrs[key] !== null) {
-        if (key === 'disabled') {
-          if (attrs[key]) {
-            node.disabled = true;
-            node.setAttribute('disabled', '');
-          }
-        } else if (key === 'value') {
-          node.value = attrs[key];
-        } else {
-          node.setAttribute(key, attrs[key]);
-        }
-      }
-    }
-  }
-  if (events) {
-    for (const evt in events) {
-      if (events[evt]) node.addEventListener(evt, events[evt]);
-    }
-  }
-  if (children !== undefined && children !== null) {
-    if (Array.isArray(children)) {
-      for (const c of children) {
-        if (c !== null && c !== undefined) {
-          node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
-        }
-      }
-    } else {
-      node.appendChild(typeof children === 'string' ? document.createTextNode(children) : children);
-    }
-  }
-  return node;
+function seenDiaryKey() {
+  const cid = host.readChatId();
+  return cid ? `${DIARY_SEEN_KEY}:${cid}` : DIARY_SEEN_KEY;
 }
+
+function readSeenDiary() {
+  return host.readStorage(seenDiaryKey());
+}
+
+function markSeenDiary(sig) {
+  if (!sig) return;
+  host.writeStorage(seenDiaryKey(), sig);
+}
+
+// ---------------------------------------------------------------------------
+// Toast 与写操作
+// ---------------------------------------------------------------------------
 
 function toast(message, kind = '') {
   if (!root) return;
@@ -212,10 +225,6 @@ function toast(message, kind = '') {
     node.className = 'qh-toast';
   }, 2600);
 }
-
-// ---------------------------------------------------------------------------
-// 写操作
-// ---------------------------------------------------------------------------
 
 async function run(label, action, { redraw = true, after } = {}) {
   if (busy) {
@@ -241,6 +250,7 @@ async function run(label, action, { redraw = true, after } = {}) {
       if (typeof after === 'function') after();
       toast((result && result.done) || label, 'ok');
       render();
+      app?.onUnreadSync?.();
     }
   } catch (error) {
     toast(`操作失败：${error && error.message ? error.message : error}`, 'err');
@@ -250,7 +260,7 @@ async function run(label, action, { redraw = true, after } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// 业务组装与渲染
+// 任务辅助逻辑
 // ---------------------------------------------------------------------------
 
 function buildQuestDraft(item) {
@@ -272,63 +282,43 @@ function questCatClass(category) {
   return 'is-side';
 }
 
-function renderNoteCallout(textStr, tone = '') {
-  const cls = tone === 'warn' ? ' is-warn' : tone === 'dim' ? ' is-dim' : '';
-  return el('div', 'qh-note' + cls, [
-    el('span', 'qh-note-icon', tone === 'warn' ? '⚠' : 'ℹ'),
-    el('span', 'qh-note-text', textStr),
-  ]);
+function questKeyOf(item) {
+  return String(item?.id || item?.title || '');
 }
 
-function formatTraitCountdown(entry, compact = false) {
-  if (!entry || !entry.isTemp) return '';
-  if (entry.daysLeft === 0) return compact ? '今日' : '今日结束';
-  if (typeof entry.daysLeft === 'number' && entry.daysLeft > 0) {
-    return compact ? `剩${entry.daysLeft}天` : `剩 ${entry.daysLeft} 天`;
+function switchTab(nextTab, { diaryIndex } = {}) {
+  const valid = TABS.some((t) => t.id === nextTab) ? nextTab : 'board';
+  if (valid === 'settings' && ui.activeTab !== 'settings') {
+    ui.prevTab = ui.activeTab;
   }
-  if (entry.until) return `至${entry.until}`;
-  return '';
+  ui.activeTab = valid;
+  ui.confirmDeleteTrait = '';
+  if (valid !== 'board' && ui.focusExpanded) {
+    ui.focusExpanded = false;
+    ui.focusDraftText = null;
+    ui.focusDraftMode = null;
+    focusComposing = false;
+  }
+  if (typeof diaryIndex === 'number' && diaryIndex >= 0) {
+    ui.selectedDiaryIndex = diaryIndex;
+    ui.mobileDiaryIndexOpen = false;
+  }
+  if (valid === 'settings') {
+    void refreshWorldbookStatus();
+    void refreshLatestTag({ force: true });
+  }
+  render({ resetScroll: true });
 }
 
-function renderContent(state) {
-  const wrap = el('div', 'qh-page');
-  const qb = state.questBoard || {
-    regionName: '',
-    boardRegionName: '',
-    regionChanged: false,
-    updatedDay: '',
-    rescanPending: false,
-    rescanFp: DATA.questBoard.rescanFp,
-    aftermath: { local: [], world: [], localEntries: [], worldEntries: [] },
-    items: [],
-    counts: { total: 0, story: 0, local: 0, side: 0, accepted: 0, editableAccepted: 0, intent: 0, progressed: 0 },
-  };
+function jumpToDiary(diaryIndex) {
+  switchTab('diary', { diaryIndex });
+}
 
-  const regionDisplay = qb.regionName || qb.boardRegionName || '未识别区域';
-  const activeCategory = ['全部', '剧情任务', '本地主线', '支线任务'].includes(ui.questCategory)
-    ? ui.questCategory
-    : '全部';
-  const filtered = activeCategory === '全部'
-    ? qb.items
-    : qb.items.filter((it) => it.category === activeCategory);
+// ---------------------------------------------------------------------------
+// 委托板：共用控制区与卷宗详情渲染
+// ---------------------------------------------------------------------------
 
-  // 第一层：当前区域与重扫控制带
-  const band = el('section', 'qh-band');
-  const bandMain = el('div', 'qh-band-main');
-  const eyebrow = qb.updatedDay ? `当前覆盖区域 · 更新于 ${qb.updatedDay}` : '当前覆盖区域 · 地区任务情报';
-  bandMain.append(el('div', 'qh-eyebrow', eyebrow));
-  bandMain.append(
-    el('div', 'qh-band-value', [
-      el('span', 'qh-quest-region', regionDisplay),
-    ]),
-  );
-  const acceptedBit = qb.counts.accepted > 0 ? ` · 已接取 ${qb.counts.accepted} 条` : '';
-  const footText = qb.counts.total > 0
-    ? `共 ${qb.counts.total} 条情报（剧情 ${qb.counts.story} · 本地主线 ${qb.counts.local} · 支线 ${qb.counts.side}）· 已锁定 ${qb.counts.intent} 条${acceptedBit}`
-    : '随剧情与跨区移动静默同步；同城内部走动不会误刷任务';
-  bandMain.append(el('div', qb.rescanPending ? 'qh-stat-foot is-gold' : 'qh-stat-foot', footText));
-  band.append(bandMain);
-
+function buildFocusAndRescanControls(state, qb, regionDisplay) {
   const focus = qb.focus || { text: '', mode: 'long', active: false };
   const focusShort = focus.text.length > 8 ? `${focus.text.slice(0, 8)}…` : focus.text;
   const focusModeTag = focus.mode === 'once' ? '本次' : '长期';
@@ -370,6 +360,23 @@ function renderContent(state) {
     );
   };
 
+  const regionCard = el('section', 'qh-region-header');
+  const regionTop = el('div', 'qh-region-top');
+  const regionInfo = el('div', 'qh-region-info', [
+    el('div', 'qh-region-kicker', qb.updatedDay ? `当前驻地 · 更新于 ${qb.updatedDay}` : '当前驻地 · 地区委托卷宗'),
+    el('div', 'qh-region-name-row', [
+      el('span', 'qh-quest-region', regionDisplay),
+      state.day ? el('span', 'qh-region-day-chip', state.day) : null,
+    ]),
+  ]);
+
+  const acceptedBit = qb.counts.accepted > 0 ? ` · 进行中 ${qb.counts.accepted}` : '';
+  const footText = qb.counts.total > 0
+    ? `共 ${qb.counts.total} 份（剧情 ${qb.counts.story} · 主线 ${qb.counts.local} · 支线 ${qb.counts.side}）· 锁定 ${qb.counts.intent}${acceptedBit}`
+    : '随剧情与跨区移动静默同步；同城走动不会误刷任务';
+  regionInfo.append(el('div', qb.rescanPending ? 'qh-region-foot is-gold' : 'qh-region-foot', footText));
+  regionTop.append(regionInfo);
+
   const actBox = el('div', 'qh-quest-rescan');
   actBox.append(
     el(
@@ -399,7 +406,7 @@ function renderContent(state) {
           if (ui.focusExpanded && root) {
             const inp = root.querySelector('.qh-focus-input');
             if (inp && typeof inp.focus === 'function') {
-              inp.focus();
+              host.safeFocus(inp);
               try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch { /* 忽略 */ }
             }
           }
@@ -407,36 +414,38 @@ function renderContent(state) {
       },
     ),
   );
+
   if (qb.rescanPending) {
-    actBox.append(el('button', 'qh-btn qh-btn--primary', '已预约重扫，等待下一回合', { type: 'button', disabled: true }));
+    actBox.append(el('button', 'qh-btn qh-btn--seal', '已预约重扫', { type: 'button', disabled: true }));
   } else if (qb.nullCore) {
     if (qb.rescanCooldownToday) {
-      actBox.append(el('button', 'qh-btn qh-btn--primary', '今日已重扫（次日可用）', { type: 'button', disabled: true }));
+      actBox.append(el('button', 'qh-btn qh-btn--seal', '今日已重扫', { type: 'button', disabled: true }));
     } else {
       actBox.append(
         el(
           'button',
-          'qh-btn qh-btn--primary',
-          '重扫本地情报 · 每日 1 次',
-          { type: 'button' },
+          'qh-btn qh-btn--seal',
+          '重扫 · 每日 1 次',
+          { type: 'button', title: '每日免费重扫 1 次本地未锁定情报' },
           { click: () => triggerRescan(true) },
         ),
       );
     }
   } else if (state.fp < qb.rescanFp) {
-    actBox.append(el('button', 'qh-btn qh-btn--primary', `命运点数不足（需 ${qb.rescanFp} FP）`, { type: 'button', disabled: true }));
+    actBox.append(el('button', 'qh-btn qh-btn--seal', `FP 不足 (${qb.rescanFp})`, { type: 'button', disabled: true }));
   } else {
     actBox.append(
       el(
         'button',
-        'qh-btn qh-btn--primary',
-        `重扫本地情报 · ${qb.rescanFp} FP`,
-        { type: 'button' },
+        'qh-btn qh-btn--seal',
+        `重扫 · ${qb.rescanFp} FP`,
+        { type: 'button', title: `消耗 ${qb.rescanFp} FP 重扫未锁定的本地情报` },
         { click: () => triggerRescan(false) },
       ),
     );
   }
-  band.append(actBox);
+  regionTop.append(actBox);
+  regionCard.append(regionTop);
 
   if (ui.focusExpanded) {
     const draftText = ui.focusDraftText !== null ? ui.focusDraftText : (focus.active ? focus.text : '');
@@ -470,7 +479,7 @@ function renderContent(state) {
         type: 'text',
         maxlength: '40',
         value: draftText,
-        placeholder: '如：经营魔药铺 / 典狱长押运（留空=通用，0 Token）',
+        placeholder: '如：经营魔药铺 / 典狱长押运（留空=通用）',
         'aria-label': '关注方向输入',
       },
       {
@@ -535,7 +544,7 @@ function renderContent(state) {
 
     clearBtn = el(
       'button',
-      'qh-btn qh-btn--sm qh-btn--ghost qh-focus-clear',
+      'qh-btn qh-btn--xs qh-btn--paper qh-focus-clear',
       '清空',
       {
         type: 'button',
@@ -547,7 +556,7 @@ function renderContent(state) {
             focusInput.value = '';
             ui.focusDraftText = null;
             clearBtn.hidden = true;
-            focusInput.focus();
+            host.safeFocus(focusInput);
             return;
           }
           void run(
@@ -569,226 +578,314 @@ function renderContent(state) {
 
     const saveBtn = el(
       'button',
-      'qh-btn qh-btn--sm qh-btn--focus-save',
+      'qh-btn qh-btn--xs qh-btn--teal qh-focus-save',
       '保存',
       { type: 'button' },
       { click: () => void submitFocus(focusInput.value, draftMode) },
     );
 
-    band.append(
+    regionCard.append(
       el('div', 'qh-focus-bar', [
         focusInput,
-        el('div', 'qh-focus-modes', [longModeBtn, onceModeBtn]),
-        el('div', 'qh-focus-actions', [saveBtn, clearBtn]),
+        el('div', 'qh-focus-bar-row', [
+          el('div', 'qh-focus-modes', [longModeBtn, onceModeBtn]),
+          el('div', 'qh-focus-actions', [saveBtn, clearBtn]),
+        ]),
       ]),
     );
   }
-  wrap.append(band);
 
-  // 状态提示
+  return regionCard;
+}
+
+/** 渲染选中任务的完整卷宗内容（PC 右页与手机便签展开态共用）。 */
+function renderQuestDossier(item, { canEditMode = false, inPocket = false } = {}) {
+  const catCls = questCatClass(item.category);
+  const diaryIdx = typeof item.diaryIndex === 'number' ? item.diaryIndex : -1;
+
+  const dossier = el(
+    'article',
+    `qh-dossier ${catCls}${item.accepted ? ' is-accepted' : ''}${item.intent && !item.accepted ? ' is-intent' : ''}${item.staleRegion ? ' is-stale' : ''}${inPocket ? ' is-pocket-body' : ''}`,
+  );
+
+  // 顶部徽章与地点/时限纸条
+  const badges = el('div', 'qh-quest-badges', [
+    el('span', `qh-qbadge qh-qbadge--cat ${catCls}`, item.category),
+    el('span', 'qh-qbadge qh-qbadge--rank', item.rank === '原版' ? '原版' : `${item.rank} 级`),
+    el('span', 'qh-qbadge qh-qbadge--way', item.way || '委托接取'),
+  ]);
+  if (item.fromFormalOnly) badges.append(el('span', 'qh-qbadge qh-qbadge--sync', '剧情同步'));
+  if (item.accepted) badges.append(el('span', 'qh-qbadge qh-qbadge--accepted', '进行中'));
+  if (item.progress) badges.append(el('span', 'qh-qbadge qh-qbadge--progress', '局势变动'));
+  if (item.intent && !item.accepted) badges.append(el('span', 'qh-qbadge qh-qbadge--intent', '★ 已锁定'));
+  if (item.staleRegion) badges.append(el('span', 'qh-qbadge qh-qbadge--stale', '异地旧档'));
+
+  const head = el('div', 'qh-dossier-head', [badges]);
+  if (item.location || item.deadline) {
+    const slips = el('div', 'qh-meta-slips', [
+      item.location ? el('span', 'qh-meta-slip', `地点 · ${item.location}`) : null,
+      item.deadline ? el('span', 'qh-meta-slip is-deadline', `时限 · ${item.deadline}`) : null,
+    ]);
+    head.append(slips);
+  }
+  dossier.append(head);
+
+  // 标题与摘要（保留规范结构以严格展示 displayTitle）
+  if (!inPocket) {
+    dossier.append(el('h3', 'qh-quest-title', item.displayTitle || item.title));
+  }
+  if (item.summary) {
+    dossier.append(el('p', 'qh-quest-summary', item.summary));
+  }
+
+  // 最新进展条
+  if (item.progress) {
+    const progMeta = item.accepted ? '同步自任务面板' : item.updatedDay;
+    dossier.append(
+      el('div', 'qh-quest-progress', [
+        el('div', 'qh-quest-progress-head', [
+          el('span', 'qh-quest-progress-label', '最新进展'),
+          progMeta ? el('span', 'qh-quest-progress-day', progMeta) : null,
+        ]),
+        el('div', 'qh-quest-progress-text', item.progress),
+      ]),
+    );
+  }
+
+  // 切入指引纸条
+  if (item.guide) {
+    dossier.append(
+      el('div', 'qh-quest-guide', [
+        el('span', 'qh-quest-guide-label', item.guideLabel || '切入指引'),
+        el('span', 'qh-quest-guide-text', item.guide),
+      ]),
+    );
+  }
+
+  // 预期收益印章勾选区
+  const rewardItems = Array.isArray(item.rewardItems) && item.rewardItems.length > 0
+    ? item.rewardItems
+    : (item.rewards || []).map((rw, idx) => ({ slot: idx + 1, text: rw, claimed: false, lost: false }));
+  const totalSlots = rewardItems.length || item.expectedSlots;
+  const claimedCount = typeof item.claimedCount === 'number'
+    ? item.claimedCount
+    : rewardItems.filter((r) => r.claimed).length;
+  const lostCount = typeof item.lostCount === 'number'
+    ? item.lostCount
+    : rewardItems.filter((r) => !r.claimed && r.lost).length;
+  const rewardTitle = claimedCount > 0 && lostCount > 0
+    ? `预期收益 · 共 ${totalSlots} 栏（兑现 ${claimedCount} · 失效 ${lostCount}）`
+    : (lostCount > 0
+      ? `预期收益 · 已失效 ${lostCount} / ${totalSlots} 栏`
+      : (claimedCount > 0
+        ? `预期收益 · 已兑现 ${claimedCount} / ${totalSlots} 栏`
+        : `预期收益 · ${totalSlots} 栏`));
+  const canEditThisQuest = !!(ui.questEditRewards && item.accepted && !item.fromFormalOnly);
+  const rewardNote = item.fromFormalOnly
+    ? '来自原版任务列表，只读展示'
+    : (canEditThisQuest
+      ? '修改模式：点击下方收益轮换（待获得 / 已兑现 ✓ / 已失效 ✕）'
+      : (ui.questEditRewards
+        ? '接取后可在修改模式中切换收益状态'
+        : '模糊预告 · 兑现打 ✓ · 错失标 ✕'));
+
+  const rewardHeadRight = el('div', 'qh-rewards-head-right');
+  if (!inPocket && canEditMode && item.accepted && !item.fromFormalOnly) {
+    rewardHeadRight.append(
+      el(
+        'button',
+        'qh-quest-edit-toggle' + (ui.questEditRewards ? ' is-on' : ''),
+        ui.questEditRewards ? '✓ 完成修改' : '✎ 修改收益',
+        {
+          type: 'button',
+          title: ui.questEditRewards ? '退出修改模式' : '开启后可点击收益在待获得 / 已兑现 / 已失效间轮换',
+        },
+        {
+          click: () => {
+            ui.questEditRewards = !ui.questEditRewards;
+            if (!ui.questEditRewards) ui.confirmDeleteTrait = '';
+            render();
+          },
+        },
+      ),
+    );
+  } else {
+    rewardHeadRight.append(el('span', 'qh-quest-rewards-note', rewardNote));
+  }
+
+  const rewardBox = el('div', 'qh-quest-rewards' + (canEditThisQuest ? ' is-editing' : ''));
+  rewardBox.append(
+    el('div', 'qh-quest-rewards-head', [
+      el('span', 'qh-quest-rewards-title', rewardTitle),
+      rewardHeadRight,
+    ]),
+  );
+  if (!inPocket && canEditThisQuest) {
+    rewardBox.append(el('div', 'qh-quest-rewards-subnote', rewardNote));
+  }
+
+  if (rewardItems.length > 0) {
+    const chips = el('div', 'qh-quest-reward-grid');
+    rewardItems.forEach((rw) => {
+      const isClaimed = !!rw.claimed;
+      const isLost = !isClaimed && !!rw.lost;
+      const stateCls = isClaimed ? ' is-claimed' : (isLost ? ' is-lost' : '');
+      const statusStamp = isClaimed
+        ? el('span', 'qh-reward-stamp is-claimed', '✓')
+        : (isLost ? el('span', 'qh-reward-stamp is-lost', '✕') : el('span', 'qh-reward-stamp is-open', '□'));
+      const children = [
+        statusStamp,
+        el('span', 'qh-quest-reward-idx', String(rw.slot).padStart(2, '0')),
+        el('span', 'qh-quest-reward-text', rw.text),
+      ];
+      if (canEditThisQuest) {
+        const nextTitle = isClaimed
+          ? '点击切换为已失效 ✕'
+          : (isLost ? '点击恢复为待获得 □' : '点击标记为已兑现 ✓');
+        chips.append(
+          el(
+            'button',
+            'qh-quest-reward-chip is-editable' + stateCls,
+            children,
+            { type: 'button', title: nextTitle },
+            {
+              click: () => run(
+                '已更新收益状态',
+                (s) => cycleQuestRewardState(s, item.id, rw.slot, item.title),
+                { redraw: false },
+              ),
+            },
+          ),
+        );
+      } else {
+        chips.append(el('div', 'qh-quest-reward-chip' + stateCls, children));
+      }
+    });
+    rewardBox.append(chips);
+  } else {
+    rewardBox.append(el('div', 'qh-quest-reward-empty', '待情报核实'));
+  }
+  dossier.append(rewardBox);
+
+  // 底部操作栏
+  if (item.fromFormalOnly) {
+    dossier.append(
+      el('div', 'qh-quest-accepted-bar', '✓ 来自原版任务列表，进度自动同步'),
+    );
+  } else if (item.accepted) {
+    dossier.append(
+      el('div', 'qh-quest-accepted-bar', '✓ 已接取并追踪中 · 进展同步自任务面板，收益随推进分批兑现'),
+    );
+  } else {
+    const draftHint = item.wayKind === 'crisis'
+      ? '将现场介入草稿填入输入框'
+      : (item.wayKind === 'clue' ? '将线索行动草稿填入输入框' : '将寻人接取草稿填入输入框');
+    dossier.append(
+      el('div', 'qh-quest-foot', [
+        el(
+          'button',
+          'qh-btn qh-btn--sm qh-btn--teal qh-btn--quest-accept',
+          '接取委托',
+          { type: 'button', title: draftHint },
+          {
+            click: () => {
+              const draftText = buildQuestDraft(item);
+              if (host.writeInput(draftText)) {
+                host.toast('行动草稿已填入输入框，可微调后发送', 'ok');
+                app.close({ focusInputBox: true });
+              } else {
+                toast('未能写入输入框，请在聊天框手动输入行动', 'err');
+              }
+            },
+          },
+        ),
+        el(
+          'button',
+          'qh-btn qh-btn--sm qh-btn--paper' + (item.intent ? ' is-intent-on' : ''),
+          item.intent ? '★ 取消锁定' : '☆ 锁定委托',
+          { type: 'button', title: '锁定后不会被换区或重扫刷掉，只会因时限到期自动清除' },
+          {
+            click: () => run(
+              item.intent ? '已取消锁定' : '已锁定任务',
+              (s) => toggleQuestIntent(s, item.id, item.title),
+              { redraw: false },
+            ),
+          },
+        ),
+        el(
+          'button',
+          'qh-btn qh-btn--sm qh-btn--ghost-ink',
+          '✕ 忽略',
+          { type: 'button' },
+          {
+            click: () => run('已忽略', (s) => ignoreQuest(s, item.id, item.title), { redraw: false }),
+          },
+        ),
+      ]),
+    );
+  }
+
+  // 右下折角跳转冒险日记
+  if (diaryIdx >= 0) {
+    dossier.append(
+      el('div', 'qh-dossier-diary-corner', [
+        el(
+          'button',
+          'qh-fold-jump-btn',
+          '翻阅关联冒险日记 ↗',
+          { type: 'button', title: '跳转至冒险日记对应篇章' },
+          { click: () => jumpToDiary(diaryIdx) },
+        ),
+      ]),
+    );
+  }
+
+  return dossier;
+}
+
+/** 渲染「委托板」视图（PC 双页手账 / Mobile 随身便签本）。 */
+function renderBoardView(state, qb, { regionDisplay, canEditMode, compact }) {
+  const activeCategory = ['全部', '剧情任务', '本地主线', '支线任务'].includes(ui.questCategory)
+    ? ui.questCategory
+    : '全部';
+  const filtered = activeCategory === '全部'
+    ? qb.items
+    : qb.items.filter((it) => it.category === activeCategory);
+
+  // 校验选中项
+  let selectedItem = filtered.find((it) => questKeyOf(it) === ui.selectedQuestKey) || null;
+  if (!selectedItem && filtered.length > 0) {
+    selectedItem = filtered[0];
+    ui.selectedQuestKey = questKeyOf(selectedItem);
+  }
+  if (compact) {
+    const expandedMatch = filtered.find((it) => questKeyOf(it) === ui.mobileExpandedQuestKey);
+    if (!expandedMatch && ui.mobileExpandedQuestKey !== '__none__') {
+      ui.mobileExpandedQuestKey = filtered.length > 0 ? questKeyOf(filtered[0]) : '';
+    }
+  }
+
+  const regionBlock = buildFocusAndRescanControls(state, qb, regionDisplay);
+  const notices = [];
   if (qb.rescanPending) {
-    wrap.append(
-      renderNoteCallout('地区情报重扫已预约：下一回合只重扫未锁定的本地主线与支线任务，剧情任务、已接取任务与已锁定任务将原样保留。'),
+    notices.push(
+      renderNoteCallout('地区情报重扫已预约：下一回合只重扫未锁定的本地主线与支线，剧情任务、已接取与已锁定委托原样保留。'),
     );
   } else if (qb.regionChanged) {
-    wrap.append(
+    notices.push(
       renderNoteCallout(
-        `已进入新区域「${qb.regionName}」（板上为「${qb.boardRegionName}」旧情报），下一回合将自动同步本地区任务。`,
+        `已进入新区域「${qb.regionName}」（板上仍为「${qb.boardRegionName}」旧情报），下一回合将自动同步本地区任务。`,
         'warn',
       ),
     );
   }
 
-  const localEntries = qb.aftermath && Array.isArray(qb.aftermath.localEntries)
-    ? qb.aftermath.localEntries
-    : [];
-  const worldEntries = qb.aftermath && Array.isArray(qb.aftermath.worldEntries)
-    ? qb.aftermath.worldEntries
-    : [];
-  const editableAccepted = typeof qb.counts.editableAccepted === 'number'
-    ? qb.counts.editableAccepted
-    : qb.items.filter((x) => x.accepted && !x.fromFormalOnly).length;
-  const canEditMode = editableAccepted > 0 || localEntries.length > 0 || worldEntries.length > 0;
-  if (!canEditMode) {
-    ui.questEditRewards = false;
-    ui.confirmDeleteTrait = '';
-  }
-
-  // 独立词条双栏区块：当前区域词条 / 世界区域词条
-  if (localEntries.length > 0 || worldEntries.length > 0) {
-    const hasBothTraits = localEntries.length > 0 && worldEntries.length > 0;
-    const traitsGrid = el('section', 'qh-traits-grid' + (hasBothTraits ? '' : ' is-single'));
-
-    const renderTraitCard = (kind, titleText, badgeText, entries) => {
-      const expanded = !!ui.traitsExpanded[kind];
-      const card = el('div', `qh-trait-card is-${kind}${expanded ? '' : ' is-collapsed'}`);
-      const titleWrap = el('div', 'qh-trait-title-wrap', [
-        el('span', 'qh-trait-title', titleText),
-      ]);
-      if (expanded) {
-        titleWrap.append(el('span', 'qh-trait-badge', badgeText));
-      } else {
-        const tagStrip = el('div', 'qh-trait-summary-tags');
-        entries.forEach((entry) => {
-          const fallback = (entry.body || entry.text || '').trim();
-          const label = entry.tag || (fallback.length > 6 ? `${fallback.slice(0, 6)}…` : fallback);
-          const toneClass = entry.tone ? ` is-${entry.tone}` : '';
-          const ttlCompact = formatTraitCountdown(entry, true);
-          const ttlFull = formatTraitCountdown(entry, false);
-          const tagChildren = ttlCompact
-            ? [label, el('span', 'qh-trait-summary-ttl', ` · ${ttlCompact}`)]
-            : label;
-          const tipBase = entry.body || entry.text || label;
-          const tipText = ttlFull ? `${tipBase}（${ttlFull}）` : tipBase;
-          tagStrip.append(
-            el('span', `qh-trait-tag qh-trait-summary-tag${toneClass}${entry.isTemp ? ' is-temp' : ''}`, tagChildren, {
-              title: tipText,
-            }),
-          );
-        });
-        titleWrap.append(tagStrip);
-      }
-
-      const headRight = el('div', 'qh-trait-head-right');
-      if (expanded && ui.questEditRewards) {
-        headRight.append(el('span', 'qh-trait-edit-hint', '修改模式：可删除词条'));
-      }
-      headRight.append(el('span', 'qh-trait-toggle', expanded ? '收起 ▴' : '展开 ▾'));
-
-      const head = el(
-        'div',
-        'qh-trait-head',
-        [titleWrap, headRight],
-        { role: 'button', tabindex: '0', 'aria-expanded': expanded ? 'true' : 'false' },
-        {
-          click: () => {
-            ui.traitsExpanded[kind] = !ui.traitsExpanded[kind];
-            if (!ui.traitsExpanded[kind]) ui.confirmDeleteTrait = '';
-            render();
-          },
-          keydown: (ev) => {
-            if (ev.key === 'Enter' || ev.key === ' ') {
-              ev.preventDefault();
-              ui.traitsExpanded[kind] = !ui.traitsExpanded[kind];
-              if (!ui.traitsExpanded[kind]) ui.confirmDeleteTrait = '';
-              render();
-            }
-          },
-        },
-      );
-      card.append(head);
-
-      if (!expanded) return card;
-
-      const list = el('div', 'qh-trait-list');
-      entries.forEach((entry) => {
-        const traitUid = `${kind}:${entry.key}:${entry.index}:${entry.text}`;
-        const confirming = ui.questEditRewards && ui.confirmDeleteTrait === traitUid;
-        const toneClass = entry.tone ? ` is-${entry.tone}` : '';
-        const item = el(
-          'div',
-          'qh-trait-item' + toneClass + (entry.isTemp ? ' is-temp' : '') + (confirming ? ' is-confirming' : ''),
-        );
-        const main = el('div', 'qh-trait-main');
-        if (entry.tag) {
-          main.append(el('span', 'qh-trait-tag', entry.tag));
-        } else if (entry.tone) {
-          main.append(el('span', 'qh-trait-dot'));
-        }
-        const ttlText = formatTraitCountdown(entry, false);
-        if (ttlText) {
-          main.append(
-            el('span', 'qh-trait-ttl' + (entry.daysLeft === 0 ? ' is-urgent' : ''), `⏳ ${ttlText}`, {
-              title: entry.until ? `有效期至 ${entry.until}` : '',
-            }),
-          );
-        }
-        const bodyText = entry.tag ? entry.body : (entry.body || entry.text);
-        if (bodyText) {
-          main.append(el('span', 'qh-trait-body', bodyText));
-        }
-        item.append(main);
-
-        if (ui.questEditRewards) {
-          const acts = el('div', 'qh-trait-actions');
-          if (confirming) {
-            acts.append(
-              el(
-                'button',
-                'qh-trait-btn is-confirm',
-                '确认删除',
-                { type: 'button' },
-                {
-                  click: () => run(
-                    '已删除词条',
-                    (s) => deleteAftermathEntry(s, entry.key, entry.index, entry.text),
-                    {
-                      redraw: true,
-                      after: () => {
-                        ui.confirmDeleteTrait = '';
-                      },
-                    },
-                  ),
-                },
-              ),
-              el(
-                'button',
-                'qh-trait-btn is-cancel',
-                '取消',
-                { type: 'button' },
-                {
-                  click: () => {
-                    ui.confirmDeleteTrait = '';
-                    render();
-                  },
-                },
-              ),
-            );
-          } else {
-            acts.append(
-              el(
-                'button',
-                'qh-trait-btn is-delete',
-                '删除',
-                { type: 'button' },
-                {
-                  click: () => {
-                    ui.confirmDeleteTrait = traitUid;
-                    render();
-                  },
-                },
-              ),
-            );
-          }
-          item.append(acts);
-        }
-
-        list.append(item);
-      });
-      card.append(list);
-      return card;
-    };
-
-    if (localEntries.length > 0) {
-      traitsGrid.append(
-        renderTraitCard('local', '当前区域词条', `${regionDisplay} · ${localEntries.length} 条`, localEntries),
-      );
-    }
-    if (worldEntries.length > 0) {
-      traitsGrid.append(
-        renderTraitCard('world', '世界区域词条', `全大陆 · ${worldEntries.length} 条`, worldEntries),
-      );
-    }
-    wrap.append(traitsGrid);
-  }
-
-  // 第二层：分类筛选胶囊 + 修改模式开关
   const filterBar = el('div', 'qh-quest-filter');
   const catOptions = [
-    { value: '全部', text: `全部 (${qb.counts.total})` },
-    { value: '剧情任务', text: `剧情任务 (${qb.counts.story})` },
-    { value: '本地主线', text: `本地主线 (${qb.counts.local})` },
-    { value: '支线任务', text: `支线任务 (${qb.counts.side})` },
+    { value: '全部', text: `全部 ${qb.counts.total}` },
+    { value: '剧情任务', text: `剧情 ${qb.counts.story}` },
+    { value: '本地主线', text: `主线 ${qb.counts.local}` },
+    { value: '支线任务', text: `支线 ${qb.counts.side}` },
   ];
   catOptions.forEach((opt) => {
     filterBar.append(
@@ -807,385 +904,229 @@ function renderContent(state) {
       ),
     );
   });
-  if (canEditMode) {
+  if (compact && canEditMode) {
     filterBar.append(
       el(
         'button',
         'qh-quest-edit-toggle' + (ui.questEditRewards ? ' is-on' : ''),
-        ui.questEditRewards ? '✓ 完成修改' : '✎ 修改模式',
-        {
-          type: 'button',
-          title: ui.questEditRewards
-            ? '退出修改模式'
-            : '开启后可点击收益在待获得 / 已兑现 ✓ / 已失效 ✕ 间切换，或删除区域/世界词条',
-        },
+        ui.questEditRewards ? '✓ 完成' : '✎ 修改',
+        { type: 'button', title: '修改已接取任务收益状态' },
         {
           click: () => {
             ui.questEditRewards = !ui.questEditRewards;
-            if (ui.questEditRewards) {
-              if (localEntries.length > 0) ui.traitsExpanded.local = true;
-              if (worldEntries.length > 0) ui.traitsExpanded.world = true;
-            } else {
-              ui.confirmDeleteTrait = '';
-            }
             render();
           },
         },
       ),
     );
   }
-  wrap.append(filterBar);
 
-  // 第三层：情报卡片列表
-  if (filtered.length === 0) {
-    const rescanTip = qb.nullCore
-      ? '也可以点击上方按钮每日免费重扫 1 次。'
-      : `也可以点击上方按钮消耗 ${qb.rescanFp} FP 主动重扫。`;
-    const emptyCard = el('section', 'qh-card', [
-      el('div', 'qh-card-head', [
-        el('h3', 'qh-card-title', '暂无任务情报'),
-        el('span', 'qh-card-sub', '下一回合自动静默同步'),
-      ]),
-      el(
-        'div',
-        'qh-empty',
-        qb.counts.total > 0
-          ? '当前分类下暂时没有任务情报，可以切回「全部」查看。'
-          : `任务情报板已就绪。推进下一回合后，系统会根据当前所在区域与剧情自动同步剧情任务、本地主线与支线委托；${rescanTip}`,
-      ),
-    ]);
-    wrap.append(emptyCard);
-    return wrap;
-  }
+  const receiptsNode = renderReceiptsStrip(qb.receipts, {
+    onDismiss: (receiptId) => run(
+      '已收起结案回执',
+      (s) => dismissReceipt(s, receiptId, { chat: chatArray(), chatCount: chatCount() }),
+      { redraw: false },
+    ),
+    onJumpDiary: (diaryIdx) => jumpToDiary(diaryIdx),
+  });
 
-  const grid = el('div', 'qh-quest-list');
-  filtered.forEach((item) => {
-    const catCls = questCatClass(item.category);
-    const card = el(
-      'article',
-      `qh-card qh-quest-card ${catCls}${item.accepted ? ' is-accepted' : ''}${item.intent && !item.accepted ? ' is-intent' : ''}${item.staleRegion ? ' is-stale' : ''}`,
-    );
+  const rescanTip = qb.nullCore
+    ? '也可以点击上方按钮每日免费重扫 1 次。'
+    : `也可以点击上方按钮消耗 ${qb.rescanFp} FP 主动重扫。`;
 
-    // 卡片顶栏
-    const head = el('div', 'qh-quest-head');
-    const badges = el('div', 'qh-quest-badges', [
-      el('span', `qh-qbadge qh-qbadge--cat ${catCls}`, item.category),
-      el('span', 'qh-qbadge qh-qbadge--rank', item.rank === '原版' ? '原版' : `${item.rank} 级`),
-      el('span', 'qh-qbadge qh-qbadge--way', item.way || '委托接取'),
-    ]);
-    if (item.fromFormalOnly) badges.append(el('span', 'qh-qbadge qh-qbadge--sync', '剧情同步'));
-    if (item.accepted) badges.append(el('span', 'qh-qbadge qh-qbadge--accepted', '进行中'));
-    if (item.progress) badges.append(el('span', 'qh-qbadge qh-qbadge--progress', '局势变动'));
-    if (item.intent && !item.accepted) badges.append(el('span', 'qh-qbadge qh-qbadge--intent', '★ 已锁定'));
-    if (item.staleRegion) badges.append(el('span', 'qh-qbadge qh-qbadge--stale', '异地旧档'));
-    head.append(badges);
+  const buildEmptyQuestNote = () => el('div', 'qh-parchment-empty', [
+    el('div', 'qh-parchment-empty-seal', '委'),
+    el('div', 'qh-parchment-empty-title', qb.counts.total > 0 ? '该分类暂无委托' : '暂无地区委托'),
+    el(
+      'p',
+      'qh-parchment-empty-desc',
+      qb.counts.total > 0
+        ? '当前筛选分类下没有任务情报，可切回「全部」查看其余委托。'
+        : `推进下一回合后，手账会根据当前驻地与剧情自动收录剧情任务、本地主线与支线委托；${rescanTip}`,
+    ),
+  ]);
 
-    const metaParts = [];
-    if (item.location) metaParts.push(item.location);
-    if (item.deadline) metaParts.push(`时限 ${item.deadline}`);
-    if (metaParts.length) head.append(el('span', 'qh-quest-meta', metaParts.join(' · ')));
-    card.append(head);
+  // Mobile 随身便签本布局：单栏折叠便签卡
+  if (compact) {
+    const mobileList = el('div', 'qh-pocket-list');
+    if (filtered.length === 0) {
+      mobileList.append(buildEmptyQuestNote());
+    } else {
+      filtered.forEach((item) => {
+        const key = questKeyOf(item);
+        const catCls = questCatClass(item.category);
+        const expanded = ui.mobileExpandedQuestKey === key;
+        const card = el(
+          'div',
+          `qh-pocket-card ${catCls}${expanded ? ' is-expanded' : ''}${item.accepted ? ' is-accepted' : ''}${item.intent && !item.accepted ? ' is-intent' : ''}`,
+        );
 
-    // 标题与摘要（展示防泄密 displayTitle，操作与键匹配仍使用原 title）
-    card.append(el('h3', 'qh-quest-title', item.displayTitle || item.title));
-    if (item.summary) card.append(el('p', 'qh-quest-summary', item.summary));
+        const headerBtn = el(
+          'button',
+          'qh-pocket-card-head',
+          [
+            el('div', 'qh-pocket-head-top', [
+              el('span', `qh-qbadge qh-qbadge--cat ${catCls}`, item.category),
+              el('span', 'qh-qbadge qh-qbadge--rank', item.rank === '原版' ? '原版' : `${item.rank}级`),
+              item.accepted ? el('span', 'qh-qbadge qh-qbadge--accepted', '进行中') : null,
+              item.intent && !item.accepted ? el('span', 'qh-qbadge qh-qbadge--intent', '★锁定') : null,
+              el('span', 'qh-pocket-chevron', expanded ? '▴' : '▾'),
+            ]),
+            el('h3', 'qh-quest-title', item.displayTitle || item.title),
+            !expanded && (item.summary || item.location)
+              ? el('div', 'qh-pocket-preview', item.summary || item.location)
+              : null,
+          ],
+          { type: 'button', 'aria-expanded': expanded ? 'true' : 'false' },
+          {
+            click: () => {
+              ui.mobileExpandedQuestKey = expanded ? '__none__' : key;
+              ui.selectedQuestKey = key;
+              render();
+            },
+          },
+        );
 
-    // 最新进展条
-    if (item.progress) {
-      const progMeta = item.accepted ? '同步自任务面板' : item.updatedDay;
-      card.append(
-        el('div', 'qh-quest-progress', [
-          el('div', 'qh-quest-progress-head', [
-            el('span', 'qh-quest-progress-label', '最新进展'),
-            progMeta ? el('span', 'qh-quest-progress-day', progMeta) : null,
-          ]),
-          el('div', 'qh-quest-progress-text', item.progress),
-        ]),
-      );
-    }
-
-    // 切入指引
-    if (item.guide) {
-      card.append(
-        el('div', 'qh-quest-guide', [
-          el('span', 'qh-quest-guide-label', item.guideLabel || '切入指引'),
-          el('span', 'qh-quest-guide-text', item.guide),
-        ]),
-      );
-    }
-
-    // 预期收益栏
-    const rewardItems = Array.isArray(item.rewardItems) && item.rewardItems.length > 0
-      ? item.rewardItems
-      : (item.rewards || []).map((rw, idx) => ({ slot: idx + 1, text: rw, claimed: false, lost: false }));
-    const totalSlots = rewardItems.length || item.expectedSlots;
-    const claimedCount = typeof item.claimedCount === 'number'
-      ? item.claimedCount
-      : rewardItems.filter((r) => r.claimed).length;
-    const lostCount = typeof item.lostCount === 'number'
-      ? item.lostCount
-      : rewardItems.filter((r) => !r.claimed && r.lost).length;
-    const rewardTitle = claimedCount > 0 && lostCount > 0
-      ? `预期收益 · 共 ${totalSlots} 栏（已兑现 ${claimedCount} · 已失效 ${lostCount}）`
-      : (lostCount > 0
-        ? `预期收益 · 已失效 ${lostCount} / ${totalSlots} 栏`
-        : (claimedCount > 0
-          ? `预期收益 · 已兑现 ${claimedCount} / ${totalSlots} 栏`
-          : `预期收益 · ${totalSlots} 栏`));
-    const canEditRewards = !!(ui.questEditRewards && item.accepted && !item.fromFormalOnly);
-    const rewardNote = item.fromFormalOnly
-      ? '来自原版任务列表，只读展示'
-      : (canEditRewards
-        ? '修改模式：点击下方收益可切换（待获得 / 已兑现 ✓ / 已失效 ✕）'
-        : (ui.questEditRewards
-          ? '接取后可在修改模式中切换收益（待获得 / 已兑现 ✓ / 已失效 ✕）'
-          : '模糊预告，兑现打 ✓，错失标 ✕'));
-
-    const rewardBox = el('div', 'qh-quest-rewards' + (canEditRewards ? ' is-editing' : ''));
-    rewardBox.append(
-      el('div', 'qh-quest-rewards-head', [
-        el('span', 'qh-quest-rewards-title', rewardTitle),
-        el('span', 'qh-quest-rewards-note', rewardNote),
-      ]),
-    );
-    if (rewardItems.length > 0) {
-      const chips = el('div', 'qh-quest-reward-grid');
-      rewardItems.forEach((rw) => {
-        const isClaimed = !!rw.claimed;
-        const isLost = !isClaimed && !!rw.lost;
-        const stateCls = isClaimed ? ' is-claimed' : (isLost ? ' is-lost' : '');
-        const statusIcon = isClaimed
-          ? el('span', 'qh-quest-reward-check', '✓')
-          : (isLost ? el('span', 'qh-quest-reward-lost', '✕') : null);
-        const children = [
-          el('span', 'qh-quest-reward-idx', String(rw.slot).padStart(2, '0')),
-          el('span', 'qh-quest-reward-text', rw.text),
-          statusIcon,
-        ];
-        if (canEditRewards) {
-          const nextTitle = isClaimed
-            ? '点击切换为已失效 ✕'
-            : (isLost ? '点击恢复为待获得' : '点击标记为已兑现 ✓');
-          chips.append(
-            el(
-              'button',
-              'qh-quest-reward-chip is-editable' + stateCls,
-              children,
-              { type: 'button', title: nextTitle },
-              {
-                click: () => run(
-                  '已更新收益状态',
-                  (s) => cycleQuestRewardState(s, item.id, rw.slot, item.title),
-                  { redraw: false },
-                ),
-              },
-            ),
-          );
-        } else {
-          chips.append(el('div', 'qh-quest-reward-chip' + stateCls, children));
+        card.append(headerBtn);
+        if (expanded) {
+          card.append(renderQuestDossier(item, { canEditMode, inPocket: true }));
         }
+        mobileList.append(card);
       });
-      rewardBox.append(chips);
-    } else {
-      rewardBox.append(el('div', 'qh-quest-reward-empty', '待情报核实'));
     }
-    card.append(rewardBox);
 
-    // 底部操作
-    if (item.fromFormalOnly) {
-      card.append(
-        el('div', 'qh-quest-accepted-bar', '✓ 来自原版任务列表，进度自动同步'),
+    return el('div', 'qh-mobile-scroll qh-pocket-board', [
+      regionBlock,
+      ...notices,
+      filterBar,
+      receiptsNode,
+      mobileList,
+    ]);
+  }
+
+  // PC 双页手账布局：左页目录 + 右页卷宗
+  const indexList = el('div', 'qh-quest-index');
+  if (filtered.length === 0) {
+    indexList.append(buildEmptyQuestNote());
+  } else {
+    filtered.forEach((item) => {
+      const key = questKeyOf(item);
+      const catCls = questCatClass(item.category);
+      const isSelected = selectedItem && questKeyOf(selectedItem) === key;
+      const row = el(
+        'div',
+        `qh-index-item ${catCls}${isSelected ? ' is-selected' : ''}${item.accepted ? ' is-accepted' : ''}${item.intent && !item.accepted ? ' is-intent' : ''}${item.staleRegion ? ' is-stale' : ''}`,
+        null,
+        {
+          role: 'button',
+          tabindex: '0',
+          'aria-current': isSelected ? 'true' : 'false',
+        },
+        {
+          click: () => {
+            ui.selectedQuestKey = key;
+            render();
+          },
+          keydown: (ev) => {
+            if (ev.key === 'Enter' || ev.key === ' ') {
+              ev.preventDefault();
+              ui.selectedQuestKey = key;
+              render();
+            }
+          },
+        },
       );
-    } else if (item.accepted) {
-      card.append(
-        el('div', 'qh-quest-accepted-bar', '✓ 已接取并追踪中 · 进展同步自任务面板，上方预期收益将随推进分批兑现'),
-      );
-    } else {
-      const draftHint = item.wayKind === 'crisis'
-        ? '将现场介入草稿填入输入框'
-        : (item.wayKind === 'clue' ? '将线索行动草稿填入输入框' : '将寻人接取草稿填入输入框');
-      card.append(
-        el('div', 'qh-quest-foot', [
+
+      const rowTop = el('div', 'qh-index-top', [
+        el('div', 'qh-index-tags', [
+          el('span', `qh-qbadge qh-qbadge--cat ${catCls}`, item.category),
+          el('span', 'qh-qbadge qh-qbadge--rank', item.rank === '原版' ? '原版' : `${item.rank}级`),
+          item.accepted ? el('span', 'qh-qbadge qh-qbadge--accepted', '进行中') : null,
+          item.progress ? el('span', 'qh-qbadge qh-qbadge--progress', '变动') : null,
+          item.intent && !item.accepted ? el('span', 'qh-qbadge qh-qbadge--intent', '★') : null,
+        ]),
+      ]);
+
+      // 未接取委托在目录上保留快捷锁定与忽略按钮
+      if (!item.accepted && !item.fromFormalOnly) {
+        const quickActs = el('div', 'qh-index-quick');
+        quickActs.append(
           el(
             'button',
-            'qh-btn qh-btn--sm qh-btn--quest-accept',
-            '接取任务',
-            { type: 'button', title: draftHint },
+            'qh-icon-mini' + (item.intent ? ' is-on' : ''),
+            item.intent ? '★' : '☆',
             {
-              click: () => {
-                const draftText = buildQuestDraft(item);
-                if (host.writeInput(draftText)) {
-                  host.toast('行动草稿已填入输入框，可微调后发送', 'ok');
-                  app.close({ focusInputBox: true });
-                } else {
-                  toast('未能写入输入框，请在聊天框手动输入行动', 'err');
-                }
+              type: 'button',
+              title: item.intent ? '取消锁定' : '锁定委托（防重扫/换区清除）',
+              'aria-label': item.intent ? '取消锁定' : '锁定委托',
+            },
+            {
+              click: (ev) => {
+                ev.stopPropagation();
+                void run(
+                  item.intent ? '已取消锁定' : '已锁定任务',
+                  (s) => toggleQuestIntent(s, item.id, item.title),
+                  { redraw: false },
+                );
               },
             },
           ),
           el(
             'button',
-            'qh-btn qh-btn--sm qh-btn--quest-sub' + (item.intent ? ' is-intent-on' : ''),
-            item.intent ? '★ 取消锁定' : '☆ 锁定任务',
-            { type: 'button', title: '锁定后不会被换区或重扫刷掉，只会因时限到期自动清除' },
+            'qh-icon-mini is-danger',
+            '✕',
+            { type: 'button', title: '忽略该委托', 'aria-label': '忽略该委托' },
             {
-              click: () => run(
-                item.intent ? '已取消锁定' : '已锁定任务',
-                (s) => toggleQuestIntent(s, item.id, item.title),
-                { redraw: false },
-              ),
+              click: (ev) => {
+                ev.stopPropagation();
+                void run('已忽略', (s) => ignoreQuest(s, item.id, item.title), { redraw: false });
+              },
             },
           ),
-          el(
-            'button',
-            'qh-btn qh-btn--sm qh-btn--ghost',
-            '✕ 忽略',
-            { type: 'button' },
-            {
-              click: () => run('已忽略', (s) => ignoreQuest(s, item.id, item.title), { redraw: false }),
-            },
-          ),
-        ]),
-      );
-    }
-
-    grid.append(card);
-  });
-
-  wrap.append(grid);
-  return wrap;
-}
-
-// ---------------------------------------------------------------------------
-// 渲染与静默清理
-// ---------------------------------------------------------------------------
-
-function render(options = {}) {
-  if (!root) return;
-  const doc = root.ownerDocument;
-  const activeEl = doc?.activeElement;
-  const activeIsFocusInput = !!(activeEl && activeEl.classList?.contains('qh-focus-input'));
-  if (!options.force && focusComposing && root.classList.contains('qh-open') && activeIsFocusInput) {
-    pendingDeferredRefresh = true;
-    return;
-  }
-
-  const stat = currentStat();
-  const curFloor = lastFloor();
-  const curCount = chatCount();
-  const chatSnapshot = chatArray();
-
-  const curChatId = host.readChatId?.() || '';
-  const rescanDone = questRescanDone(stat, curFloor, curCount, {
-    chat: chatSnapshot,
-  });
-  const pendingRescanNode = boardNode(stat)['待重扫'];
-  const hasPendingRescan = !!(pendingRescanNode && typeof pendingRescanNode === 'object'
-    && Object.keys(pendingRescanNode).length > 0);
-  const canCheckOnceFocus = !hasPendingRescan || rescanDone;
-  if (
-    !sweeping &&
-    !generating() &&
-    !replySettleRemainingMs({ chatCount: curCount, chatId: curChatId }) &&
-    (rescanDone
-      || hasClosedQuestLeftovers(stat, { chat: chatSnapshot })
-      || needsQuestAcceptedRecord(stat)
-      || hasExpiredAftermath(stat)
-      || (canCheckOnceFocus && hasExpiredOnceFocus(stat, {
-        floor: curFloor,
-        chatCount: curCount,
-        chat: chatSnapshot,
-        rescanCleared: rescanDone,
-      }))
-      || hasExpiredDirectorLeads(stat, { chatCount: curCount, chat: chatSnapshot }))
-  ) {
-    sweeping = true;
-    commit(
-      (statNow) => {
-        const liveChat = chatArray();
-        const liveFloor = lastFloor();
-        const liveCount = chatCount();
-        return maintainQuestBoard(statNow, {
-          floor: liveFloor,
-          chatCount: liveCount,
-          chat: liveChat,
-        });
-      },
-      { core: CORE_NAME, speaker: SPEAKER, redraw: false, expectedChatId: curChatId },
-    )
-      .then((result) => {
-        sweeping = false;
-        if (result && !result.error && !result.skipped) render();
-      })
-      .catch(() => {
-        sweeping = false;
-      });
-  }
-
-  let selStart = null;
-  let selEnd = null;
-  if (activeIsFocusInput && !options.skipInputRestore) {
-    try {
-      selStart = activeEl.selectionStart;
-      selEnd = activeEl.selectionEnd;
-      ui.focusDraftText = activeEl.value;
-    } catch {
-      /* 忽略 */
-    }
-  }
-
-  const body = root.querySelector('.qh-body');
-  const scroll = body.scrollTop;
-  body.innerHTML = '';
-
-  let stateNow = null;
-  let view;
-  try {
-    stateNow = readState(stat, {
-      floor: curFloor,
-      chatCount: curCount,
-      geoData: currentGeoData(),
-      chat: chatSnapshot,
-      nullCore: host.isNullCore(),
-    });
-    view = renderContent(stateNow);
-  } catch (error) {
-    console.error('[任务助手] 页面渲染失败：', error);
-    view = el('div', 'qh-page', [
-      renderNoteCallout(error && error.message ? error.message : String(error), 'warn'),
-    ]);
-  }
-
-  body.append(view);
-  body.scrollTop = scroll;
-
-  if (activeIsFocusInput && !options.skipInputRestore) {
-    const nextInp = root.querySelector('.qh-focus-input');
-    if (nextInp && typeof nextInp.focus === 'function') {
-      nextInp.focus();
-      if (typeof selStart === 'number' && typeof selEnd === 'number') {
-        try { nextInp.setSelectionRange(selStart, selEnd); } catch { /* 忽略 */ }
+        );
+        rowTop.append(quickActs);
       }
-    }
+
+      row.append(rowTop);
+      row.append(el('div', 'qh-index-title', item.displayTitle || item.title));
+      const subParts = [];
+      if (item.location) subParts.push(item.location);
+      if (item.deadline) subParts.push(`时限 ${item.deadline}`);
+      const preview = item.progress || item.summary || subParts.join(' · ');
+      if (preview) {
+        row.append(el('div', 'qh-index-preview', preview));
+      }
+      indexList.append(row);
+    });
   }
 
-  // 更新顶栏 FP 与日期显示
-  const fpEl = root.querySelector('.qh-top-fp-val');
-  if (fpEl && stateNow) fpEl.textContent = `${stateNow.fp} FP`;
-  const subEl = root.querySelector('.qh-top-sub');
-  if (subEl && stateNow) {
-    subEl.textContent = stateNow.day ? `世界日 · ${stateNow.day}` : '独立地区情报面板';
-  }
+  const leftPage = el('section', 'qh-page-sheet qh-page-left', [
+    regionBlock,
+    ...notices,
+    filterBar,
+    receiptsNode,
+    indexList,
+  ]);
 
-  // 打开面板即自动标记已读
-  const sig = stateNow && stateNow.questBoard ? stateNow.questBoard.progressSignature : '';
-  if (sig && root.classList.contains('qh-open')) {
-    markSeenProgress(sig);
-  }
+  const rightContent = selectedItem
+    ? renderQuestDossier(selectedItem, { canEditMode, inPocket: false })
+    : el('div', 'qh-parchment-empty qh-dossier-empty', [
+        el('div', 'qh-parchment-empty-seal', '卷'),
+        el('div', 'qh-parchment-empty-title', '右侧卷宗待展阅'),
+        el('p', 'qh-parchment-empty-desc', '在左页点选任意一条委托情报，这里将展开完整线索、预期收益印章与行动操作。'),
+      ]);
+
+  const rightPage = el('section', 'qh-page-sheet qh-page-right', [rightContent]);
+
+  return el('div', 'qh-spread qh-spread--board', [
+    leftPage,
+    el('div', 'qh-spine-crease', null, { 'aria-hidden': 'true' }),
+    rightPage,
+  ]);
 }
 
 // ---------------------------------------------------------------------------
-// 单页外壳与动画控制
+// 嵌入式设置页（书页内双页 / 手机叠排）与版本/世界书状态同步
 // ---------------------------------------------------------------------------
 
 function getVersionMeta() {
@@ -1214,11 +1155,24 @@ function syncVersionControls() {
   if (!root) return;
   const meta = getVersionMeta();
   const canSwitch = meta.canSwitchVersion !== false;
+  const wbCheck = checkWorldbookCompatibility(ui.worldbookInfo, meta);
+  const hasUpdate = hasNewerScriptVersion(ui.latestTag, meta);
+  const showDot = !!wbCheck.mismatch;
+
+  // 同步书签页签上的设置红点
+  const settingsTabs = root.querySelectorAll('[data-tab="settings"]');
+  settingsTabs.forEach((tabBtn) => {
+    tabBtn.classList.toggle('has-update', showDot);
+    const tip = showDot ? `设置（${wbCheck.message}）` : '任务助手设置';
+    tabBtn.setAttribute('title', tip);
+  });
+
+  // 若当前未在设置页，DOM 中无设置表单元素，直接返回
   const metaEl = root.querySelector('.qh-setting-ver-meta');
   if (metaEl) {
     if (meta.remoteManaged || meta.selfBooted) {
       const originLabel = meta.loadedOrigin ? meta.loadedOrigin.replace(/^https?:\/\//, '') : 'jsDelivr';
-      const customTag = meta.overrideRef ? ` · 已固定版本` : ` · 默认同步最新`;
+      const customTag = meta.overrideRef ? ' · 已固定版本' : ' · 默认同步最新';
       metaEl.textContent = `当前加载：${meta.loadedRef}${customTag}（${originLabel}）`;
     } else {
       metaEl.textContent = `当前版本：${meta.scriptVersion}（直链 / 本地脚本）`;
@@ -1226,7 +1180,7 @@ function syncVersionControls() {
   }
 
   const input = root.querySelector('.qh-setting-ver-input');
-  if (input && !ui.switchingRef && root.ownerDocument.activeElement !== input) {
+  if (input && !ui.switchingRef && root.ownerDocument.activeElement !== input && ui.verDraftText === null) {
     input.value = meta.overrideRef || meta.loadedRef || meta.defaultRef;
   }
   if (input) input.disabled = !!ui.switchingRef;
@@ -1237,7 +1191,6 @@ function syncVersionControls() {
     applyBtn.textContent = ui.switchingRef ? '切换中…' : '切换版本';
   }
 
-  const wbCheck = checkWorldbookCompatibility(ui.worldbookInfo, meta);
   const wbVerEl = root.querySelector('.qh-setting-wb-ver');
   const wbBadgeEl = root.querySelector('.qh-setting-wb-badge');
   const wbSubEl = root.querySelector('.qh-setting-wb-sub');
@@ -1282,16 +1235,6 @@ function syncVersionControls() {
         wbSubEl.textContent = wbCheck.message;
       }
     }
-  }
-
-  const hasUpdate = hasNewerScriptVersion(ui.latestTag, meta);
-  const showDot = !!wbCheck.mismatch;
-  const toggleBtn = root.querySelector('.qh-top-settings');
-  if (toggleBtn) {
-    toggleBtn.classList.toggle('has-update', showDot);
-    const tip = showDot ? `任务助手设置（${wbCheck.message}）` : '任务助手设置';
-    toggleBtn.setAttribute('title', tip);
-    toggleBtn.setAttribute('aria-label', tip);
   }
 
   const latestEl = root.querySelector('.qh-setting-latest');
@@ -1374,7 +1317,7 @@ async function applyScriptRef(rawRef) {
   }
   const normalized = normalizeScriptRef(rawRef);
   if (!normalized) {
-    toast('请输入有效的版本号（如 v1.4.3 或 main）', 'err');
+    toast('请输入有效的版本号（如 v1.4.13 或 main）', 'err');
     return;
   }
   const defaultRef = meta.defaultRef || DEFAULT_SCRIPT_REF;
@@ -1391,6 +1334,7 @@ async function applyScriptRef(rawRef) {
   syncVersionControls();
   try {
     await app.onScriptRefChange(normalized);
+    ui.verDraftText = null;
     host.toast(`已切换至版本 ${targetRef}`, 'ok');
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
@@ -1401,145 +1345,156 @@ async function applyScriptRef(rawRef) {
   }
 }
 
-function syncSettingsLayer() {
-  if (!root) return;
-  const layer = root.querySelector('.qh-settings-layer');
-  const toggleBtn = root.querySelector('.qh-top-settings');
-  if (layer) {
-    layer.classList.toggle('is-open', !!ui.settingsOpen);
-    layer.setAttribute('aria-hidden', ui.settingsOpen ? 'false' : 'true');
-  }
-  if (toggleBtn) {
-    toggleBtn.classList.toggle('is-active', !!ui.settingsOpen);
-    toggleBtn.setAttribute('aria-expanded', ui.settingsOpen ? 'true' : 'false');
-  }
-  const choices = root.querySelectorAll('.qh-setting-choice');
-  choices.forEach((btn) => {
-    const active = btn.dataset.mode === ui.entryMode;
-    btn.classList.toggle('is-active', active);
-    btn.setAttribute('aria-checked', active ? 'true' : 'false');
-  });
-  syncVersionControls();
-}
-
-function setSettingsOpen(open) {
-  ui.settingsOpen = !!open;
-  syncSettingsLayer();
-  if (ui.settingsOpen) {
-    void refreshWorldbookStatus();
-    void refreshLatestTag({ force: true });
-  }
-}
-
 function switchEntryMode(nextMode) {
   const normalized = writeEntryMode(host.writeStorage, nextMode);
   const changed = normalized !== ui.entryMode;
   ui.entryMode = normalized;
-  syncSettingsLayer();
   if (changed && typeof app?.onEntryModeChange === 'function') {
     app.onEntryModeChange(normalized);
   }
+  render();
   if (changed) {
     toast(
       normalized === ENTRY_MODES.WAND
         ? '已切换为「魔法棒（扩展程序）」入口，可在左下角魔法棒菜单中打开'
-        : '已切换为「悬浮框」入口',
+        : '已切换为「牛皮手账悬浮本」入口',
       'ok',
     );
   }
 }
 
-function buildSettingsLayer() {
-  const layer = el('div', 'qh-settings-layer', null, { 'aria-hidden': 'true' });
-  const backdrop = el('div', 'qh-settings-backdrop', null, null, {
-    click: () => setSettingsOpen(false),
-  });
-  const card = el('div', 'qh-settings-card', null, {
-    role: 'dialog',
-    'aria-modal': 'true',
-    'aria-label': '任务助手设置',
-  });
+function switchMotionPref(enabled) {
+  const next = writeMotionEnabled(host.writeStorage, enabled);
+  const changed = next !== ui.motionEnabled;
+  ui.motionEnabled = next;
+  if (root) root.classList.toggle('qh-no-motion', !ui.motionEnabled);
+  if (changed && typeof app?.onMotionChange === 'function') {
+    app.onMotionChange(next);
+  }
+  render();
+  if (changed) {
+    toast(next ? '已开启手账开合动画' : '已关闭手账开合动画（瞬时切换）', 'ok');
+  }
+}
 
-  const head = el('div', 'qh-settings-head', [
-    el('div', 'qh-settings-title', [
-      el('span', 'qh-settings-title-icon', '⚙'),
-      el('span', null, '任务助手设置'),
-    ]),
-    el(
-      'button',
-      'qh-settings-close',
-      '✕',
-      { type: 'button', title: '关闭设置', 'aria-label': '关闭设置' },
-      {
-        click: () => {
-          setSettingsOpen(false);
-          const settingsBtn = root && root.querySelector('.qh-top-settings');
-          if (settingsBtn && settingsBtn.focus) {
-            try {
-              settingsBtn.focus({ preventScroll: true });
-            } catch {
-              settingsBtn.focus();
-            }
-          }
-        },
-      },
-    ),
-  ]);
+function renderSettingsView({ compact }) {
+  const meta = getVersionMeta();
+  const verVal = ui.verDraftText !== null
+    ? ui.verDraftText
+    : (meta.overrideRef || meta.loadedRef || meta.defaultRef);
 
-  const choices = el('div', 'qh-setting-choices', [
-    el(
-      'button',
-      'qh-setting-choice',
-      [
-        el('div', 'qh-setting-choice-top', [
-          el('span', 'qh-setting-choice-name', '悬浮框'),
-          el('span', 'qh-setting-choice-badge', '默认'),
-        ]),
-        el('div', 'qh-setting-choice-desc', '在屏幕边缘显示可拖动「任务」悬浮球'),
-      ],
-      {
-        type: 'button',
-        role: 'radio',
-        'aria-checked': 'true',
-        'data-mode': ENTRY_MODES.FAB,
-      },
-      { click: () => switchEntryMode(ENTRY_MODES.FAB) },
-    ),
-    el(
-      'button',
-      'qh-setting-choice',
-      [
-        el('div', 'qh-setting-choice-top', [
-          el('span', 'qh-setting-choice-name', '魔法棒（扩展程序）'),
-        ]),
-        el('div', 'qh-setting-choice-desc', '隐藏悬浮球，改由左下角魔法棒扩展菜单打开'),
-      ],
-      {
-        type: 'button',
-        role: 'radio',
-        'aria-checked': 'false',
-        'data-mode': ENTRY_MODES.WAND,
-      },
-      { click: () => switchEntryMode(ENTRY_MODES.WAND) },
-    ),
-  ]);
-
-  const entryGroup = el('div', 'qh-setting-group', [
+  const entryGroup = el('section', 'qh-setting-group', [
+    el('div', 'qh-sheet-kicker', 'ENTRY & MOTION · 入口与翻页动效'),
+    el('h2', 'qh-sheet-title', '外观与入口偏好'),
     el('div', 'qh-setting-label', '面板入口位置'),
-    choices,
+    el('div', 'qh-setting-choices', [
+      el(
+        'button',
+        'qh-setting-choice' + (ui.entryMode === ENTRY_MODES.FAB ? ' is-active' : ''),
+        [
+          el('div', 'qh-setting-choice-top', [
+            el('span', 'qh-setting-choice-name', '牛皮手账悬浮本'),
+            el('span', 'qh-setting-choice-badge', '默认'),
+          ]),
+          el('div', 'qh-setting-choice-desc', '在屏幕边缘显示可拖动的微缩牛皮手账图标'),
+        ],
+        {
+          type: 'button',
+          role: 'radio',
+          'aria-checked': ui.entryMode === ENTRY_MODES.FAB ? 'true' : 'false',
+          'data-mode': ENTRY_MODES.FAB,
+        },
+        { click: () => switchEntryMode(ENTRY_MODES.FAB) },
+      ),
+      el(
+        'button',
+        'qh-setting-choice' + (ui.entryMode === ENTRY_MODES.WAND ? ' is-active' : ''),
+        [
+          el('div', 'qh-setting-choice-top', [
+            el('span', 'qh-setting-choice-name', '魔法棒（扩展程序）'),
+          ]),
+          el('div', 'qh-setting-choice-desc', '隐藏悬浮本，改由左下角魔法棒扩展菜单打开'),
+        ],
+        {
+          type: 'button',
+          role: 'radio',
+          'aria-checked': ui.entryMode === ENTRY_MODES.WAND ? 'true' : 'false',
+          'data-mode': ENTRY_MODES.WAND,
+        },
+        { click: () => switchEntryMode(ENTRY_MODES.WAND) },
+      ),
+    ]),
     el(
       'div',
       'qh-setting-hint',
-      '切换为「魔法棒」后不再显示悬浮框；点击聊天输入框左下角魔法棒图标中的「任务情报」即可重新打开面板并修改设置。',
+      '切换为「魔法棒」后不再显示悬浮本；点击聊天输入框左下角魔法棒图标中的「任务情报」即可重新打开手账。',
     ),
+    el('div', 'qh-setting-divider'),
+    el('div', 'qh-setting-label', '手账开合动画'),
+    el('div', 'qh-setting-choices', [
+      el(
+        'button',
+        'qh-setting-choice' + (ui.motionEnabled ? ' is-active' : ''),
+        [
+          el('div', 'qh-setting-choice-top', [
+            el('span', 'qh-setting-choice-name', '开启书脊展开'),
+            el('span', 'qh-setting-choice-badge', '默认'),
+          ]),
+          el('div', 'qh-setting-choice-desc', 'PC 端播放约 300ms 对开合拢动效，移动端轻盈淡入'),
+        ],
+        {
+          type: 'button',
+          role: 'radio',
+          'aria-checked': ui.motionEnabled ? 'true' : 'false',
+          'data-motion': 'on',
+        },
+        { click: () => switchMotionPref(true) },
+      ),
+      el(
+        'button',
+        'qh-setting-choice' + (!ui.motionEnabled ? ' is-active' : ''),
+        [
+          el('div', 'qh-setting-choice-top', [
+            el('span', 'qh-setting-choice-name', '关闭动画'),
+          ]),
+          el('div', 'qh-setting-choice-desc', '瞬时展开与关闭手账，零动效开销'),
+        ],
+        {
+          type: 'button',
+          role: 'radio',
+          'aria-checked': !ui.motionEnabled ? 'true' : 'false',
+          'data-motion': 'off',
+        },
+        { click: () => switchMotionPref(false) },
+      ),
+    ]),
   ]);
 
   const verInput = el(
     'input',
     'qh-setting-ver-input',
     null,
-    { type: 'text', placeholder: `${DEFAULT_SCRIPT_REF} 或 v1.4.1`, 'aria-label': '输入脚本版本号' },
     {
+      type: 'text',
+      value: verVal,
+      placeholder: `${DEFAULT_SCRIPT_REF} 或 ${BASELINE_SCRIPT_TAG}`,
+      'aria-label': '输入脚本版本号',
+    },
+    {
+      compositionstart: () => {
+        verComposing = true;
+      },
+      compositionend: (ev) => {
+        verComposing = false;
+        ui.verDraftText = ev.target.value;
+        if (pendingDeferredRefresh) {
+          pendingDeferredRefresh = false;
+          render();
+        }
+      },
+      input: (ev) => {
+        ui.verDraftText = ev.target.value;
+      },
       keydown: (e) => {
         if (e.isComposing || e.keyCode === 229) {
           if (e.key === 'Escape') e.stopPropagation();
@@ -1553,7 +1508,9 @@ function buildSettingsLayer() {
     },
   );
 
-  const verGroup = el('div', 'qh-setting-group qh-setting-group--sep', [
+  const verGroup = el('section', 'qh-setting-group', [
+    el('div', 'qh-sheet-kicker', 'DIAGNOSTICS & VERSION · 世界书与脚本版本'),
+    el('h2', 'qh-sheet-title', '兼容性检查与热切换'),
     el('div', 'qh-setting-wb-box', [
       el('div', 'qh-setting-wb-row', [
         el('div', 'qh-setting-wb-ver', '世界书版本：检测中…'),
@@ -1570,7 +1527,7 @@ function buildSettingsLayer() {
       verInput,
       el(
         'button',
-        'qh-btn qh-btn--sm qh-btn--primary qh-setting-ver-apply',
+        'qh-btn qh-btn--sm qh-btn--teal qh-setting-ver-apply',
         '切换版本',
         { type: 'button' },
         { click: () => void applyScriptRef(verInput.value) },
@@ -1579,77 +1536,441 @@ function buildSettingsLayer() {
     el('div', 'qh-setting-hint qh-setting-ver-hint'),
   ]);
 
-  card.append(head, entryGroup, verGroup);
-  layer.append(backdrop, card);
-  return layer;
+  if (compact) {
+    return el('div', 'qh-mobile-scroll qh-pocket-settings', [entryGroup, verGroup]);
+  }
+
+  return el('div', 'qh-spread qh-spread--settings', [
+    el('section', 'qh-page-sheet qh-page-left', [entryGroup]),
+    el('div', 'qh-spine-crease', null, { 'aria-hidden': 'true' }),
+    el('section', 'qh-page-sheet qh-page-right', [verGroup]),
+  ]);
 }
+
+// ---------------------------------------------------------------------------
+// 书签页签同步与整体渲染
+// ---------------------------------------------------------------------------
+
+function syncTabBar(stateNow) {
+  if (!root) return;
+  const qb = stateNow?.questBoard || {};
+  const receipts = Array.isArray(qb.receipts) ? qb.receipts : [];
+  const localCount = Array.isArray(qb.aftermath?.localEntries) ? qb.aftermath.localEntries.length : 0;
+  const worldCount = Array.isArray(qb.aftermath?.worldEntries) ? qb.aftermath.worldEntries.length : 0;
+  const loreCount = localCount + worldCount;
+  const diaryCount = typeof qb.diaryCount === 'number'
+    ? qb.diaryCount
+    : (Array.isArray(qb.diaryEntries) ? qb.diaryEntries.length : 0);
+  const diarySig = qb.diarySignature || '';
+  const diaryUnread = !!(diarySig && diarySig !== readSeenDiary());
+  const boardHasReceipt = receipts.length > 0;
+
+  const tabs = root.querySelectorAll('.qh-tab');
+  tabs.forEach((btn) => {
+    const id = btn.dataset.tab;
+    const active = id === ui.activeTab;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+
+    const badge = btn.querySelector('.qh-tab-badge');
+    if (badge) {
+      if (id === 'board') {
+        badge.textContent = boardHasReceipt ? `+${receipts.length}` : '';
+        badge.hidden = !boardHasReceipt;
+        badge.classList.toggle('is-alert', (qb.unreadReceiptCount || 0) > 0);
+      } else if (id === 'lore') {
+        badge.textContent = loreCount > 0 ? String(loreCount) : '';
+        badge.hidden = loreCount === 0;
+        badge.classList.remove('is-alert');
+      } else if (id === 'diary') {
+        badge.textContent = diaryCount > 0 ? String(diaryCount) : '';
+        badge.hidden = diaryCount === 0 && !diaryUnread;
+        badge.classList.toggle('is-alert', diaryUnread);
+      }
+    }
+  });
+}
+
+function render(options = {}) {
+  if (!root) return;
+  const doc = root.ownerDocument;
+  const activeEl = doc?.activeElement;
+  const activeIsFocusInput = !!(activeEl && activeEl.classList?.contains('qh-focus-input'));
+  const activeIsVerInput = !!(activeEl && activeEl.classList?.contains('qh-setting-ver-input'));
+
+  if (
+    !options.force &&
+    root.classList.contains('qh-open') &&
+    ((focusComposing && activeIsFocusInput) || (verComposing && activeIsVerInput))
+  ) {
+    pendingDeferredRefresh = true;
+    return;
+  }
+
+  const stat = currentStat();
+  const curFloor = lastFloor();
+  const curCount = chatCount();
+  const chatSnapshot = chatArray();
+
+  const curChatId = host.readChatId?.() || '';
+  if (
+    !sweeping &&
+    !generating() &&
+    !replySettleRemainingMs({ chatCount: curCount, chatId: curChatId }) &&
+    hasPendingMaintenance(stat, {
+      floor: curFloor,
+      chatCount: curCount,
+      chat: chatSnapshot,
+    })
+  ) {
+    sweeping = true;
+    commit(
+      (statNow) => {
+        const liveChat = chatArray();
+        const liveFloor = lastFloor();
+        const liveCount = chatCount();
+        return maintainQuestBoard(statNow, {
+          floor: liveFloor,
+          chatCount: liveCount,
+          chat: liveChat,
+        });
+      },
+      { core: CORE_NAME, speaker: SPEAKER, redraw: false, expectedChatId: curChatId },
+    )
+      .then((result) => {
+        sweeping = false;
+        if (result && !result.error && !result.skipped) {
+          render();
+          app?.onUnreadSync?.();
+        }
+      })
+      .catch(() => {
+        sweeping = false;
+      });
+  }
+
+  let selStart = null;
+  let selEnd = null;
+  if ((activeIsFocusInput || activeIsVerInput) && !options.skipInputRestore) {
+    try {
+      selStart = activeEl.selectionStart;
+      selEnd = activeEl.selectionEnd;
+      if (activeIsFocusInput) ui.focusDraftText = activeEl.value;
+      if (activeIsVerInput) ui.verDraftText = activeEl.value;
+    } catch {
+      /* 忽略 */
+    }
+  }
+
+  const body = root.querySelector('.qh-body');
+  const preserveScroll = !options.resetScroll && lastRenderedTab === ui.activeTab;
+  const prevScroll = preserveScroll
+    ? {
+        body: body.scrollTop,
+        left: body.querySelector('.qh-page-left')?.scrollTop ?? 0,
+        right: body.querySelector('.qh-page-right')?.scrollTop ?? 0,
+        mobile: body.querySelector('.qh-mobile-scroll')?.scrollTop ?? 0,
+      }
+    : null;
+
+  body.innerHTML = '';
+
+  const compact = isCompactViewport();
+  lastCompactState = compact;
+  lastRenderedTab = ui.activeTab;
+
+  let stateNow = null;
+  let view = null;
+  try {
+    stateNow = readState(stat, {
+      floor: curFloor,
+      chatCount: curCount,
+      geoData: currentGeoData(),
+      chat: chatSnapshot,
+      nullCore: host.isNullCore(),
+    });
+    const qb = stateNow.questBoard || {
+      regionName: '',
+      boardRegionName: '',
+      regionChanged: false,
+      updatedDay: '',
+      rescanPending: false,
+      rescanFp: DATA.questBoard.rescanFp,
+      aftermath: { local: [], world: [], localEntries: [], worldEntries: [] },
+      items: [],
+      counts: { total: 0, story: 0, local: 0, side: 0, accepted: 0, editableAccepted: 0, intent: 0, progressed: 0 },
+      receipts: [],
+      unreadReceiptCount: 0,
+      diaryEntries: [],
+      diaryCount: 0,
+      diarySignature: '',
+    };
+    const regionDisplay = qb.regionName || qb.boardRegionName || '未识别区域';
+    const localEntries = Array.isArray(qb.aftermath?.localEntries) ? qb.aftermath.localEntries : [];
+    const worldEntries = Array.isArray(qb.aftermath?.worldEntries) ? qb.aftermath.worldEntries : [];
+    const editableAccepted = typeof qb.counts?.editableAccepted === 'number'
+      ? qb.counts.editableAccepted
+      : (qb.items || []).filter((x) => x.accepted && !x.fromFormalOnly).length;
+    const canEditMode = editableAccepted > 0 || localEntries.length > 0 || worldEntries.length > 0;
+    if (!canEditMode) {
+      ui.questEditRewards = false;
+      ui.confirmDeleteTrait = '';
+    }
+
+    if (ui.activeTab === 'lore') {
+      view = renderLoreView(qb, {
+        regionDisplay,
+        editMode: ui.questEditRewards,
+        canEditMode,
+        confirmDeleteTrait: ui.confirmDeleteTrait,
+        compact,
+        onToggleEditMode: () => {
+          ui.questEditRewards = !ui.questEditRewards;
+          if (!ui.questEditRewards) ui.confirmDeleteTrait = '';
+          render();
+        },
+        onToggleConfirm: (uid) => {
+          ui.confirmDeleteTrait = uid;
+          render();
+        },
+        onDeleteTrait: (entry) => run(
+          '已删除词条',
+          (s) => deleteAftermathEntry(s, entry.key, entry.index, entry.text),
+          {
+            redraw: true,
+            after: () => {
+              ui.confirmDeleteTrait = '';
+            },
+          },
+        ),
+      });
+    } else if (ui.activeTab === 'diary') {
+      view = renderDiaryView(qb, {
+        selectedIndex: ui.selectedDiaryIndex,
+        compact,
+        mobileIndexOpen: ui.mobileDiaryIndexOpen,
+        onSelectIndex: (idx) => {
+          ui.selectedDiaryIndex = idx;
+          ui.mobileDiaryIndexOpen = false;
+          render();
+        },
+        onToggleMobileIndex: () => {
+          ui.mobileDiaryIndexOpen = !ui.mobileDiaryIndexOpen;
+          render();
+        },
+      });
+    } else if (ui.activeTab === 'settings') {
+      view = renderSettingsView({ compact });
+    } else {
+      view = renderBoardView(stateNow, qb, { regionDisplay, canEditMode, compact });
+    }
+  } catch (error) {
+    console.error('[任务助手] 页面渲染失败：', error);
+    view = el('div', 'qh-mobile-scroll', [
+      renderNoteCallout(error && error.message ? error.message : String(error), 'warn'),
+    ]);
+  }
+
+  if (view) body.append(view);
+
+  // 独立还原左页、右页与移动端容器滚动位置
+  if (prevScroll) {
+    body.scrollTop = prevScroll.body;
+    const nextLeft = body.querySelector('.qh-page-left');
+    if (nextLeft) nextLeft.scrollTop = prevScroll.left;
+    const nextRight = body.querySelector('.qh-page-right');
+    if (nextRight) nextRight.scrollTop = prevScroll.right;
+    const nextMobile = body.querySelector('.qh-mobile-scroll');
+    if (nextMobile) nextMobile.scrollTop = prevScroll.mobile;
+  }
+
+  // 输入焦点与选区还原
+  if (activeIsFocusInput && !options.skipInputRestore) {
+    const nextInp = root.querySelector('.qh-focus-input');
+    if (nextInp && typeof nextInp.focus === 'function') {
+      host.safeFocus(nextInp);
+      if (typeof selStart === 'number' && typeof selEnd === 'number') {
+        try { nextInp.setSelectionRange(selStart, selEnd); } catch { /* 忽略 */ }
+      }
+    }
+  } else if (activeIsVerInput && !options.skipInputRestore) {
+    const nextVer = root.querySelector('.qh-setting-ver-input');
+    if (nextVer && typeof nextVer.focus === 'function') {
+      host.safeFocus(nextVer);
+      if (typeof selStart === 'number' && typeof selEnd === 'number') {
+        try { nextVer.setSelectionRange(selStart, selEnd); } catch { /* 忽略 */ }
+      }
+    }
+  }
+
+  // 更新顶部书眉 FP 与世界日
+  const fpEl = root.querySelector('.qh-top-fp-val');
+  if (fpEl && stateNow) fpEl.textContent = String(stateNow.fp);
+  const subEl = root.querySelector('.qh-top-sub');
+  if (subEl && stateNow) {
+    subEl.textContent = stateNow.day ? `世界日 · ${stateNow.day}` : '冒险手账';
+  }
+
+  // 同步书签徽标与设置版本控件
+  syncTabBar(stateNow);
+  syncVersionControls();
+
+  // 打开态下的未读标记（进展、结案回执静默标已阅、访问日记标记已阅）
+  if (root.classList.contains('qh-open') && !root.classList.contains('qh-closing') && stateNow?.questBoard) {
+    const qb = stateNow.questBoard;
+    const sig = qb.progressSignature || '';
+    if (sig) markSeenProgress(sig);
+
+    if (ui.activeTab === 'diary' && qb.diarySignature) {
+      markSeenDiary(qb.diarySignature);
+      syncTabBar(stateNow);
+      app?.onUnreadSync?.();
+    }
+
+    const unreadReceipts = typeof qb.unreadReceiptCount === 'number' ? qb.unreadReceiptCount : 0;
+    if (ui.activeTab === 'board' && unreadReceipts > 0) {
+      const receiptSig = (qb.receipts || []).map((r) => `${r.id}:${r.read ? 1 : 0}`).join('|');
+      const swipeKey = lastSwipeId(chatSnapshot);
+      const attemptKey = `${curChatId}:${curCount}:${swipeKey}:${receiptSig}`;
+      if (
+        !markingReceipts &&
+        receiptMarkAttemptKey !== attemptKey &&
+        !generating() &&
+        !replySettleRemainingMs({ chatCount: curCount, chatId: curChatId })
+      ) {
+        markingReceipts = true;
+        receiptMarkAttemptKey = attemptKey;
+        commit(
+          (s) => markReceiptsRead(s, { chat: chatArray(), chatCount: chatCount() }),
+          { core: CORE_NAME, speaker: SPEAKER, redraw: false, expectedChatId: curChatId },
+        )
+          .then((result) => {
+            markingReceipts = false;
+            if (result && result.error) {
+              if (receiptMarkAttemptKey === attemptKey) receiptMarkAttemptKey = '';
+              return;
+            }
+            if (result && !result.skipped) {
+              app?.onUnreadSync?.();
+              if (root && root.classList.contains('qh-open') && !root.classList.contains('qh-closing')) {
+                render();
+              }
+            }
+          })
+          .catch(() => {
+            markingReceipts = false;
+            if (receiptMarkAttemptKey === attemptKey) receiptMarkAttemptKey = '';
+          });
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 冒险手账外壳与开合动效
+// ---------------------------------------------------------------------------
 
 function buildShell() {
   const shell = el('div', 'qh');
   const backdrop = el('div', 'qh-backdrop', null, null, { click: () => app.close() });
 
-  const room = el('div', 'qh-room');
+  const room = el('div', 'qh-room', null, { role: 'dialog', 'aria-modal': 'true', 'aria-label': '冒险手账与任务情报' });
+
+  // 黄铜包角装饰
+  const corners = el('div', 'qh-brass-corners', [
+    el('span', 'qh-brass-corner is-tl'),
+    el('span', 'qh-brass-corner is-tr'),
+    el('span', 'qh-brass-corner is-bl'),
+    el('span', 'qh-brass-corner is-br'),
+  ], { 'aria-hidden': 'true' });
+
+  // 顶部紧凑书眉 + 书签导航栏（<= 44px）
+  const nav = el('nav', 'qh-tabs', null, { role: 'tablist', 'aria-label': '冒险手账分页' });
+  TABS.forEach((tab) => {
+    const btn = el(
+      'button',
+      `qh-tab qh-tab--${tab.id}` + (tab.id === ui.activeTab ? ' is-active' : ''),
+      [
+        el('span', 'qh-tab-label-full', tab.label),
+        el('span', 'qh-tab-label-short', tab.shortLabel),
+        tab.id === 'settings'
+          ? el('span', 'qh-tab-dot', null, { 'aria-hidden': 'true' })
+          : el('span', 'qh-tab-badge', '', { hidden: '' }),
+      ],
+      {
+        type: 'button',
+        role: 'tab',
+        'data-tab': tab.id,
+        'aria-selected': tab.id === ui.activeTab ? 'true' : 'false',
+      },
+      {
+        click: () => switchTab(tab.id),
+      },
+    );
+    nav.append(btn);
+  });
+
   const topbar = el('header', 'qh-topbar', [
     el('div', 'qh-top-left', [
-      el('span', 'qh-top-badge', '◈'),
+      createCrestIcon(),
       el('div', 'qh-top-titles', [
-        el('h1', 'qh-top-title', '任务情报'),
-        el('span', 'qh-top-sub', '独立地区情报面板'),
+        el('h1', 'qh-top-title', '冒险手账'),
+        el('span', 'qh-top-sub', '世界日'),
       ]),
     ]),
+    nav,
     el('div', 'qh-top-right', [
       el('div', 'qh-top-fp', [
-        el('span', 'qh-top-fp-label', '命运点数'),
-        el('span', 'qh-top-fp-val', '0 FP'),
+        el('span', 'qh-top-fp-label', 'FP'),
+        el('span', 'qh-top-fp-val', '0'),
       ]),
-      el(
-        'button',
-        'qh-top-settings',
-        [
-          el('span', 'qh-top-settings-icon', '⚙'),
-          el('span', 'qh-top-settings-text', '设置'),
-          el('span', 'qh-top-settings-dot', null, { 'aria-hidden': 'true' }),
-        ],
-        {
-          type: 'button',
-          title: '任务助手设置',
-          'aria-label': '任务助手设置',
-          'aria-expanded': 'false',
-        },
-        {
-          click: (e) => {
-            e.stopPropagation();
-            setSettingsOpen(!ui.settingsOpen);
-          },
-        },
-      ),
       el(
         'button',
         'qh-top-close',
         [
           el('span', 'qh-top-close-icon', '✕'),
-          el('span', 'qh-top-close-text', '关闭'),
+          el('span', 'qh-top-close-text', '合上'),
         ],
-        { type: 'button', title: '关闭任务情报板', 'aria-label': '关闭任务情报板' },
+        { type: 'button', title: '合上冒险手账 (Esc)', 'aria-label': '合上冒险手账' },
         { click: () => app.close() },
       ),
     ]),
   ]);
 
-  const body = el('main', 'qh-body');
-  const settingsLayer = buildSettingsLayer();
-  const holoCorners = el('div', 'qh-holo-corners', null, { 'aria-hidden': 'true' });
-  const holoVeil = el('div', 'qh-holo-veil', null, { 'aria-hidden': 'true' });
+  // 手机端装订环装饰条（CSS 仅在 <=768px / 矮横屏显示）
+  const padRings = el(
+    'div',
+    'qh-pad-rings',
+    Array.from({ length: 7 }, () => el('span', 'qh-pad-ring')),
+    { 'aria-hidden': 'true' },
+  );
 
-  room.append(topbar, body, settingsLayer, holoCorners, holoVeil);
+  const body = el('main', 'qh-body');
+  const bookFrame = el('div', 'qh-book-frame', [padRings, topbar, body, corners]);
+  room.append(bookFrame);
 
   const toastNode = el('div', 'qh-toast');
-
   shell.append(backdrop, room, toastNode);
   return shell;
 }
 
+function cancelOpen() {
+  if (openTimer) {
+    clearTimeout(openTimer);
+    openTimer = null;
+  }
+  if (openCleanup) {
+    openCleanup();
+    openCleanup = null;
+  }
+  if (root) {
+    const room = root.querySelector('.qh-room');
+    if (room) room.classList.remove('enter');
+  }
+}
+
 function cancelClose() {
+  cancelOpen();
   if (closeTimer) {
     clearTimeout(closeTimer);
     closeTimer = null;
@@ -1665,13 +1986,10 @@ function cancelClose() {
   }
 }
 
-function shouldAnimateClose() {
+function shouldAnimateMotion() {
+  if (!ui.motionEnabled) return false;
   if (typeof window === 'undefined' || !window.matchMedia) return false;
-  if (window.matchMedia('(max-height: 540px) and (orientation: landscape)').matches) return false;
-  return (
-    window.matchMedia('(min-width: 769px)').matches &&
-    !window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  );
+  return !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 app = {
@@ -1687,31 +2005,44 @@ app = {
     cancelClose();
     ui.questEditRewards = false;
     ui.confirmDeleteTrait = '';
-    ui.settingsOpen = false;
     ui.entryMode = readEntryMode(host.readStorage);
-    syncSettingsLayer();
+    ui.motionEnabled = readMotionEnabled(host.readStorage);
+    ui.verDraftText = null;
+    if (ui.activeTab === 'settings') {
+      ui.activeTab = ui.prevTab || 'board';
+    }
+    root.classList.toggle('qh-no-motion', !ui.motionEnabled);
     root.classList.add('qh-open');
+
     const room = root.querySelector('.qh-room');
     room.classList.remove('enter', 'leave');
-    void room.offsetWidth;
-    room.classList.add('enter');
-    render();
+    render({ resetScroll: true });
+    if (shouldAnimateMotion()) {
+      void room.offsetWidth;
+      room.classList.add('enter');
+      const onOpenEnd = (event) => {
+        if (event.target !== room) return;
+        if (event.animationName !== 'qh-book-open' && event.animationName !== 'qh-pad-open') return;
+        cancelOpen();
+      };
+      room.addEventListener('animationend', onOpenEnd);
+      openCleanup = () => room.removeEventListener('animationend', onOpenEnd);
+      openTimer = setTimeout(cancelOpen, 340);
+    }
+
     void refreshWorldbookStatus();
     void refreshLatestTag();
-    const closeBtn = root.querySelector('.qh-top-close');
-    if (closeBtn && closeBtn.focus) {
-      try {
-        closeBtn.focus({ preventScroll: true });
-      } catch {
-        closeBtn.focus();
-      }
+
+    // 桌面端聚焦关闭按钮方便键盘操作，移动端粗指针避免意外拉起软键盘
+    if (!host.isCoarsePointer?.()) {
+      const closeBtn = root.querySelector('.qh-top-close');
+      if (closeBtn) host.safeFocus(closeBtn);
     }
   },
 
   close(closeOpts = {}) {
     if (!root || !root.classList.contains('qh-open') || root.classList.contains('qh-closing')) return;
     ui.confirmDeleteTrait = '';
-    setSettingsOpen(false);
     const finish = () => {
       cancelClose();
       ui.questEditRewards = false;
@@ -1719,13 +2050,14 @@ app = {
       ui.focusExpanded = false;
       ui.focusDraftText = null;
       ui.focusDraftMode = null;
+      ui.verDraftText = null;
       focusComposing = false;
+      verComposing = false;
       pendingDeferredRefresh = false;
-      setSettingsOpen(false);
       root.classList.remove('qh-open');
       if (typeof app.onClose === 'function') app.onClose(closeOpts);
     };
-    if (!shouldAnimateClose()) {
+    if (!shouldAnimateMotion()) {
       finish();
       return;
     }
@@ -1734,22 +2066,24 @@ app = {
       finish();
       return;
     }
+    cancelOpen();
     root.classList.add('qh-closing');
     room.classList.remove('enter');
     void room.offsetWidth;
     room.classList.add('leave');
 
     const onEnd = (event) => {
-      if (event.target !== room || event.animationName !== 'qh-holo-close') return;
+      if (event.target !== room) return;
+      if (event.animationName !== 'qh-book-close' && event.animationName !== 'qh-pad-close') return;
       finish();
     };
     room.addEventListener('animationend', onEnd);
     closeCleanup = () => room.removeEventListener('animationend', onEnd);
-    closeTimer = setTimeout(finish, 340);
+    closeTimer = setTimeout(finish, 320);
   },
 
   refresh() {
-    if (root && root.classList.contains('qh-open')) render();
+    if (root && root.classList.contains('qh-open') && !root.classList.contains('qh-closing')) render();
   },
 
   hide() {
@@ -1763,22 +2097,32 @@ app = {
     ui.focusExpanded = false;
     ui.focusDraftText = null;
     ui.focusDraftMode = null;
+    ui.verDraftText = null;
     focusComposing = false;
+    verComposing = false;
     pendingDeferredRefresh = false;
-    setSettingsOpen(false);
     root.classList.remove('qh-open');
   },
 
   resetForChatChange() {
+    ui.activeTab = 'board';
+    ui.prevTab = 'board';
     ui.questCategory = '全部';
+    ui.selectedQuestKey = '';
+    ui.mobileExpandedQuestKey = '';
+    ui.selectedDiaryIndex = -1;
+    ui.mobileDiaryIndexOpen = false;
     ui.questEditRewards = false;
     ui.confirmDeleteTrait = '';
-    ui.traitsExpanded = { local: false, world: false };
     ui.focusExpanded = false;
     ui.focusDraftText = null;
     ui.focusDraftMode = null;
+    ui.verDraftText = null;
     focusComposing = false;
+    verComposing = false;
     pendingDeferredRefresh = false;
+    receiptMarkAttemptKey = '';
+    markingReceipts = false;
     ui.worldbookInfo = null;
     ui.worldbookState = 'idle';
     worldbookFetchPromise = null;
@@ -1788,7 +2132,6 @@ app = {
       const toastEl = root.querySelector('.qh-toast');
       if (toastEl) toastEl.className = 'qh-toast';
     }
-    setSettingsOpen(false);
   },
 };
 
@@ -1803,31 +2146,45 @@ export function mount(options = {}) {
   const container = options.container || document.body;
   root = buildShell();
   ui.entryMode = readEntryMode(host.readStorage);
-  syncSettingsLayer();
+  ui.motionEnabled = readMotionEnabled(host.readStorage);
+  root.classList.toggle('qh-no-motion', !ui.motionEnabled);
   container.append(root);
   if (!mounted) {
     document.addEventListener('keydown', (e) => {
       if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Escape' && root && root.classList.contains('qh-open')) {
-        if (ui.settingsOpen) {
-          setSettingsOpen(false);
-          const settingsBtn = root.querySelector('.qh-top-settings');
-          if (settingsBtn && settingsBtn.focus) {
-            try {
-              settingsBtn.focus({ preventScroll: true });
-            } catch {
-              settingsBtn.focus();
-            }
+        if (ui.focusExpanded) {
+          resetTransientFocusUi({ focusToggle: true });
+          return;
+        }
+        if (ui.activeTab === 'settings') {
+          const backTab = ui.prevTab && ui.prevTab !== 'settings' ? ui.prevTab : 'board';
+          switchTab(backTab);
+          if (!host.isCoarsePointer?.()) {
+            const tabBtn = root.querySelector(`.qh-tab[data-tab="${backTab}"]`);
+            if (tabBtn) host.safeFocus(tabBtn);
           }
           return;
         }
-        if (ui.focusExpanded) {
-          resetTransientFocusUi({ focusToggle: true });
+        if (ui.confirmDeleteTrait) {
+          ui.confirmDeleteTrait = '';
+          render();
           return;
         }
         app.close();
       }
     });
+
+    const onViewportChange = () => {
+      if (!root || !root.classList.contains('qh-open')) return;
+      const nowCompact = isCompactViewport();
+      if (nowCompact !== lastCompactState) {
+        render();
+      }
+    };
+    window.addEventListener('resize', onViewportChange);
+    window.visualViewport?.addEventListener('resize', onViewportChange);
+
     mounted = true;
   }
   render();

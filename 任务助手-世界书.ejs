@@ -8,7 +8,7 @@ const _emitUpdate = _wbRole !== 'plot';
 // 项目地址：https://github.com/yue-234/quest-assistant
 // 下面 @data 一段与 src/data.js 的 DATA 保持同一份口径。
 // @data-begin
-const _data = {"questBoard":{"rescanFp":100,"storyAdvanceDays":5,"categories":{"剧情任务":{"max":2,"rewardSlots":10,"qualityShift":1,"crossRegion":true},"本地主线":{"max":2,"rewardSlots":5,"qualityShift":1,"crossRegion":false},"支线任务":{"max":3,"rewardSlots":3,"qualityShift":0,"crossRegion":false}},"maxItems":7,"maxIgnored":12,"maxAftermathPerScope":3,"maxTempAftermathPerScope":2,"regionRevisitDays":14}};
+const _data = {"questBoard":{"rescanFp":100,"storyAdvanceDays":5,"raceAdvanceDays":1,"categories":{"剧情任务":{"max":2,"rewardSlots":10,"qualityShift":1,"crossRegion":true},"本地主线":{"max":2,"rewardSlots":5,"qualityShift":1,"crossRegion":false},"支线任务":{"max":3,"rewardSlots":3,"qualityShift":0,"crossRegion":false}},"maxItems":7,"maxIgnored":12,"maxAftermathPerScope":3,"maxTempAftermathPerScope":2,"regionRevisitDays":14}};
 // @data-end
 
 const _int = (v) => { const m = String(v ?? '').replace(/[,，]/g, '').match(/-?\d+/); return m ? Number(m[0]) : 0; };
@@ -179,6 +179,21 @@ const _hasLost = !!(
   !Array.isArray(_qb['已失效'])
 );
 const _lostMap = _hasLost ? _qb['已失效'] : {};
+const _hasRaceStage = !!(
+  _hasQb &&
+  Object.prototype.hasOwnProperty.call(_qb, '竞速暂存') &&
+  _qb['竞速暂存'] &&
+  typeof _qb['竞速暂存'] === 'object' &&
+  !Array.isArray(_qb['竞速暂存'])
+);
+const _raceStageMap = _hasRaceStage ? _qb['竞速暂存'] : {};
+const _raceStageKeyCount = _hasRaceStage ? Object.keys(_raceStageMap).length : 0;
+const _hasDiaryArr = !!(
+  _hasQb &&
+  Object.prototype.hasOwnProperty.call(_qb, '任务日记') &&
+  Array.isArray(_qb['任务日记'])
+);
+const _rawDiaryArr = _hasDiaryArr ? _qb['任务日记'] : [];
 const _maxAftermath = (_data.questBoard && Number(_data.questBoard.maxAftermathPerScope)) || 3;
 const _maxTempAftermath = (_data.questBoard && Number(_data.questBoard.maxTempAftermathPerScope)) || 2;
 const _regionRevisitDays = (_data.questBoard && Number(_data.questBoard.regionRevisitDays)) || 14;
@@ -344,12 +359,161 @@ const _pickFrom = (pool, count, rng) => {
   }
   return picked;
 };
-const _planAdvanceLoss = ({ id, updatedDay, advanceReason, rewardItems }) => {
+const _planAdvanceLoss = ({
+  id,
+  updatedDay,
+  advanceReason,
+  rewardItems,
+  isRace = false,
+  isAftershockStage1 = false,
+  stagedLost = [],
+  stagedFailClose = false,
+  raceNewTick = true,
+}) => {
   if (!advanceReason || !rewardItems.length) return null;
   const total = rewardItems.length;
-  const open = rewardItems.filter((r) => !r.claimed && !r.lost).map((r) => r.slot);
+  const claimedSet = new Set(rewardItems.filter((r) => r.claimed).map((r) => r.slot));
   const prevLost = rewardItems.filter((r) => r.lost).map((r) => r.slot);
-  const claimedCount = rewardItems.filter((r) => r.claimed).length;
+  const claimedCount = claimedSet.size;
+  if (isRace) {
+    const cleanStagedLost = Array.from(
+      new Set((Array.isArray(stagedLost) ? stagedLost : []).filter((s) => s >= 1 && s <= total && !claimedSet.has(s))),
+    ).sort((a, b) => a - b);
+    const effectiveLost = Array.from(new Set([...prevLost, ...cleanStagedLost])).sort((a, b) => a - b);
+    const effectiveLostSet = new Set(effectiveLost);
+    const effectiveOpen = rewardItems.filter((r) => !r.claimed && !effectiveLostSet.has(r.slot)).map((r) => r.slot);
+    if (!raceNewTick) {
+      return {
+        stage: stagedFailClose ? 4 : 1,
+        stageLabel: stagedFailClose ? '彻底失败' : '竞速揭晓',
+        newlyLost: [],
+        stagedLost: cleanStagedLost,
+        nextLost: effectiveLost,
+        failClose: !!stagedFailClose && !isAftershockStage1,
+        flushOnly: true,
+        warningOnly: false,
+      };
+    }
+    let coreEnd = 1;
+    let midEnd = 1;
+    if (total === 10) {
+      coreEnd = 3;
+      midEnd = 7;
+    } else if (total >= 3) {
+      coreEnd = Math.min(Math.max(1, Math.floor(total * 0.3)), total - 2);
+      const baseCount = Math.min(Math.max(1, Math.round(total * 0.3)), total - coreEnd - 1);
+      midEnd = total - baseCount;
+    }
+    const openCore = effectiveOpen.filter((s) => s <= coreEnd);
+    const openMid = effectiveOpen.filter((s) => s > coreEnd && s <= midEnd);
+    const openBase = effectiveOpen.filter((s) => s > midEnd);
+    const rng = _makeRng(`${id}|race|${effectiveLost.length}|${updatedDay}`);
+    if (isAftershockStage1) {
+      const maxLost = Math.max(1, Math.floor(total * 0.4));
+      const nonCorePool = [...openMid, ...openBase];
+      if (effectiveLost.length >= maxLost || nonCorePool.length === 0) {
+        return {
+          stage: 2,
+          stageLabel: '竞速警示',
+          newlyLost: [],
+          stagedLost: cleanStagedLost,
+          nextLost: effectiveLost,
+          failClose: false,
+          flushOnly: false,
+          warningOnly: true,
+        };
+      }
+      const picked = openMid.length ? _pickFrom(openMid, 1, rng) : _pickFrom(openBase, 1, rng);
+      const nextLost = Array.from(new Set([...effectiveLost, ...picked])).sort((a, b) => a - b);
+      return {
+        stage: effectiveLost.length === 0 ? 1 : 2,
+        stageLabel: effectiveLost.length === 0 ? '轻度竞速折损' : '中度竞速折损',
+        newlyLost: picked,
+        stagedLost: cleanStagedLost,
+        nextLost,
+        failClose: false,
+        flushOnly: false,
+        warningOnly: false,
+      };
+    }
+    if (stagedFailClose || !effectiveOpen.length) {
+      return effectiveLost.length > 0 || stagedFailClose
+        ? {
+          stage: 4,
+          stageLabel: '彻底失败',
+          newlyLost: [],
+          stagedLost: cleanStagedLost,
+          nextLost: effectiveLost,
+          failClose: true,
+          flushOnly: false,
+          warningOnly: false,
+        }
+        : null;
+    }
+    if (effectiveOpen.length === 1) {
+      const nextLost = Array.from(new Set([...effectiveLost, ...effectiveOpen])).sort((a, b) => a - b);
+      if (effectiveLost.length === 0 && claimedCount > 0) {
+        return {
+          stage: 3,
+          stageLabel: '尾声折损',
+          newlyLost: effectiveOpen.slice(),
+          stagedLost: cleanStagedLost,
+          nextLost,
+          failClose: false,
+          flushOnly: false,
+          warningOnly: false,
+        };
+      }
+      return {
+        stage: 4,
+        stageLabel: '彻底失败',
+        newlyLost: effectiveOpen.slice(),
+        stagedLost: cleanStagedLost,
+        nextLost,
+        failClose: true,
+        flushOnly: false,
+        warningOnly: false,
+      };
+    }
+    let stage = 1;
+    let stageLabel = '轻度竞速折损';
+    let picked = [];
+    if (effectiveLost.length === 0) {
+      stage = 1;
+      stageLabel = '轻度竞速折损';
+      picked = openMid.length ? _pickFrom(openMid, 1, rng)
+        : (openBase.length ? _pickFrom(openBase, 1, rng) : _pickFrom(openCore, 1, rng));
+    } else if (effectiveLost.length === 1) {
+      stage = 2;
+      stageLabel = '中度竞速折损';
+      picked = openMid.length ? _pickFrom(openMid, 1, rng)
+        : (openBase.length ? _pickFrom(openBase, 1, rng) : _pickFrom(openCore, 1, rng));
+    } else {
+      stage = 3;
+      stageLabel = '重度竞速折损';
+      picked = openCore.length ? _pickFrom(openCore, 1, rng)
+        : (openMid.length ? _pickFrom(openMid, 1, rng) : _pickFrom(openBase, 1, rng));
+    }
+    const newlyLost = Array.from(new Set(picked)).sort((a, b) => a - b);
+    let failClose = false;
+    if (newlyLost.length >= effectiveOpen.length) {
+      stage = 4;
+      stageLabel = '彻底失败';
+      failClose = true;
+    }
+    const nextLost = Array.from(new Set([...effectiveLost, ...newlyLost])).sort((a, b) => a - b);
+    return {
+      stage,
+      stageLabel,
+      newlyLost,
+      stagedLost: cleanStagedLost,
+      nextLost,
+      failClose,
+      flushOnly: false,
+      warningOnly: false,
+    };
+  }
+  const open = rewardItems.filter((r) => !r.claimed && !r.lost).map((r) => r.slot);
   const lostCount = prevLost.length;
   if (!open.length) {
     return lostCount > 0
@@ -679,6 +843,72 @@ for (let i = _chatList.length - 1; i >= 0 && _scanMsgs.length < 2; i -= 1) {
 const _lastMsgRaw = _scanMsgs.join('\n');
 const _lastMsgNorm = _stripTaskTitle(_lastMsgRaw);
 const _storyAdvanceDays = (_data.questBoard && Number(_data.questBoard.storyAdvanceDays)) || 5;
+const _raceAdvanceDays = (_data.questBoard && Number(_data.questBoard.raceAdvanceDays)) || 1;
+const _populatedLocRe = /(?:城|镇|村|港|酒馆|旅馆|客栈|集市|市场|广场|学院|商会|协会|公会|驿站|营地|王都|主城|街|巷|坊|码头|店|铺|殿|府|教堂|神殿|驻地|要塞|哨所)/;
+const _isolatedLocRe = /(?:荒野|地牢|密室|遗迹|废墟|森林|深林|丛林|洞窟|洞穴|山洞|矿洞|矿坑|牢房|监狱|深渊|沼泽|荒漠|沙漠|雪原|冰原|峡谷|墓穴|地宫|地下城|古墓|禁地|荒原|山谷|密道|暗道|秘境|绝壁|孤岛|无人区)/;
+const _rawWorldLoc = _txt(_world['地点']).trim();
+const _isIsolatedLoc = (() => {
+  if (!_rawWorldLoc) return false;
+  const segs = _splitLoc(_rawWorldLoc);
+  const list = segs.length ? segs : [_rawWorldLoc];
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const seg = list[i];
+    const segForPop = seg.replace(/地下城/g, '');
+    const hitIso = _isolatedLocRe.test(seg);
+    const hitPop = !!segForPop && _populatedLocRe.test(segForPop);
+    if (hitIso && !hitPop) return true;
+    if (hitPop && !hitIso) return false;
+    if (hitIso && hitPop) return true;
+  }
+  return false;
+})();
+const _diaryIndexMeta = _rawDiaryArr
+  .map((entry, idx) => {
+    const d = _obj(entry);
+    const dQuestId = _txt(d['任务id'] ?? d['任务ID'] ?? d['任务编号'] ?? d.questId ?? '').trim();
+    const dTitle = _stripBackendTags(_txt(d['标题'] ?? d.title).trim()) || _txt(d['标题'] ?? d.title).trim();
+    const hasSequelKey = Object.prototype.hasOwnProperty.call(d, '续篇');
+    const hasSequelArr = hasSequelKey && Array.isArray(d['续篇']);
+    return { idx, questId: dQuestId, title: dTitle, norm: _stripTaskTitle(dTitle), hasSequelKey, hasSequelArr };
+  })
+  .filter((x) => x.questId || x.title);
+const _findDiaryMeta = (id, title) => {
+  if (!_diaryIndexMeta.length) return null;
+  if (id) {
+    const byId = _diaryIndexMeta.find((d) => d.questId && d.questId === id);
+    if (byId) return byId;
+  }
+  const clean = _stripBackendTags(title) || title;
+  const norm = _stripTaskTitle(clean);
+  if (!clean && !norm) return null;
+  const exact = _diaryIndexMeta.find((d) => (clean && d.title === clean) || (norm && d.norm === norm));
+  if (exact) return exact;
+  if (norm.length >= 3) {
+    const sub = _diaryIndexMeta.find((d) => d.norm.length >= 3 && (norm.includes(d.norm) || d.norm.includes(norm)));
+    if (sub) return sub;
+  }
+  return null;
+};
+const _findDiaryIdx = (id, title) => {
+  const m = _findDiaryMeta(id, title);
+  return m ? m.idx : -1;
+};
+const _findRaceStage = (id, title, rawKey = '') => {
+  if (!_hasRaceStage) return null;
+  const cleanTitle = _stripBackendTags(title);
+  const tried = new Set();
+  for (const cand of [id, rawKey, title, cleanTitle]) {
+    for (const key of [_txt(cand), _txt(cand).trim()]) {
+      if (!key || tried.has(key)) continue;
+      tried.add(key);
+      if (Object.prototype.hasOwnProperty.call(_raceStageMap, key)) {
+        const data = _obj(_raceStageMap[key]);
+        if (Object.keys(data).length) return { key, data };
+      }
+    }
+  }
+  return null;
+};
 const _qbRegionChanged = !_sameRegion(_region, _qbRegionKey, _qbRegionName);
 const _qbListIsArr = Array.isArray(_qb['列表']);
 const _qbRawList = _qbListIsArr
@@ -734,21 +964,76 @@ const _qbItems = _qbRawList
       return null;
     }
     const updatedDay = _normalizeDay(r['更新日']) || _boardUpdatedDay;
-    // 未接取任务状态冻结：仅已接取的剧情任务计算搁置天数与跨区/搁置演进
-    const itemOrd = accepted ? (_lastDayOrdInText(formal.progress) ?? _dayOrdinal(updatedDay)) : null;
-    const idleDays = accepted && cat === '剧情任务' && _curDayOrd !== null && itemOrd !== null
-      ? Math.max(0, _curDayOrd - itemOrd)
-      : 0;
-    const advanceReason = accepted && cat === '剧情任务'
-      ? (_qbRegionChanged ? '已跨区' : (idleDays >= _storyAdvanceDays ? `已搁置 ${idleDays} 天` : ''))
-      : '';
+    const truth = _txt(r['真相'] || r['幕后真相']).trim();
+    const isRace = /【\s*多方竞速\s*】/.test(`${truth} ${title}`);
+    const isAftershockStage1 = (_hasAftershockTag(truth) || _hasAftershockTag(title) || _hasAftershockFuse(truth))
+      && !_hasAftershockSecondTag(truth)
+      && !_hasAftershockSecondTag(title);
+    const raceStageInfo = accepted && isRace ? _findRaceStage(id, title, rawKey) : null;
+    const stagedData = raceStageInfo ? raceStageInfo.data : null;
+    const stagedKey = raceStageInfo ? raceStageInfo.key : '';
+    const stagedLost = stagedData
+      ? Array.from(_parseClaimed(stagedData['待失效']).slots).sort((a, b) => a - b)
+      : [];
+    const stagedRumorsRaw = stagedData ? stagedData['待揭晓风声'] : '';
+    const stagedRumors = Array.isArray(stagedRumorsRaw)
+      ? stagedRumorsRaw.map((x) => _txt(x).trim()).filter(Boolean)
+      : (_txt(stagedRumorsRaw).trim() ? [_txt(stagedRumorsRaw).trim()] : []);
+    const stagedFailClose = !!(stagedData && stagedData['待失败结案'] === true);
+    const stagedLastDay = stagedData ? _txt(stagedData['最近演化日']).trim() : '';
+    const hasStagedRace = !!(raceStageInfo && (stagedLost.length > 0 || stagedRumors.length > 0 || stagedFailClose));
+
+    // 未接取任务状态冻结：普通剧情任务沿用 5 天周期；已接取的【多方竞速】剧情/本地主线启用短周期与隔绝暂存
+    let idleDays = 0;
+    let advanceReason = '';
+    let raceNewTick = false;
+    if (accepted && isRace && (cat === '剧情任务' || cat === '本地主线')) {
+      const stagedOrd = _dayOrdinal(stagedLastDay);
+      const ordCandidates = [
+        _lastDayOrdInText(formal.progress),
+        stagedOrd,
+        _dayOrdinal(updatedDay),
+      ].filter((x) => x !== null);
+      const lastEvolveOrd = ordCandidates.length ? Math.max(...ordCandidates) : null;
+      idleDays = _curDayOrd !== null && lastEvolveOrd !== null
+        ? Math.max(0, _curDayOrd - lastEvolveOrd)
+        : 0;
+      const stagedSameDay = stagedOrd !== null && _curDayOrd !== null && stagedOrd >= _curDayOrd;
+      raceNewTick = !stagedFailClose && !stagedSameDay && (_qbRegionChanged || idleDays >= _raceAdvanceDays);
+      if (raceNewTick) {
+        advanceReason = _qbRegionChanged ? '竞速跨区' : `竞速搁置 ${idleDays} 天`;
+      } else if (hasStagedRace && !_isIsolatedLoc) {
+        advanceReason = '竞速待揭晓';
+      }
+    } else if (accepted && cat === '剧情任务') {
+      const itemOrd = _lastDayOrdInText(formal.progress) ?? _dayOrdinal(updatedDay);
+      idleDays = _curDayOrd !== null && itemOrd !== null
+        ? Math.max(0, _curDayOrd - itemOrd)
+        : 0;
+      advanceReason = _qbRegionChanged
+        ? '已跨区'
+        : (idleDays >= _storyAdvanceDays ? `已搁置 ${idleDays} 天` : '');
+    }
     const advanceLoss = advanceReason
-      ? _planAdvanceLoss({ id, updatedDay, advanceReason, rewardItems })
+      ? _planAdvanceLoss({
+        id,
+        updatedDay,
+        advanceReason,
+        rewardItems,
+        isRace,
+        isAftershockStage1,
+        stagedLost,
+        stagedFailClose,
+        raceNewTick,
+      })
       : null;
     const mentioned = !accepted && !!_lastMsgRaw && (
       _lastMsgRaw.includes(title) || (normTitle.length >= 2 && _lastMsgNorm.includes(normTitle))
     );
-    const truth = _txt(r['真相'] || r['幕后真相']).trim();
+    const diaryMeta = (accepted || _hasAftershockSecondTag(truth) || _hasAftershockSecondTag(title))
+      ? _findDiaryMeta(id, title)
+      : null;
+    const diaryIdx = diaryMeta ? diaryMeta.idx : -1;
     return {
       id,
       rawKey,
@@ -763,6 +1048,15 @@ const _qbItems = _qbRawList
       summary: _txt(r['摘要']).trim(),
       truth,
       fuseInfo: _extractFuse(truth),
+      isRace,
+      isAftershockStage1,
+      stagedKey,
+      stagedLost,
+      stagedRumors,
+      stagedFailClose,
+      hasStagedRace,
+      diaryMeta,
+      diaryIdx,
       progress: accepted ? (formal.progress || _txt(r['进展'] || r['动态'] || r['最新进展']).trim()) : '',
       updatedDay,
       accepted,
@@ -834,6 +1128,11 @@ const _qbExistKeys = _hasQb ? _qbBaseKeys.filter((k) => Object.prototype.hasOwnP
 const _qbMissKeys = _hasQb ? _qbBaseKeys.filter((k) => !Object.prototype.hasOwnProperty.call(_qb, k)) : _qbBaseKeys;
 const _qbOpenCount = _qbItems.filter((it) => !it.accepted).length;
 const _storyDue = _qbItems.filter((it) => !!it.advanceReason);
+const _raceDue = _storyDue.filter((it) => it.isRace);
+const _nonRaceDue = _storyDue.filter((it) => !it.isRace);
+const _hasRaceDue = _raceDue.length > 0;
+const _hasNonRaceDue = _nonRaceDue.length > 0;
+const _preservedKeysText = '「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」「关注方向」「导演状态」「竞速暂存」「待阅回执」「任务日记」';
 const _qbMode = _qbRescanDue
   ? 'rescan'
   : (_qbOpenCount === 0 && _qbItems.length === 0
@@ -1134,13 +1433,22 @@ const _qbClaimRule = !_hasQb
   ? ''
   : '；实际发放某栏收益时，在 <UpdateVariable> 中按该条的 `兑现Patch` 写入累计已发栏号（从 1 开始，未发足额的金钱栏不标记），`[n✓]` 项不重复发放'
     + (!_hasClaimed ? '（同轮首次记录多条任务时，合并写入同一个 `insert /事件/任务情报板/已兑现` 对象，不要重复 `insert` 同一路径）' : '');
+const _willEmitAdvLostPatch = (it) => {
+  const adv = it.advanceLoss;
+  if (!adv || adv.failClose || !adv.nextLost || !adv.nextLost.length) return false;
+  if (!it.isRace) return true;
+  const prevLostSet = new Set(it.rewardItems.filter((r) => r.lost).map((r) => r.slot));
+  const hasUnrevealedStaged = (adv.stagedLost || []).some((s) => !prevLostSet.has(s));
+  if (adv.warningOnly || adv.flushOnly) return hasUnrevealedStaged;
+  return true;
+};
 const _qbLostPatchCount = _qbShownItems.filter(
   (it) => it.category !== '支线任务'
     && (it.intent || it.accepted)
     && it.rewardItems.length > 0
-    && !(it.advanceLoss && it.advanceLoss.failClose)
+    && (it.advanceLoss ? _willEmitAdvLostPatch(it) : true)
 ).length;
-const _qbHasNonFailAdv = _storyDue.some((it) => it.advanceLoss && !it.advanceLoss.failClose);
+const _qbHasNonFailAdv = _storyDue.some(_willEmitAdvLostPatch);
 const _qbLostMergeNote = _hasQb && !_hasLost && _qbLostPatchCount >= 2
   ? '（同轮首次记录多条任务时，合并写入同一个 `insert /事件/任务情报板/已失效` 对象，不要重复 `insert` 同一路径）'
   : '';
@@ -1164,6 +1472,33 @@ const _lostPatchHint = (it, suggestedSlots) => {
   const op = it.hasLostKey ? 'replace' : 'insert';
   return `{ "op": "${op}", "path": "/事件/任务情报板/已失效/${_escPtr(it.id)}", "value": ${valStr} }`;
 };
+const _raceStagePatchHint = (it, adv) => {
+  if (!_hasQb) return '';
+  const stageKey = it.stagedKey || it.id;
+  const nextStaged = Array.from(new Set([...(it.stagedLost || []), ...(adv.newlyLost || [])])).sort((a, b) => a - b);
+  const nextRumors = it.stagedRumors.length > 0
+    ? [...it.stagedRumors, '<25字以内新增环境侧面风声>']
+    : '<25字以内环境侧面风声>';
+  const stageVal = {
+    '标题': _stripBackendTags(it.title) || it.title,
+    '最近演化日': _day,
+    '待失效': nextStaged,
+    '待揭晓风声': nextRumors,
+  };
+  if (adv.failClose) stageVal['待失败结案'] = true;
+  if (!_hasRaceStage) {
+    return JSON.stringify({ op: 'insert', path: '/事件/任务情报板/竞速暂存', value: { [stageKey]: stageVal } });
+  }
+  const op = it.stagedKey ? 'replace' : 'insert';
+  return JSON.stringify({ op, path: `/事件/任务情报板/竞速暂存/${_escPtr(stageKey)}`, value: stageVal });
+};
+const _raceClearPatchHint = (it) => {
+  if (!_hasQb || !it.stagedKey) return '';
+  const clearPath = _raceStageKeyCount <= 1
+    ? '/事件/任务情报板/竞速暂存'
+    : `/事件/任务情报板/竞速暂存/${_escPtr(it.stagedKey)}`;
+  return JSON.stringify({ op: 'remove', path: clearPath });
+};
 const _fmtRewards = (it) => it.rewardItems
   .map((r) => `[${r.slot}${r.claimed ? '✓' : (r.lost ? '✕' : '□')}]${r.text}`)
   .join('、');
@@ -1172,6 +1507,47 @@ const _fmtAdvLoss = (it) => {
   if (!adv) return '';
   const bySlot = new Map(it.rewardItems.map((r) => [r.slot, r.text]));
   const labels = adv.newlyLost.map((s) => `[${s}]${bySlot.get(s) || ''}`).join('、');
+  if (it.isRace) {
+    const prevLostSet = new Set(it.rewardItems.filter((r) => r.lost).map((r) => r.slot));
+    const clearPatch = _raceClearPatchHint(it);
+    const clearBit = clearPatch ? `｜清暂存Patch：${clearPatch}` : '';
+    const rumorBit = it.stagedRumors.length ? `｜待揭晓风声：${it.stagedRumors.join('；')}` : '';
+    if (adv.warningOnly) {
+      const stagePatch = _raceStagePatchHint(it, adv);
+      const unrevealedStaged = (adv.stagedLost || []).filter((s) => !prevLostSet.has(s));
+      if (unrevealedStaged.length > 0) {
+        const unrevealedLabels = unrevealedStaged.map((s) => `[${s}]${bySlot.get(s) || ''}`).join('、');
+        const patch = adv.nextLost.length && _hasQb ? `｜失效Patch：${_lostPatchHint(it, adv.nextLost)}` : '';
+        return `｜本步竞速（${adv.stageLabel}）：对手逼近但暂不新增失效栏位（城镇揭晓时将暂存转入公开失效：${unrevealedLabels}）${rumorBit}${patch}${clearBit}${stagePatch ? `｜隔绝暂存Patch：${stagePatch}` : ''}`;
+      }
+      return `｜本步竞速（${adv.stageLabel}）：对手逼近但暂不新增失效栏位${rumorBit}${clearBit}${stagePatch ? `｜隔绝暂存Patch：${stagePatch}` : ''}`;
+    }
+    if (adv.flushOnly) {
+      const newPublicLost = (adv.stagedLost || []).filter((s) => !prevLostSet.has(s));
+      const stagedLabels = newPublicLost.map((s) => `[${s}]${bySlot.get(s) || ''}`).join('、');
+      if (adv.failClose) {
+        return `｜本步竞速揭晓：彻底失败（${stagedLabels || '剩余无可兑现栏位'}，城镇揭晓后零新收益结案并移出 /任务列表 与任务情报板）${rumorBit}${clearBit}`;
+      }
+      if (newPublicLost.length === 0) {
+        return `｜本步竞速揭晓（${adv.stageLabel}）：仅揭晓风声（无新增失效栏位）${rumorBit}${clearBit}`;
+      }
+      const patch = adv.nextLost.length && _hasQb ? `｜失效Patch：${_lostPatchHint(it, adv.nextLost)}` : '';
+      return `｜本步竞速揭晓（${adv.stageLabel}）：转入公开失效 ${stagedLabels}${rumorBit}${patch}${clearBit}`;
+    }
+    const stagePatch = _raceStagePatchHint(it, adv);
+    const unrevealedStaged = (adv.stagedLost || []).filter((s) => !prevLostSet.has(s) && !adv.newlyLost.includes(s));
+    const stagedFlushNote = unrevealedStaged.length > 0
+      ? `（含暂存转公开：${unrevealedStaged.map((s) => `[${s}]${bySlot.get(s) || ''}`).join('、')}）`
+      : '';
+    if (adv.failClose) {
+      const detail = labels
+        ? `彻底失败（剩余全失效：${labels}${stagedFlushNote}，城镇揭晓后直接移出 /任务列表 并执行完结移出，无需再写兑现Patch或失效Patch；隔绝环境暂不公开）`
+        : `彻底失败（剩余无可兑现栏位${stagedFlushNote}，城镇揭晓后直接移出 /任务列表 并执行完结移出，无需再写兑现Patch或失效Patch；隔绝环境暂不公开）`;
+      return `｜本步演进：${detail}${rumorBit}${clearBit}${stagePatch ? `｜隔绝暂存Patch：${stagePatch}` : ''}`;
+    }
+    const patch = adv.nextLost.length && _hasQb ? `｜失效Patch：${_lostPatchHint(it, adv.nextLost)}` : '';
+    return `｜本步失效（${adv.stageLabel}）：${labels}${stagedFlushNote}${rumorBit}${patch}${clearBit}${stagePatch ? `｜隔绝暂存Patch：${stagePatch}` : ''}`;
+  }
   if (adv.failClose) {
     const detail = labels
       ? `彻底失败（剩余全失效：${labels}，直接移出 /任务列表 并执行完结移出，无需再写兑现Patch或失效Patch）`
@@ -1181,6 +1557,29 @@ const _fmtAdvLoss = (it) => {
   const patch = adv.nextLost.length && _hasQb ? `｜失效Patch：${_lostPatchHint(it, adv.nextLost)}` : '';
   return `｜本步失效（${adv.stageLabel}）：${labels}${patch}`;
 };
+const _diaryContinueHint = (it) => {
+  if (!_emitUpdate || !it.diaryMeta) return '';
+  const idx = it.diaryMeta.idx;
+  const sequelItem = { '日期': _day, '标签': '后续', '心情': '<心情>', '正文': '<续篇正文>' };
+  const patch = it.diaryMeta.hasSequelArr
+    ? JSON.stringify({ op: 'insert', path: `/事件/任务情报板/任务日记/${idx}/续篇/-`, value: sequelItem })
+    : JSON.stringify({ op: it.diaryMeta.hasSequelKey ? 'replace' : 'insert', path: `/事件/任务情报板/任务日记/${idx}/续篇`, value: [sequelItem] });
+  return `｜日记续写索引：${idx}（续写Patch：${patch}）`;
+};
+const _qbShowDiaryRule = _emitUpdate && (_qbHasTracked || _qbHasFormalOnlyActive || _qbItems.some((it) => it.mentioned));
+const _advTargetLabel = _hasNonRaceDue && _hasRaceDue
+  ? '标注 `待演进` 的任务'
+  : (_hasRaceDue ? '标注 `待演进` 的竞速任务' : '标注 `待演进` 的剧情任务');
+const _advModeLead = _hasNonRaceDue && _hasRaceDue
+  ? '任务搁置与竞速演进'
+  : (_hasRaceDue ? '竞速任务演进' : '剧情任务搁置演进');
+const _raceMultiStageNote = !_hasRaceStage && _raceDue.length >= 2
+  ? '（同轮首次暂存多条竞速任务时，合并写入同一个 `insert /事件/任务情报板/竞速暂存` 对象，不要重复 `insert` 同一路径）'
+  : '';
+const _raceAllClearNote = _raceStageKeyCount >= 2
+  ? '（同轮把 `竞速暂存` 全部记录都清理完时，直接执行 `{ "op": "remove", "path": "/事件/任务情报板/竞速暂存" }`，不留空对象）'
+  : '';
+const _dueLeadDiaryIdx = _dueLead ? _findDiaryIdx('', _dueLead.title) : -1;
 const _removePatchHint = (it) => {
   if (!_hasQb || !_qb['列表']) return '';
   if (_qbListIsArr) return `{ "op": "remove", "path": "/事件/任务情报板/列表/${it.rawIdx}" }`;
@@ -1210,8 +1609,11 @@ _%>
 <% if (_qbHasAnyActive) { _%>
     收益边界: `预期收益` 中已标 `[✓]` 不重复发放；已标 `[✕]` 本任务不再发放（如果 <user> 在剧情外另行设法追回，按正常剧情判定成败）；彻底失败零新收益结案；总兑现不低于剩余有效 `[□]` 底线（仅剧情第 1~3 栏与本地主线第 1 栏的核心层品质可+1 档，其余栏位与支线均按原等级）
 <% } _%>
-<% if (_qbNeedAdv) { _%>
+<% if (_hasNonRaceDue) { _%>
     剧情演进: 下方标注 `待演进` 的已接取剧情任务已到搁置演进节点（第 1 步筹码转移或原路失效；第 2 步冲突公开化、中间站恶化；第 3 步造成不可逆后果并转入止损，继续搁置按失败结案）<% if (!_qbNeedGen || !_genHintRule) { %>，需要时在正文中通过当地传闻或情报渠道自然带出一句<% } %>
+<% } _%>
+<% if (_hasRaceDue) { _%>
+    竞速风声: 下方标注竞速演进或待揭晓的已接取任务正被对手抢占先机。当前如果在城镇、酒馆、集市、驿站或有外界情报流通的环境，借助邻桌闲谈、商贩抱怨、公告变动等侧面半截传闻透出危机征兆（不直接报出精确位置或完整经过，禁止同行队友在缺乏外界来源时直接告知对手去向）；如果在荒野、地牢、密室等与外界隔绝的环境，不强行安排信使或传闻，也不提前显露隐藏折损
 <% } _%>
 <% if (_dueLead) { _%>
     异常细节: 原<% if (!_dueLead.sameRegion) { %>在「<%- _dueLead.region %>」<% } else { %>已<% } %>结案的「<%- _dueLead.title %>」在无关日常细节、战利品<% if (!_dueLead.sameRegion) { %>、来信、跨区传闻<% } %>或环境变化中<%- _dueLead.kind === '假象余震' ? '露出物理裂痕' : '显露后续异动' %>（<%- _dueLead.text %>）；本轮在正文中自然带出这一处<%- _dueLead.kind === '假象余震' ? '异常细节' : '后续线索' %>供 <user> 追查，不动已发奖励
@@ -1228,7 +1630,7 @@ _%>
   const _plotTitle = _stripBackendTags(it.title) || it.title;
   const _plotTruth = _stripPlotTruth(it.truth);
 _%>
-    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜<%- _statusBit %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>] <%- _plotTitle %><% if (_metaBit) { %>（<%- _metaBit %>）<% } %><% if (it.summary) { %>｜摘要：<%- it.summary %><% } %><% if (_plotTruth) { %>｜幕后真相：<%- _plotTruth %><% } %><% if (!it.accepted && it.guide) { %>｜引导：<%- it.guide %><% } %><% if (it.rewardItems.length) { %>｜预期收益：<%- _fmtRewards(it) %><% } %>
+    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜<%- _statusBit %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>] <%- _plotTitle %><% if (_metaBit) { %>（<%- _metaBit %>）<% } %><% if (it.summary) { %>｜摘要：<%- it.summary %><% } %><% if (_plotTruth) { %>｜幕后真相：<%- _plotTruth %><% } %><% if (!it.accepted && it.guide) { %>｜引导：<%- it.guide %><% } %><% if (it.isRace && it.stagedRumors.length && !_isIsolatedLoc) { %>｜待揭晓风声：<%- it.stagedRumors.join('；') %><% } %><% if (it.rewardItems.length) { %>｜预期收益：<%- _fmtRewards(it) %><% } %>
 <% }) _%>
 <% } _%>
 <% if (_localAftermathShown.length || _worldAftermathShown.length) { _%>
@@ -1272,7 +1674,10 @@ _%>
 <% } _%>
 <%- _ind %>    剧情追加: 剧情中 NPC 给出新委托或触发 `/任务列表` 新任务时不受参考配额限制，用 `insert` 追加至 `/事件/任务情报板/列表/-`（对象型用 `insert` 新键），已写 `/任务列表` 的保持同 `标题`；按体量定级：剧情任务（B~S 级｜10 栏｜仅核心层+1 档）、本地主线（5 栏｜仅核心层+1 档）、支线任务（3 栏｜无+1 档）<% if (_qbNeedGen) { %>，按下方字段补全<% } else { %>；补全 `id`/`类别`/`等级`/`标题`/`方式`/`引导`/`地点`（单站）/`时限`/`摘要`（平实公开，不泄露真相与私下疑点）/`预期收益`，剧情与主线附隐藏 `真相`（并附 `更新日`）<% } %>
 <%- _ind %>    区域与世界词条: 保存在 `/事件/任务情报板/余波`，格式 `[绿/黄/红]【2~6字短标签】30~50字客观现状`（绿=利好稳定、黄=隐患波动、红=危机封锁）；只写当前可见实体变化（控制权、封锁、物价、环境、法令、商路等），禁止以 <user> 或冒险者为主语写战绩记录，禁止空泛描述。<% if (_qbNeedInitAftermathRule) { %>首次进入尚未记录词条的区域（初始化、跨区迁入或重扫且当前区域无词条）时，先于任务列表按当前世界书设定与近期剧情为当前区域默认写入 3 条常驻词条（分属不同维度，如商贸、治安、设施、环境、势力等，不复述待生成任务摘要，彼此逻辑自洽，不重复、不自相矛盾）；禁止 3 绿、3 黄、3 红（每区至少包含 2 种色阶），也不得每区机械套用 1 绿 1 黄 1 红，按各地实际繁荣度、秩序与局势做差异化组合（如安定商都偏 2 绿 1 黄或 2 绿 1 红，隐患较多的城镇偏 1 绿 2 黄或 2 黄 1 红，动荡前线偏 1 黄 2 红或 1 绿 2 红）。<% } %>`世界` 词条同样使用 `[绿/黄/红]` 色阶，不默认生成，仅剧情任务或重大剧情与事件链引发的跨大区或全大陆级重大后果允许写入或改写 `世界`（常驻每区与 `世界` 各自最多 <%- _maxAftermath %> 条，超出替换最旧项）。有明确截止期的短期活动、盛会、招生、临时戒严或短期灾害写为限时词条（额外叠加，不占常驻名额，每区与 `世界` 最多额外叠加 <%- _maxTempAftermath %> 条<% if (_qbNeedInitAftermathRule) { %>；当地正有短期活动时应先写满 3 条常驻词条，再额外追加 1~<%- _maxTempAftermath %> 条限时词条<% } %>），格式 `[绿/黄/红][至YYYY年-M月-D日]【2~6字短标签】30~50字客观现状`，到期自动失效移除。剧情任务、本地主线（完结、失败或搁置恶化）或非任务的重大剧情与事件链变故（如敌对势力袭击城镇、灾害、政变、控制权变更等）产生实质变化时，无论停留当地还是返回旧区域，都可以即时新增、改写或移除对应区域词条，并随局势同步升降色阶（恶化转黄或升红，好转降黄或转绿；本地主线按具体城市或区域名归档；支线任务与日常琐事不改写词条）；重大任务完结写入 `[绿]` 词条时，如果 `真相` 留有受损势力或权力真空，可在对应区域同步写入 1 条 `[黄]` 隐患词条。<% if (_qbNeedRevisitAftermathRule) { %>返回已有词条的旧区域时：离开满 <%- _regionRevisitDays %> 天时，可根据期间剧情与局势演进或改写 1 条词条（没有明显变化时保持不变）；离开不足 <%- _regionRevisitDays %> 天时不得无故改动词条，但如果期间已有明确剧情变故、已到期的预告事件（如预告的袭击、灾害、政变等）或任务后果实际波及该区域，仍按剧情改写对应词条。<% } %><% if (!_hasQb) { %>首次初始化整板时，将首批词条直接写入下方 `insert /事件/任务情报板` 的 `余波` 字段中，不再单独 `insert /事件/任务情报板/余波`<% } else if (!_hasAftermath) { %>首次写入用 `{ "op": "insert", "path": "/事件/任务情报板/余波", "value": { "<区域名或世界>": ["[绿/黄/红]【短标签】..."] } }`（同轮多键合并写入同一对象）<% } else { %>对已有区域键用 `replace`、新区域键用 `insert` 更新 `/事件/任务情报板/余波/<区域名或世界>`<% } %>
-<%- _ind %>    路径: <% if (!_hasQb) { %>`/事件/任务情报板` 未创建，用 `{ "op": "insert", "path": "/事件/任务情报板", "value": { "区域键": <%- JSON.stringify(_region.key || 'unknown') %>, "区域": <%- JSON.stringify(_region.name || '当前区域') %>, "更新日": <%- JSON.stringify(_day) %>,<% if (_day) { %> "区域访问日": { <%- JSON.stringify(_visitRegionKey) %>: <%- JSON.stringify(_day) %> },<% } %><% if (_qbNeedInitAftermathRule) { %> "余波": { <%- JSON.stringify(_visitRegionKey) %>: [ "[绿/黄/红]【短标签】..." ] },<% } %> "列表": [ ... ] } }`；**禁止对 `/事件` 执行 insert 或 replace**<% } else if (!_qbTouchBoard && _qbExistKeys.length > 0 && !_visitPatchHint) { %>仅按需更新 `/事件/任务情报板` 下对应子字段（保留其余全部控制键；**禁止整块覆写 `/事件` 或 `/事件/任务情报板`**）<% } else if (_qbMissKeys.length === 0) { %>分别用 `replace` 更新 `/事件/任务情报板` 下的 `区域键`<% if (_qbRegionChanged && _region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」「关注方向」「导演状态」；**禁止整块覆写 `/事件`**）<% } else if (_qbExistKeys.length === 0) { %>`/事件/任务情报板` 仅含控制字段，分别用 `insert` 写入 `/事件/任务情报板` 下的 `区域键`<% if (_region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」「关注方向」「导演状态」；**禁止整块覆写 `/事件`**）<% } else { %>对已存在键（<%- _qbExistKeys.map((k) => '`' + k + '`').join('、') %>）用 `replace`、对缺失键（<%- _qbMissKeys.map((k) => '`' + k + '`').join('、') %>）用 `insert` 更新 `/事件/任务情报板` 下对应字段<% if (_qbRegionChanged && _region.key) { %>（`区域键` 写 `<%- _region.key %>`）<% } %>（保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」「关注方向」「导演状态」；**禁止整块覆写 `/事件`**）<% } %><% if (_visitPatchHint) { %>；同步区域访问日用 <%- _visitPatchHint %><% } %><% if (_qbMode === 'rescan' && _hasQb) { %>；重扫写入后同步执行 `{ "op": "remove", "path": "/事件/任务情报板/待重扫" }`<% } %>
+<%- _ind %>    路径: <% if (!_hasQb) { %>`/事件/任务情报板` 未创建，用 `{ "op": "insert", "path": "/事件/任务情报板", "value": { "区域键": <%- JSON.stringify(_region.key || 'unknown') %>, "区域": <%- JSON.stringify(_region.name || '当前区域') %>, "更新日": <%- JSON.stringify(_day) %>,<% if (_day) { %> "区域访问日": { <%- JSON.stringify(_visitRegionKey) %>: <%- JSON.stringify(_day) %> },<% } %><% if (_qbNeedInitAftermathRule) { %> "余波": { <%- JSON.stringify(_visitRegionKey) %>: [ "[绿/黄/红]【短标签】..." ] },<% } %> "列表": [ ... ] } }`；**禁止对 `/事件` 执行 insert 或 replace**<% } else if (!_qbTouchBoard && _qbExistKeys.length > 0 && !_visitPatchHint) { %>仅按需更新 `/事件/任务情报板` 下对应子字段（保留其余全部控制键；**禁止整块覆写 `/事件` 或 `/事件/任务情报板`**）<% } else if (_qbMissKeys.length === 0) { %>分别用 `replace` 更新 `/事件/任务情报板` 下的 `区域键`<% if (_qbRegionChanged && _region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留<%- _preservedKeysText %>；**禁止整块覆写 `/事件`**）<% } else if (_qbExistKeys.length === 0) { %>`/事件/任务情报板` 仅含控制字段，分别用 `insert` 写入 `/事件/任务情报板` 下的 `区域键`<% if (_region.key) { %>（`<%- _region.key %>`）<% } %>、`区域`、`更新日`、`列表`（保留<%- _preservedKeysText %>；**禁止整块覆写 `/事件`**）<% } else { %>对已存在键（<%- _qbExistKeys.map((k) => '`' + k + '`').join('、') %>）用 `replace`、对缺失键（<%- _qbMissKeys.map((k) => '`' + k + '`').join('、') %>）用 `insert` 更新 `/事件/任务情报板` 下对应字段<% if (_qbRegionChanged && _region.key) { %>（`区域键` 写 `<%- _region.key %>`）<% } %>（保留<%- _preservedKeysText %>；**禁止整块覆写 `/事件`**）<% } %><% if (_visitPatchHint) { %>；同步区域访问日用 <%- _visitPatchHint %><% } %><% if (_qbMode === 'rescan' && _hasQb) { %>；重扫写入后同步执行 `{ "op": "remove", "path": "/事件/任务情报板/待重扫" }`<% } %>
+<% if (_qbShowDiaryRule) { _%>
+<%- _ind %>    任务日记: `剧情任务` 或 `本地主线` 结案（或遇重大转折），以及重要的 `支线任务` 结案同轮，以 <user> 第一人称与当前角色性格、口吻静默写入 `/事件/任务情报板/任务日记`（<%- _hasDiaryArr ? '用 `insert` 追加到 `/事件/任务情报板/任务日记/-`' : '首次用 `insert` 创建 `/事件/任务情报板/任务日记` 数组；同轮首次写入多篇时合并放入同一个 `insert /事件/任务情报板/任务日记` 数组，不重复 `insert` 同一路径' %>），对象含 `任务id`/`标题`（无后台标签）/`类别`/`区域`/`日期`（`<%- _day %>`）/`结局`/`心情`/`正文`（80~160 字个人经历、心境、私下印象与察觉的异样）/`角注`（选填短句）；不复述摘要、不写第三人称事件总结、不泄露未公开真相或引信；带 `日记续写索引` 时改为按该条 `续写Patch` 追加续篇
+<% } _%>
 <% if (_qbNeedGen) { _%>
 <%- _ind %>  生成规格（品质与禁项沿用<任务与委托规则>，仅核心层可+1 档，其余按原等级；下列条数为参考配额，剧情追加不受上限限制）:
 <%- _ind %>    字段:
@@ -1325,6 +1730,7 @@ _%>
 <% } _%>
 <% if (_qbNeedAdv) { _%>
 <%- _ind %>  剧情演进:
+<% if (_hasNonRaceDue) { _%>
 <% if (_emitPlot) { _%>
 <%- _ind %>    演进: 对下方标注 `待演进` 的已接取剧情任务按阶梯推进 1 步（第 1 步筹码转移或原路失效；第 2 步冲突公开化、中间站恶化；第 3 步造成不可逆后果，写入区域或世界 `[黄/红]` 词条并转入止损，继续搁置按失败结案并移出 `/任务列表` 与任务情报板），静默同步至 `/任务列表`（不双写任务情报板）<% if (!_qbNeedGen || !_genHintRule) { %>，需要时在正文中通过当地传闻或情报渠道自然带出一句<% } %>
 <%- _ind %>    写回: 确认近期未随当前剧情推进后，普通演进只更新 `/任务列表/<任务名>/进展`（开头附 `[<%- _day %>]`）及必要的 `目标`/`关注度`，并按下方该条预抽定的 `本步失效` 与 `失效Patch` 写入 `/事件/任务情报板/已失效`（不得减免或替换栏号）；彻底失败时按该条提示零新收益结案、移出 `/任务列表` 与任务情报板并写入 `[黄/红]` 词条（不再更新进展或写 `失效Patch`）<% if (_qbLostMergeInAdv) { %><%- _qbLostMergeNote %><% } %>
@@ -1332,13 +1738,17 @@ _%>
 <%- _ind %>    写回: 确认下方标注 `待演进` 的已接取剧情任务近期未随当前剧情推进后，按上文「剧情演进」三步阶梯推进 1 步并写入对应变量（第 3 步同步写入 `[黄/红]` 词条并转入止损）：普通演进更新 `/任务列表/<任务名>/进展`（开头附 `[<%- _day %>]`）及必要的 `目标`/`关注度`（不双写任务情报板），并按该条预抽定的 `本步失效` 与 `失效Patch` 写入 `/事件/任务情报板/已失效`（不得减免或替换栏号）；彻底失败时按该条提示零新收益结案、移出 `/任务列表` 与任务情报板并写入 `[黄/红]` 词条（不再更新进展或写 `失效Patch`）<% if (_qbLostMergeInAdv) { %><%- _qbLostMergeNote %><% } %>
 <% } _%>
 <% } _%>
-<%- _ind %>  本轮指令（<%- _region.name || '未记录' %><% if (_worldTime) { %>｜<%- _worldTime %><% } %>）: <% if (_qbMode === 'rescan') { %><% if (_isNullCore) { %><user> 已启动今日免费地区情报重扫（每日 1 次）：<% } else { %><user> 已支付 <%- _data.questBoard.rescanFp %> FP 启动地区情报重扫：<% } %><% if (_localAftermathShown.length === 0) { %>先为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日；随后<% } %><% if (_qbShownItems.length > 0) { %>保留剧情任务、已接取与 `★已锁定` 项，按当前区域重新生成 1~2 条本地主线 + 2~3 条支线任务<% } else { %>当前没有需保留的旧任务，按当前区域全新生成 1~2 条本地主线 + 2~3 条支线任务<% } %><% if (!_qbHasStoryItem) { %>（没有剧情任务时补 1 条剧情任务）<% } %>（<% if (_qbShownItems.length > 0) { %>下方列出的保留项在 `列表` 中保持原 `id`/等级/内容/更新日不变，不重编、不添 `进展`，写回 `预期收益` 时去掉 `[n□]`/`[n✓]`/`[n✕]` 前缀；<% } %>未列出的旧未接取未锁定本地任务不保留，整表 `<%- _qbExistKeys.includes('列表') ? 'replace' : 'insert' %>` 写入 `列表`）<% } else if (_qbMode === 'init') { %>首次初始化任务情报板：<% if (_localAftermathShown.length === 0) { %>先为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日；再<% } %>生成 1 条剧情任务 + 1~2 条本地主线 + 2~3 条支线任务<% if (_localAftermathShown.length > 0) { %>，并记录区域访问日<% } %><% } else if (_qbMode === 'relocate') { %>已跨区域迁入「<%- _region.name %>」（原「<%- _qbRegionName %>」）：<% if (_localAftermathShown.length === 0) { %>先为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日；随后<% } else if (_awayDays === null) { %>返回旧区域（首次记录访问日）：无明确剧情变故或到期预告事件时保持原词条不变，并记录区域访问日；随后<% } else if (_revisitDue) { %>返回旧区域（已离开 <%- _awayDays %> 天）：按上方词条规则演进或改写本区最多 1 条词条（没有明显变化时保持不变），并更新区域访问日；随后<% } else { %>返回旧区域（离开不足 <%- _regionRevisitDays %> 天）：无明确剧情变故或到期预告事件时保持原词条不变，并更新区域访问日；随后<% } %><% if (_qbShownItems.length > 0) { %>保留下方现有项（写回 `预期收益` 时去掉 `[n□]`/`[n✓]`/`[n✕]` 前缀）<% if (_qbNeedAdv) { %>并推进标注 `待演进` 的剧情任务<% } %>，<% } else { %>当前没有需保留的旧任务，<% if (_qbNeedAdv) { %>推进标注 `待演进` 的剧情任务并<% } %><% } %>按新区生成 1~2 条本地主线 + 2~3 条支线任务（没有剧情任务时补 1 条）<% } else if (_qbMode === 'refill') { %>补足空缺：按当前区域补足未接取的剧情任务、本地主线或支线空缺<% if (_qbNeedAdv) { %>，并推进标注 `待演进` 的剧情任务<% } %><% } else if (_qbMode === 'advance') { %>剧情任务搁置演进：按上方「剧情演进」推进标注 `待演进` 的条目<% } else { %>同区域常规停留：<% if (_qbHasTracked && _hasQb) { %>发放板上收益时按 `兑现Patch` 写入，发生折损失效时按 `失效Patch` 写入，<% } %>发生重大剧情或事件链变故时按规则更新区域或世界词条，其余仅移除过期或已完结项<% if (!_dueLead) { %>；没有变动（含本轮刚跨城）时跳过写板<% } else { %>；本轮另有待引爆因果线，按下方「因果引爆」追加追查任务并清理引信<% } %><% } %><% if (_qbClosedTitles.length) { %>（同步将已完结任务移出任务情报板：<%- _qbClosedTitles.join('、') %>）<% } %>
+<% if (_hasRaceDue) { _%>
+<%- _ind %>    竞速演进: 标注竞速演进或待揭晓的任务按当前环境分流处理（当前环境参考：<%- _isIsolatedLoc ? '疑似与外界隔绝的区域，按正文实际场景判断' : '常规区域，若正文实际在无外界信息流的封闭空间内按隔绝分支处理' %>）。①在城镇、酒馆、集市、驿站或有外界情报流通的环境：<% if (_emitPlot) { %>借助环境侧面半截传闻透出风声（禁止全知播报或同行队友在缺乏外界来源时直接告知对手去向），<% } %>按该条 `失效Patch` 将累计失效栏号写入 `/事件/任务情报板/已失效`<% if (_qbLostMergeInAdv && !_hasNonRaceDue) { %><%- _qbLostMergeNote %><% } %>，同步更新 `/任务列表/<任务名>/进展`（开头附 `[<%- _day %>]`，仅记外界可见风声），存在 `清暂存Patch` 时同步移除 `/事件/任务情报板/竞速暂存` 对应记录<%- _raceAllClearNote %>；彻底失败时按该条提示零新收益结案并移出。②在荒野、地牢、密室等无外界信息流的环境：<% if (_emitPlot) { %>正文不强行安排信使或传闻，<% } %>不写入公开 `已失效`、不改写可见 `进展`，仅按该条 `隔绝暂存Patch` 写入或更新 `/事件/任务情报板/竞速暂存`（含 `标题`/`最近演化日`/`待失效`/`待揭晓风声`，仅彻底失败时附 `待失败结案`）<%- _raceMultiStageNote %>，待重返人群环境后合并揭晓
+<% } _%>
+<% } _%>
+<%- _ind %>  本轮指令（<%- _region.name || '未记录' %><% if (_worldTime) { %>｜<%- _worldTime %><% } %>）: <% if (_qbMode === 'rescan') { %><% if (_isNullCore) { %><user> 已启动今日免费地区情报重扫（每日 1 次）：<% } else { %><user> 已支付 <%- _data.questBoard.rescanFp %> FP 启动地区情报重扫：<% } %><% if (_localAftermathShown.length === 0) { %>先为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日；随后<% } %><% if (_qbShownItems.length > 0) { %>保留剧情任务、已接取与 `★已锁定` 项，按当前区域重新生成 1~2 条本地主线 + 2~3 条支线任务<% } else { %>当前没有需保留的旧任务，按当前区域全新生成 1~2 条本地主线 + 2~3 条支线任务<% } %><% if (!_qbHasStoryItem) { %>（没有剧情任务时补 1 条剧情任务）<% } %>（<% if (_qbShownItems.length > 0) { %>下方列出的保留项在 `列表` 中保持原 `id`/等级/内容/更新日不变，不重编、不添 `进展`，写回 `预期收益` 时去掉 `[n□]`/`[n✓]`/`[n✕]` 前缀；<% } %>未列出的旧未接取未锁定本地任务不保留，整表 `<%- _qbExistKeys.includes('列表') ? 'replace' : 'insert' %>` 写入 `列表`）<% } else if (_qbMode === 'init') { %>首次初始化任务情报板：<% if (_localAftermathShown.length === 0) { %>先为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日；再<% } %>生成 1 条剧情任务 + 1~2 条本地主线 + 2~3 条支线任务<% if (_localAftermathShown.length > 0) { %>，并记录区域访问日<% } %><% } else if (_qbMode === 'relocate') { %>已跨区域迁入「<%- _region.name %>」（原「<%- _qbRegionName %>」）：<% if (_localAftermathShown.length === 0) { %>先为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日；随后<% } else if (_awayDays === null) { %>返回旧区域（首次记录访问日）：无明确剧情变故或到期预告事件时保持原词条不变，并记录区域访问日；随后<% } else if (_revisitDue) { %>返回旧区域（已离开 <%- _awayDays %> 天）：按上方词条规则演进或改写本区最多 1 条词条（没有明显变化时保持不变），并更新区域访问日；随后<% } else { %>返回旧区域（离开不足 <%- _regionRevisitDays %> 天）：无明确剧情变故或到期预告事件时保持原词条不变，并更新区域访问日；随后<% } %><% if (_qbShownItems.length > 0) { %>保留下方现有项（写回 `预期收益` 时去掉 `[n□]`/`[n✓]`/`[n✕]` 前缀）<% if (_qbNeedAdv) { %>并推进<%- _advTargetLabel %><% } %>，<% } else { %>当前没有需保留的旧任务，<% if (_qbNeedAdv) { %>推进<%- _advTargetLabel %>并<% } %><% } %>按新区生成 1~2 条本地主线 + 2~3 条支线任务（没有剧情任务时补 1 条）<% } else if (_qbMode === 'refill') { %>补足空缺：按当前区域补足未接取的剧情任务、本地主线或支线空缺<% if (_qbNeedAdv) { %>，并推进<%- _advTargetLabel %><% } %><% } else if (_qbMode === 'advance') { %><%- _advModeLead %>：按上方「剧情演进」推进标注 `待演进` 的条目<% } else { %>同区域常规停留：<% if (_qbHasTracked && _hasQb) { %>发放板上收益时按 `兑现Patch` 写入，发生折损失效时按 `失效Patch` 写入，<% } %>发生重大剧情或事件链变故时按规则更新区域或世界词条，其余仅移除过期或已完结项<% if (!_dueLead) { %>；没有变动（含本轮刚跨城）时跳过写板<% } else { %>；本轮另有待引爆因果线，按下方「因果引爆」追加追查任务并清理引信<% } %><% } %><% if (_qbClosedTitles.length) { %>（同步将已完结任务移出任务情报板：<%- _qbClosedTitles.join('、') %>）<% } %>
 <% if (_dueLead) {
   const _leadRemovePath = (_rawLeads.length > 1 || _seedCandidatesCount > 0)
     ? `/事件/任务情报板/导演状态/待引爆/${_dueLead.idx}`
     : (_aftershockCooldown > 0 ? '/事件/任务情报板/导演状态/待引爆' : '/事件/任务情报板/导演状态');
 _%>
-<%- _ind %>    因果引爆: 原<% if (!_dueLead.sameRegion) { %>在「<%- _dueLead.region %>」<% } else { %>已<% } %>结案的「<%- _dueLead.title %>」<% if (!_dueLead.sameRegion) { %>通过旧物、来信或跨区传闻<% } %><%- _dueLead.kind === '假象余震' ? '露出物理裂痕' : '显露后续异动' %>（<%- _dueLead.text %>）；<% if (_emitPlot) { %>正文在无关日常细节、战利品或环境变化中自然带出这一处<%- _dueLead.kind === '假象余震' ? '异常细节' : '后续线索' %>供 <user> 追查，<% } %>按「剧情追加」直接追加 1 条 B~A 级高阶追查或补救任务（类别视格局定为 `本地主线`（5 栏）或 `剧情任务`（跨区用，10 栏）｜<%- _dueLead.kind %><% if (_dueLead.kind === '假象余震') { %>，新条目的 `真相` 开头标注 `【假象余震二段】`<% } %>），一阶段已兑现奖励保留不倒扣，并执行 `{ "op": "remove", "path": "<%- _leadRemovePath %>" }`
+<%- _ind %>    因果引爆: 原<% if (!_dueLead.sameRegion) { %>在「<%- _dueLead.region %>」<% } else { %>已<% } %>结案的「<%- _dueLead.title %>」<% if (!_dueLead.sameRegion) { %>通过旧物、来信或跨区传闻<% } %><%- _dueLead.kind === '假象余震' ? '露出物理裂痕' : '显露后续异动' %>（<%- _dueLead.text %>）；<% if (_emitPlot) { %>正文在无关日常细节、战利品或环境变化中自然带出这一处<%- _dueLead.kind === '假象余震' ? '异常细节' : '后续线索' %>供 <user> 追查，<% } %>按「剧情追加」直接追加 1 条 B~A 级高阶追查或补救任务（类别视格局定为 `本地主线`（5 栏）或 `剧情任务`（跨区用，10 栏）｜<%- _dueLead.kind %><% if (_dueLead.kind === '假象余震') { %>，新条目的 `真相` 开头标注 `【假象余震二段】`<% } %><% if (_dueLeadDiaryIdx >= 0) { %>，新标题保留与「<%- _dueLead.title %>」的关联词以便结案续写原日记<% } %>），一阶段已兑现奖励保留不倒扣，并执行 `{ "op": "remove", "path": "<%- _leadRemovePath %>" }`
 <% } _%>
 <% if (_qbShownItems.length) { _%>
 <%- _ind %>  板上任务:
@@ -1356,9 +1766,9 @@ _%>
   const _dispTruth = _stripPlotTruth(it.truth);
 _%>
 <% if (it.accepted && !_qbTouchBoard) { _%>
-<%- _ind %>    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜已接取:<%- it.formalTaskName %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>]<% if (_emitPlot && it.category !== '支线任务' && it.summary) { %> 摘要：<%- it.summary %><% } %><% if (_emitPlot && it.category !== '支线任务' && _dispTruth) { %>｜幕后真相：<%- _dispTruth %><% } %><% if (it.rewardItems.length) { %>｜预期收益：<%- _fmtRewards(it) %>｜兑现Patch：<%- _claimPatchHint(it) %><% if (it.advanceLoss) { %><%- _fmtAdvLoss(it) %><% } else if (it.category !== '支线任务' && _hasQb) { %>｜失效Patch：<%- _lostPatchHint(it) %><% } %><% } %><% if (_removePatchHint(it)) { %>｜完结移出：<%- _removePatchHint(it) %><% } %><%- _seedFuseHint(it) %><%- _cooldownDecHint(it) %>
+<%- _ind %>    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜已接取:<%- it.formalTaskName %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>]<% if (_emitPlot && it.category !== '支线任务' && it.summary) { %> 摘要：<%- it.summary %><% } %><% if (_emitPlot && it.category !== '支线任务' && _dispTruth) { %>｜幕后真相：<%- _dispTruth %><% } %><% if (it.rewardItems.length) { %>｜预期收益：<%- _fmtRewards(it) %>｜兑现Patch：<%- _claimPatchHint(it) %><% if (it.advanceLoss) { %><%- _fmtAdvLoss(it) %><% } else if (it.category !== '支线任务' && _hasQb) { %>｜失效Patch：<%- _lostPatchHint(it) %><% } %><% } %><% if (_removePatchHint(it)) { %>｜完结移出：<%- _removePatchHint(it) %><% } %><%- _seedFuseHint(it) %><%- _cooldownDecHint(it) %><%- _diaryContinueHint(it) %>
 <% } else { _%>
-<%- _ind %>    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜<%- it.way %><% if (it.accepted) { %>｜已接取:<%- it.formalTaskName %><% } else if (it.intent) { %>｜★已锁定<% } %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>] <%- _dispTitle %><% if (_metaBit) { %>（<%- _metaBit %>）<% } %><% if ((_emitPlot || _preserveFull) && (_showDetail || (it.accepted && it.category !== '支线任务')) && it.summary) { %>｜摘要：<%- it.summary %><% } %><% if ((_emitPlot || _preserveFull) && (_showDetail || it.accepted) && _dispTruth) { %>｜幕后真相：<%- _dispTruth %><% } %><% if ((!it.accepted || _preserveFull) && it.guide) { %>｜引导：<%- it.guide %><% } %><% if ((it.intent || it.accepted) && it.rewardItems.length) { %>｜预期收益：<%- _fmtRewards(it) %>｜兑现Patch：<%- _claimPatchHint(it) %><% if (it.advanceLoss) { %><%- _fmtAdvLoss(it) %><% } else if (it.category !== '支线任务' && _hasQb) { %>｜失效Patch：<%- _lostPatchHint(it) %><% } %><% } else if (_showDetail && it.rewards.length) { %>｜预期收益：<%- it.rewards.join('、') %><% } %><% if (it.accepted && _removePatchHint(it)) { %>｜完结移出：<%- _removePatchHint(it) %><% } %><%- _seedFuseHint(it) %><%- _cooldownDecHint(it) %>
+<%- _ind %>    - [<%- it.id %>｜<%- it.category %>｜<%- it.rank %>级｜<%- it.way %><% if (it.accepted) { %>｜已接取:<%- it.formalTaskName %><% } else if (it.intent) { %>｜★已锁定<% } %><% if (it.advanceReason) { %>｜待演进:<%- it.advanceReason %><% } %>] <%- _dispTitle %><% if (_metaBit) { %>（<%- _metaBit %>）<% } %><% if ((_emitPlot || _preserveFull) && (_showDetail || (it.accepted && it.category !== '支线任务')) && it.summary) { %>｜摘要：<%- it.summary %><% } %><% if ((_emitPlot || _preserveFull) && (_showDetail || it.accepted) && _dispTruth) { %>｜幕后真相：<%- _dispTruth %><% } %><% if ((!it.accepted || _preserveFull) && it.guide) { %>｜引导：<%- it.guide %><% } %><% if ((it.intent || it.accepted) && it.rewardItems.length) { %>｜预期收益：<%- _fmtRewards(it) %>｜兑现Patch：<%- _claimPatchHint(it) %><% if (it.advanceLoss) { %><%- _fmtAdvLoss(it) %><% } else if (it.category !== '支线任务' && _hasQb) { %>｜失效Patch：<%- _lostPatchHint(it) %><% } %><% } else if (_showDetail && it.rewards.length) { %>｜预期收益：<%- it.rewards.join('、') %><% } %><% if (it.accepted && _removePatchHint(it)) { %>｜完结移出：<%- _removePatchHint(it) %><% } %><%- _seedFuseHint(it) %><%- _cooldownDecHint(it) %><%- _diaryContinueHint(it) %>
 <% } _%>
 <% }) _%>
 <% } _%>

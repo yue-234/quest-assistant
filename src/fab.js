@@ -1,12 +1,12 @@
-// 独立任务助手悬浮球（60×48 深空蓝 + 金边微方徽章）
-// 纯几何 SVG 绘制指南针星标与「任务」字标，底部青金/琥珀细饰条，右上角未读脉冲红点。
-// 支持自由拖拽、弱磁吸（SNAP_DISTANCE = 28）、按 xRatio/yRatio 记忆位置与省电休眠。
+// 独立任务助手悬浮本（48×58 微缩立式牛皮冒险手账）
+// 纯内联 SVG + CSS 绘制缝线书脊、暖米书页厚度、黄铜指南针星芒扣与可指示未读的绯红丝带书签。
+// 支持自由拖拽、弱磁吸（SNAP_DISTANCE = 28）、按 xRatio/yRatio 记忆位置、visualViewport 安全边界与省电休眠。
 
 const FAB_ID = 'quest-helper-fab';
 const FAB_STYLE_ID = 'quest-helper-fab-style';
 const STORAGE_KEY = 'quest_helper_fab_pos_v1';
-const FAB_W = 60;
-const FAB_H = 48;
+const FAB_W = 48;
+const FAB_H = 58;
 const EDGE_MARGIN = 10;
 const SNAP_DISTANCE = 28;
 const TOP_SAFE = 56;
@@ -27,17 +27,15 @@ const FAB_CSS = `
   height: ${FAB_H}px;
   padding: 0;
   margin: 0;
-  border: 1px solid rgba(240, 185, 76, 0.44);
-  border-radius: 13px;
+  border: 0;
+  border-radius: 6px 9px 9px 6px;
   background: transparent;
   cursor: grab;
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
-  box-shadow:
-    0 6px 16px rgba(3, 9, 18, 0.56),
-    0 1px 0 rgba(255, 244, 206, 0.22) inset;
+  overflow: visible;
   will-change: transform;
   transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease;
 }
@@ -50,198 +48,239 @@ const FAB_CSS = `
   pointer-events: none;
 }
 #${FAB_ID}:focus-visible {
-  outline: 2px solid #ffc757;
-  outline-offset: 2px;
+  outline: 2px solid #ecd08b;
+  outline-offset: 3px;
 }
-#${FAB_ID} .qh-fab-shell {
+#${FAB_ID} .qh-fab-book {
   position: relative;
   display: flex;
-  flex-direction: column;
+  align-items: stretch;
   width: 100%;
   height: 100%;
-  border-radius: 12px;
-  overflow: hidden;
-  background: #091424;
+  border-radius: 5px 9px 9px 5px;
+  background: linear-gradient(155deg, #4b301f 0%, #362013 54%, #22130b 100%);
+  border: 1px solid rgba(207, 161, 84, 0.52);
+  box-shadow:
+    0 7px 18px rgba(14, 8, 4, 0.56),
+    0 2px 5px rgba(14, 8, 4, 0.4),
+    1px 1px 0 rgba(244, 214, 152, 0.22) inset,
+    -2px 0 3px rgba(12, 6, 3, 0.45) inset;
   pointer-events: none;
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease;
 }
-#${FAB_ID} .qh-fab-stage {
+#${FAB_ID}:hover .qh-fab-book {
+  transform: translateY(-1px) scale(1.03);
+  box-shadow:
+    0 10px 22px rgba(14, 8, 4, 0.62),
+    0 0 0 1px rgba(236, 208, 139, 0.35),
+    1px 1px 0 rgba(255, 232, 178, 0.3) inset;
+}
+#${FAB_ID}:active:not(.is-dragging) .qh-fab-book {
+  transform: scale(0.96);
+  transition-duration: 70ms;
+}
+#${FAB_ID} .qh-fab-spine {
+  position: relative;
+  flex: 0 0 9px;
+  border-radius: 4px 0 0 4px;
+  background: linear-gradient(90deg, #1d1009 0%, #3a2316 55%, #1d1009 100%);
+  border-right: 1px solid rgba(207, 161, 84, 0.28);
+}
+#${FAB_ID} .qh-fab-spine::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 4px;
+  width: 0;
+  border-left: 1px dashed rgba(232, 198, 128, 0.52);
+}
+#${FAB_ID} .qh-fab-cover {
   position: relative;
   flex: 1 1 auto;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  padding: 0 4px;
+  gap: 2px;
+  padding: 4px 4px 4px 2px;
   background:
-    radial-gradient(115% 85% at 50% 0%, rgba(112, 178, 240, 0.25) 0%, rgba(112, 178, 240, 0) 68%),
-    linear-gradient(170deg, #18304d 0%, #0f1f36 58%, #081221 100%);
+    radial-gradient(110% 85% at 45% 22%, rgba(236, 208, 139, 0.14) 0%, rgba(236, 208, 139, 0) 68%),
+    repeating-linear-gradient(125deg, rgba(255, 240, 210, 0.022) 0 2px, transparent 2px 5px);
 }
-#${FAB_ID} .qh-fab-stage::before {
+#${FAB_ID} .qh-fab-cover::before,
+#${FAB_ID} .qh-fab-cover::after {
   content: "";
   position: absolute;
-  inset: 0 0 auto 0;
-  height: 44%;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0) 100%);
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid rgba(226, 185, 106, 0.72);
 }
-#${FAB_ID} .qh-fab-stage::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(
-    90% 90% at 50% 35%,
-    rgba(255, 232, 168, 0.22) 0%,
-    rgba(72, 206, 184, 0.12) 56%,
-    rgba(255, 255, 255, 0) 100%
+#${FAB_ID} .qh-fab-cover::before {
+  top: 2px;
+  border-top: 1.5px solid rgba(226, 185, 106, 0.72);
+  border-top-right-radius: 4px;
+}
+#${FAB_ID} .qh-fab-cover::after {
+  bottom: 2px;
+  border-bottom: 1.5px solid rgba(226, 185, 106, 0.72);
+  border-bottom-right-radius: 4px;
+}
+#${FAB_ID} .qh-fab-pages {
+  position: relative;
+  flex: 0 0 4px;
+  margin: 3px 1px 3px 0;
+  border-radius: 0 4px 4px 0;
+  background: repeating-linear-gradient(
+    90deg,
+    #efe3c8 0 1px,
+    #d5c098 1px 2px
   );
-  opacity: 0;
-  transition: opacity 180ms ease-out;
+  box-shadow: -1px 0 1px rgba(24, 13, 6, 0.45);
 }
-#${FAB_ID}:hover .qh-fab-stage::after {
-  opacity: 1;
-}
-#${FAB_ID} .qh-fab-emblem {
-  position: relative;
-  z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-#${FAB_ID}:hover .qh-fab-emblem {
-  transform: scale(1.04);
-}
-#${FAB_ID}:active:not(.is-dragging) .qh-fab-emblem {
-  transform: scale(0.95);
-  transition-duration: 70ms;
-}
-#${FAB_ID} .qh-fab-icon {
+#${FAB_ID} .qh-fab-clasp {
   display: block;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   flex-shrink: 0;
+  filter: drop-shadow(0 1px 2px rgba(10, 5, 2, 0.72));
 }
-#${FAB_ID} .qh-fab-label {
-  font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: 0.04em;
-  color: #ffe8ad;
-  text-shadow: 0 1px 2px rgba(4, 10, 20, 0.85);
-}
-#${FAB_ID} .qh-fab-bar {
-  position: relative;
-  flex: 0 0 11px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  border-top: 1px solid rgba(255, 218, 146, 0.38);
-  background: linear-gradient(90deg, #1b5c6e 0%, #2a7c82 48%, #c9861e 100%);
-}
-#${FAB_ID} .qh-fab-dot {
-  width: 3.5px;
-  height: 3.5px;
-  border-radius: 50%;
-  background: #fff3d1;
-  box-shadow: 0 0 0 1px rgba(255, 214, 128, 0.45);
-  flex-shrink: 0;
-}
-#${FAB_ID} .qh-fab-tag {
-  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  font-size: 6.8px;
-  font-weight: 800;
+#${FAB_ID} .qh-fab-title {
+  font-family: "PingFang SC", "Microsoft YaHei", "Songti SC", serif;
+  font-size: 9.5px;
+  font-weight: 700;
   line-height: 1;
   letter-spacing: 0.14em;
-  color: #fdf6e4;
   text-indent: 0.14em;
+  color: #f3d99c;
+  text-shadow: 0 1px 1px rgba(12, 6, 3, 0.9);
 }
-#${FAB_ID} .qh-fab-unread {
+#${FAB_ID} .qh-fab-ribbon {
+  position: absolute;
+  top: -5px;
+  right: 7px;
+  z-index: 2;
+  width: 11px;
+  height: 15px;
+  pointer-events: none;
+  transform-origin: bottom center;
+  transform: translateY(2px);
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), filter 220ms ease;
+}
+#${FAB_ID} .qh-fab-ribbon-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+#${FAB_ID} .qh-fab-ribbon-bead {
   position: absolute;
   top: -3px;
   right: -3px;
-  width: 10px;
-  height: 10px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  border: 1.5px solid #0b1626;
-  background: linear-gradient(135deg, #ff7a59 0%, #e02424 100%);
+  background: radial-gradient(circle at 35% 35%, #ffdf9a 0%, #e04632 58%, #8f1d14 100%);
+  border: 1px solid #2b170d;
   opacity: 0;
-  transform: scale(0.5);
-  pointer-events: none;
-  transition: opacity 180ms ease-out, transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform: scale(0.4);
+  transition: opacity 180ms ease, transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-#${FAB_ID} .qh-fab-unread::after {
-  content: "";
-  position: absolute;
-  inset: -2px;
-  border-radius: 50%;
-  border: 1.5px solid #ff7a59;
-  opacity: 0;
-  transform: scale(0.85);
+#${FAB_ID}.has-unread .qh-fab-ribbon {
+  transform: translateY(-4px) scale(1.06);
+  filter: drop-shadow(0 0 6px rgba(236, 170, 74, 0.85));
 }
-#${FAB_ID}.has-unread .qh-fab-unread {
+#${FAB_ID}.has-unread .qh-fab-ribbon-bead {
   opacity: 1;
   transform: scale(1);
 }
-#${FAB_ID}.has-unread:not(.is-paused):not(.is-hidden) .qh-fab-unread::after {
-  animation: qh-fab-unread-ring 2s cubic-bezier(0.2, 0.7, 0.3, 1) infinite;
+#${FAB_ID}.has-unread:not(.is-paused):not(.is-hidden) .qh-fab-ribbon {
+  animation: qh-fab-ribbon-glow 2.2s ease-in-out infinite;
 }
-#${FAB_ID}.has-unread:not(.is-paused):not(.is-hidden) .qh-fab-dot {
-  animation: qh-fab-dot-pulse 1.5s ease-in-out infinite;
+#${FAB_ID}.has-unread:not(.is-paused):not(.is-hidden) .qh-fab-ribbon-bead {
+  animation: qh-fab-bead-pulse 2.2s ease-in-out infinite;
 }
-@keyframes qh-fab-unread-ring {
-  0% { opacity: 0.85; transform: scale(0.9); }
-  70%, 100% { opacity: 0; transform: scale(2.1); }
+@keyframes qh-fab-ribbon-glow {
+  0%, 100% {
+    transform: translateY(-4px) scale(1.06);
+    filter: drop-shadow(0 0 5px rgba(236, 170, 74, 0.72));
+  }
+  50% {
+    transform: translateY(-6px) scale(1.1);
+    filter: drop-shadow(0 0 9px rgba(255, 198, 98, 0.96));
+  }
 }
-@keyframes qh-fab-dot-pulse {
+@keyframes qh-fab-bead-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.35; transform: scale(0.75); }
+  50% { opacity: 0.72; transform: scale(1.22); }
 }
 @media (prefers-reduced-motion: reduce) {
-  #${FAB_ID}, #${FAB_ID} .qh-fab-emblem, #${FAB_ID} .qh-fab-stage::after, #${FAB_ID} .qh-fab-unread {
+  #${FAB_ID},
+  #${FAB_ID} .qh-fab-book,
+  #${FAB_ID} .qh-fab-ribbon,
+  #${FAB_ID} .qh-fab-ribbon-bead {
     transition: none;
   }
-  #${FAB_ID}.has-unread .qh-fab-unread::after,
-  #${FAB_ID}.has-unread .qh-fab-dot {
+  #${FAB_ID}.has-unread .qh-fab-ribbon,
+  #${FAB_ID}.has-unread .qh-fab-ribbon-bead {
     animation: none;
   }
+}
+#${FAB_ID}.is-no-motion,
+#${FAB_ID}.is-no-motion .qh-fab-book,
+#${FAB_ID}.is-no-motion .qh-fab-ribbon,
+#${FAB_ID}.is-no-motion .qh-fab-ribbon-bead {
+  transition: none !important;
+}
+#${FAB_ID}.is-no-motion .qh-fab-ribbon,
+#${FAB_ID}.is-no-motion .qh-fab-ribbon-bead {
+  animation: none !important;
 }
 `;
 
 const FAB_INNER_HTML = `
-<span class="qh-fab-shell" aria-hidden="true">
-  <span class="qh-fab-stage">
-    <span class="qh-fab-emblem">
-      <svg class="qh-fab-icon" viewBox="0 0 24 24" width="20" height="20" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <linearGradient id="qh-fab-gold" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#fff4cc" />
-            <stop offset="48%" stop-color="#ffc757" />
-            <stop offset="100%" stop-color="#d98718" />
-          </linearGradient>
-          <linearGradient id="qh-fab-teal" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#8cf0df" />
-            <stop offset="100%" stop-color="#2fd19f" />
-          </linearGradient>
-        </defs>
-        <circle cx="12" cy="12" r="9.2" fill="none" stroke="url(#qh-fab-gold)" stroke-width="1.35" opacity="0.9" />
-        <circle cx="12" cy="12" r="6.4" fill="none" stroke="#6eb5ff" stroke-width="0.7" stroke-dasharray="2 2" opacity="0.55" />
-        <polygon points="12,3.2 14.3,10.2 12,12 9.7,10.2" fill="url(#qh-fab-gold)" />
-        <polygon points="12,20.8 14.3,13.8 12,12 9.7,13.8" fill="url(#qh-fab-teal)" opacity="0.92" />
-        <polygon points="3.6,12 10.2,10.3 12,12 10.2,13.7" fill="#9bc9ff" opacity="0.78" />
-        <polygon points="20.4,12 13.8,10.3 12,12 13.8,13.7" fill="#9bc9ff" opacity="0.78" />
-        <circle cx="12" cy="12" r="1.6" fill="#091424" stroke="#fff4cc" stroke-width="0.9" />
-      </svg>
-      <span class="qh-fab-label">任务</span>
-    </span>
-  </span>
-  <span class="qh-fab-bar">
-    <span class="qh-fab-dot"></span>
-    <span class="qh-fab-tag">QUEST</span>
-  </span>
+<span class="qh-fab-ribbon" aria-hidden="true">
+  <svg class="qh-fab-ribbon-svg" viewBox="0 0 12 16" width="11" height="15" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="qh-fab-rib-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#c94032" />
+        <stop offset="60%" stop-color="#a1291e" />
+        <stop offset="100%" stop-color="#761a12" />
+      </linearGradient>
+    </defs>
+    <path d="M1 1.5 C1 0.7 1.7 0.5 2.5 0.5 L9.5 0.5 C10.3 0.5 11 0.7 11 1.5 L11 15 L6 11.4 L1 15 Z"
+      fill="url(#qh-fab-rib-grad)" stroke="#ecd08b" stroke-width="0.9" />
+    <line x1="6" y1="1.5" x2="6" y2="9.8" stroke="rgba(246, 217, 149, 0.55)" stroke-width="0.7" />
+  </svg>
+  <span class="qh-fab-ribbon-bead"></span>
 </span>
-<span class="qh-fab-unread" aria-hidden="true"></span>
+<span class="qh-fab-book" aria-hidden="true">
+  <span class="qh-fab-spine"></span>
+  <span class="qh-fab-cover">
+    <svg class="qh-fab-clasp" viewBox="0 0 26 26" width="24" height="24" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="qh-fab-brass" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#fff0c2" />
+          <stop offset="48%" stop-color="#d7a44e" />
+          <stop offset="100%" stop-color="#8b5d21" />
+        </linearGradient>
+        <linearGradient id="qh-fab-teal" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#5ec2c6" />
+          <stop offset="100%" stop-color="#1d6b73" />
+        </linearGradient>
+      </defs>
+      <circle cx="13" cy="13" r="10.2" fill="rgba(26, 15, 9, 0.65)" stroke="url(#qh-fab-brass)" stroke-width="1.4" />
+      <circle cx="13" cy="13" r="7.2" fill="none" stroke="rgba(236, 208, 139, 0.45)" stroke-width="0.7" stroke-dasharray="1.8 1.8" />
+      <polygon points="13,3.6 15.2,11 13,13 10.8,11" fill="url(#qh-fab-brass)" />
+      <polygon points="13,22.4 15.2,15 13,13 10.8,15" fill="url(#qh-fab-teal)" />
+      <polygon points="4,13 11,11.1 13,13 11,14.9" fill="#e6c37d" opacity="0.82" />
+      <polygon points="22,13 15,11.1 13,13 15,14.9" fill="#e6c37d" opacity="0.82" />
+      <circle cx="13" cy="13" r="1.8" fill="#2c190f" stroke="#fff0c2" stroke-width="0.9" />
+    </svg>
+    <span class="qh-fab-title">任务</span>
+  </span>
+  <span class="qh-fab-pages"></span>
+</span>
 `;
 
 function clamp(n, min, max) {
@@ -275,7 +314,7 @@ function savePos(win, pos) {
 
 export function mountFab(doc, win, { onOpen } = {}) {
   if (!doc || !doc.body || !doc.head) {
-    return { setHidden() {}, setUnread() {}, destroy() {} };
+    return { setHidden() {}, setUnread() {}, setMotionEnabled() {}, destroy() {} };
   }
 
   doc.getElementById(FAB_ID)?.remove();
@@ -289,8 +328,8 @@ export function mountFab(doc, win, { onOpen } = {}) {
   const btn = doc.createElement('button');
   btn.id = FAB_ID;
   btn.type = 'button';
-  btn.setAttribute('aria-label', '打开任务情报板');
-  btn.setAttribute('title', '任务情报板（点击打开，按住可拖动）');
+  btn.setAttribute('aria-label', '打开冒险手账与任务情报板');
+  btn.setAttribute('title', '冒险手账 · 任务情报（点击打开，按住可拖动）');
   btn.innerHTML = FAB_INNER_HTML;
   doc.body.append(btn);
 
@@ -299,8 +338,15 @@ export function mountFab(doc, win, { onOpen } = {}) {
   let curY = 0;
 
   const bounds = () => {
-    const vw = Math.max(FAB_W + EDGE_MARGIN * 2, win.innerWidth || doc.documentElement.clientWidth || 360);
-    const vh = Math.max(FAB_H + TOP_SAFE + BOTTOM_SAFE, win.innerHeight || doc.documentElement.clientHeight || 640);
+    const vv = win.visualViewport;
+    const rawW = (vv && Number.isFinite(vv.width) && vv.width > 0)
+      ? vv.width
+      : (win.innerWidth || doc.documentElement.clientWidth || 360);
+    const rawH = (vv && Number.isFinite(vv.height) && vv.height > 0)
+      ? vv.height
+      : (win.innerHeight || doc.documentElement.clientHeight || 640);
+    const vw = Math.max(FAB_W + EDGE_MARGIN * 2, rawW);
+    const vh = Math.max(FAB_H + TOP_SAFE + BOTTOM_SAFE, rawH);
     const minY = Math.min(TOP_SAFE, Math.max(EDGE_MARGIN, vh - FAB_H - EDGE_MARGIN));
     const maxY = Math.max(minY, vh - FAB_H - BOTTOM_SAFE);
     return { vw, vh, minX: EDGE_MARGIN, maxX: Math.max(EDGE_MARGIN, vw - FAB_W - EDGE_MARGIN), minY, maxY };
@@ -428,6 +474,9 @@ export function mountFab(doc, win, { onOpen } = {}) {
     },
     setUnread(unread) {
       btn.classList.toggle('has-unread', !!unread);
+    },
+    setMotionEnabled(enabled) {
+      btn.classList.toggle('is-no-motion', !enabled);
     },
     destroy() {
       btn.removeEventListener('pointerdown', onPointerDown);

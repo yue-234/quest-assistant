@@ -5,12 +5,7 @@
 import { PANEL_CSS, PANEL_JS } from 'quest-helper:panel';
 import { BOARD_KEY, CORE_NAME, SPEAKER, effectiveChatCount, normalizeQuestFocus, readState } from './state.js';
 import {
-  hasClosedQuestLeftovers,
-  hasExpiredAftermath,
-  hasExpiredDirectorLeads,
-  hasExpiredOnceFocus,
-  needsQuestAcceptedRecord,
-  questRescanDone,
+  hasPendingMaintenance,
   maintainQuestBoard,
 } from './actions.js';
 import {
@@ -26,6 +21,7 @@ import * as host from './host.js';
 import { mountFab } from './fab.js';
 import { mountWand } from './wand.js';
 import { ENTRY_MODES, normalizeEntryMode, readEntryMode, writeEntryMode } from './entryMode.js';
+import { readMotionEnabled } from './motionPref.js';
 import {
   DEFAULT_SCRIPT_REF,
   fetchScriptByRef,
@@ -35,6 +31,7 @@ import {
 } from './scriptRef.js';
 
 const QUEST_SEEN_KEY = 'quest_helper_seen_progress_v1';
+const DIARY_SEEN_KEY = 'quest_helper_seen_diary_v1';
 const FRAME_ID = 'quest-helper-studio';
 const FRAME_STYLE =
   'position:fixed;inset:0;width:100%;height:100vh;height:100dvh;border:0;margin:0;padding:0;' +
@@ -90,6 +87,7 @@ export function start() {
   let panelOpened = false;
   let lastUnread = false;
   let entryMode = readEntryMode(host.readStorage);
+  let motionEnabled = readMotionEnabled(host.readStorage);
   let entryControl = null;
 
   const toast = (message, kind = 'error') => {
@@ -218,6 +216,11 @@ export function start() {
       if (!panel) throw new Error('任务情报面板未初始化');
       panel.onClose = hide;
       panel.onEntryModeChange = (nextMode) => mountActiveEntry(nextMode);
+      panel.onMotionChange = (enabled) => {
+        motionEnabled = !!enabled;
+        entryControl?.setMotionEnabled?.(motionEnabled);
+      };
+      panel.onUnreadSync = () => syncEntryUnread();
       panel.getScriptMeta = getScriptMeta;
       panel.onScriptRefChange = async (nextRef) => {
         const loader = win.__QuestHelperRemoteLoader;
@@ -313,12 +316,18 @@ export function start() {
       : mountFab(doc, win, { onOpen: () => void open() });
     entryControl.setHidden(panelOpened);
     entryControl.setUnread(lastUnread);
+    entryControl.setMotionEnabled?.(motionEnabled);
     return entryMode;
   };
 
   const seenProgressKey = () => {
     const cid = host.readChatId();
     return cid ? `${QUEST_SEEN_KEY}:${cid}` : QUEST_SEEN_KEY;
+  };
+
+  const seenDiaryKey = () => {
+    const cid = host.readChatId();
+    return cid ? `${DIARY_SEEN_KEY}:${cid}` : DIARY_SEEN_KEY;
   };
 
   const syncEntryUnread = (statOverride) => {
@@ -337,9 +346,15 @@ export function start() {
         chat,
         nullCore: host.isNullCore(),
       });
-      const sig = st && st.questBoard ? st.questBoard.progressSignature : '';
+      const qb = st && st.questBoard ? st.questBoard : null;
+      const sig = qb ? (qb.progressSignature || '') : '';
       const seen = host.readStorage(seenProgressKey());
-      lastUnread = !!(sig && sig !== seen);
+      const progressUnread = !!(sig && sig !== seen);
+      const receiptUnread = !!(qb && (qb.unreadReceiptCount || 0) > 0);
+      const diarySig = qb ? (qb.diarySignature || '') : '';
+      const seenDiary = host.readStorage(seenDiaryKey());
+      const diaryUnread = !!(diarySig && diarySig !== seenDiary);
+      lastUnread = progressUnread || receiptUnread || diaryUnread;
       entryControl?.setUnread(lastUnread);
     } catch {
       lastUnread = false;
@@ -458,23 +473,11 @@ export function start() {
       return;
     }
 
-    const needClearRescan = questRescanDone(stat, curFloor, curCount, {
-      chat: chatSnapshot,
-    });
-    const needSweep = !!board['列表'] && hasClosedQuestLeftovers(stat, { chat: chatSnapshot });
-    const needRecord = !!board['列表'] && needsQuestAcceptedRecord(stat);
-    const needSweepExpired = hasExpiredAftermath(stat);
-    const hasPendingRescan = !!(board['待重扫'] && typeof board['待重扫'] === 'object' && Object.keys(board['待重扫']).length);
-    const canCheckOnceFocus = !hasPendingRescan || needClearRescan;
-    const needClearOnceFocus = canCheckOnceFocus && hasExpiredOnceFocus(stat, {
+    if (!hasPendingMaintenance(stat, {
       floor: curFloor,
       chatCount: curCount,
       chat: chatSnapshot,
-      rescanCleared: needClearRescan,
-    });
-    const needSweepLeads = hasExpiredDirectorLeads(stat, { chatCount: curCount, chat: chatSnapshot });
-
-    if (!needClearRescan && !needSweep && !needRecord && !needSweepExpired && !needClearOnceFocus && !needSweepLeads) {
+    })) {
       refreshOpenPanel();
       return;
     }
@@ -554,19 +557,11 @@ export function start() {
     const chat = readHostChat();
     const curFloor = readHostFloor();
     const curCount = effectiveChatCount(chat);
-    const hasPendingRescan = !!(b['待重扫'] && typeof b['待重扫'] === 'object' && Object.keys(b['待重扫']).length);
-    const clearRescan = questRescanDone(stat, curFloor, curCount, { chat });
-    return clearRescan
-      || (!!b['列表'] && hasClosedQuestLeftovers(stat, { chat }))
-      || (!!b['列表'] && needsQuestAcceptedRecord(stat))
-      || hasExpiredAftermath(stat)
-      || ((!hasPendingRescan || clearRescan) && hasExpiredOnceFocus(stat, {
-        floor: curFloor,
-        chatCount: curCount,
-        chat,
-        rescanCleared: clearRescan,
-      }))
-      || hasExpiredDirectorLeads(stat, { chatCount: curCount, chat });
+    return hasPendingMaintenance(stat, {
+      floor: curFloor,
+      chatCount: curCount,
+      chat,
+    });
   };
   const onPassiveRefresh = (clearSettle = false) => {
     clearTimeout(bgTimer);

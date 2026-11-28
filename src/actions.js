@@ -71,6 +71,12 @@ export function ignoreQuest(stat, questId, questTitle = '') {
   const removedKeys = new Set();
   if (id) removedKeys.add(id);
 
+  const addKeyAlias = (val) => {
+    const raw = text(val);
+    const trimmed = raw.trim();
+    if (raw) removedKeys.add(raw);
+    if (trimmed) removedKeys.add(trimmed);
+  };
   if (Array.isArray(board['列表'])) {
     board['列表'] = board['列表'].filter((item, idx) => {
       const r = obj(item);
@@ -79,7 +85,11 @@ export function ignoreQuest(stat, questId, questTitle = '') {
       const hit = (id && itemId === id) || (title && itemTitle === title);
       if (hit) {
         if (itemTitle) removedTitle = itemTitle;
-        if (itemId) removedKeys.add(itemId);
+        addKeyAlias(itemId);
+        addKeyAlias(r['id']);
+        addKeyAlias(r['编号']);
+        addKeyAlias(itemTitle);
+        addKeyAlias(stripQuestBackendTags(itemTitle));
       }
       return !hit;
     });
@@ -87,15 +97,20 @@ export function ignoreQuest(stat, questId, questTitle = '') {
     for (const [k, v] of Object.entries(board['列表'])) {
       const r = obj(v);
       const itemTitle = text(r['标题']).trim();
-      if ((id && (k === id || text(k).trim() === id)) || (title && itemTitle === title)) {
+      const innerId = text(r['id'] || r['编号']).trim();
+      if ((id && (k === id || text(k).trim() === id || innerId === id)) || (title && itemTitle === title)) {
         if (itemTitle) removedTitle = itemTitle;
-        removedKeys.add(k);
-        if (text(k).trim()) removedKeys.add(text(k).trim());
+        addKeyAlias(k);
+        addKeyAlias(r['id']);
+        addKeyAlias(r['编号']);
+        addKeyAlias(itemTitle);
+        addKeyAlias(stripQuestBackendTags(itemTitle));
         delete board['列表'][k];
       }
     }
   }
-  if (removedTitle) removedKeys.add(removedTitle);
+  addKeyAlias(removedTitle);
+  addKeyAlias(stripQuestBackendTags(removedTitle));
 
   if (Array.isArray(board['意向'])) {
     board['意向'] = board['意向'].filter((x) => {
@@ -113,6 +128,11 @@ export function ignoreQuest(stat, questId, questTitle = '') {
       }
     }
   }
+  pruneRaceStageKeys(
+    board,
+    removedKeys,
+    board['列表'] && typeof board['列表'] === 'object' ? activeBoardRewardKeySet(board) : null,
+  );
   if (Array.isArray(board['曾接取'])) {
     const removedNorm = stripTaskTitle(removedTitle);
     const nextEver = board['曾接取'].filter((x) => {
@@ -603,10 +623,14 @@ export function clearQuestRescan(stat) {
 
 function formalEntriesOf(stat) {
   return Object.entries(obj(obj(stat)['任务列表']))
-    .map(([k, v]) => ({
-      key: text(k).trim(),
-      status: text(obj(v)['状态']).trim(),
-    }))
+    .map(([k, v]) => {
+      const f = obj(v);
+      return {
+        key: text(k).trim(),
+        status: text(f['状态']).trim(),
+        progress: text(f['进展']).trim(),
+      };
+    })
     .filter((t) => !!t.key);
 }
 
@@ -652,7 +676,7 @@ function isQuestEntryClosed(stat, entry, idx, claimedMap, everSet, everNormSet, 
   if (wasInHistoryFormalTasks(historyStats, id, title)) return true;
 
   const rawRewards = normalizeQuestRewards(r['预期收益']);
-  const claimedInfo = parseClaimedSet(mergeRewardMapEntries(claimedMap, id, title));
+  const claimedInfo = parseClaimedSet(mergeRewardMapEntries(claimedMap, id, title, rawKey));
   return rawRewards.some((rawRw, rwIdx) => {
     const slot = rwIdx + 1;
     const cleanText = cleanRewardText(rawRw) || rawRw;
@@ -738,25 +762,49 @@ export function recordAcceptedQuests(stat) {
 
 function activeBoardRewardKeySet(board) {
   const keys = new Set();
+  const addKey = (val) => {
+    const raw = text(val);
+    const trimmed = raw.trim();
+    if (raw) keys.add(raw);
+    if (trimmed) keys.add(trimmed);
+  };
   const remaining = boardEntriesOf(board);
   for (const e of remaining) {
-    if (e.id) keys.add(e.id);
-    if (e.title) keys.add(e.title);
+    addKey(e.id);
+    addKey(e.rawKey);
+    addKey(e.raw['id']);
+    addKey(e.raw['编号']);
+    addKey(e.title);
+    addKey(stripQuestBackendTags(e.title));
   }
   if (board['列表'] && typeof board['列表'] === 'object' && !Array.isArray(board['列表'])) {
     for (const k of Object.keys(board['列表'])) {
-      keys.add(k);
-      const trimmed = text(k).trim();
-      if (trimmed) keys.add(trimmed);
+      addKey(k);
     }
   }
   return keys;
 }
 
+function pruneRaceStageKeys(board, removedKeys = null, activeKeys = null) {
+  const stageMap = board['竞速暂存'];
+  if (!stageMap || typeof stageMap !== 'object' || Array.isArray(stageMap)) return;
+  for (const mk of Object.keys(stageMap)) {
+    const trimmed = text(mk).trim();
+    const hitRemoved = removedKeys && (removedKeys.has(mk) || (trimmed && removedKeys.has(trimmed)));
+    const isOrphan = activeKeys && !activeKeys.has(mk) && (!trimmed || !activeKeys.has(trimmed));
+    if (hitRemoved || isOrphan) {
+      delete stageMap[mk];
+    }
+  }
+  if (Object.keys(stageMap).length === 0) {
+    delete board['竞速暂存'];
+  }
+}
+
 function hasOrphanRewardMapKeys(board) {
   if (!board['列表'] || typeof board['列表'] !== 'object') return false;
   const activeKeys = activeBoardRewardKeySet(board);
-  for (const mapField of ['已兑现', '已失效']) {
+  for (const mapField of ['已兑现', '已失效', '竞速暂存']) {
     const map = board[mapField];
     if (!map || typeof map !== 'object' || Array.isArray(map)) continue;
     for (const k of Object.keys(map)) {
@@ -990,7 +1038,435 @@ export function sweepExpiredDirectorLeads(stat, current = {}) {
   return { stat: next, done: '已清理过期导演状态引信' };
 }
 
-/** 静默清理任务板里已完结的残留条目（含其意向、已兑现、已失效与曾接取键，并提取隐藏导演引信）。 */
+const MAX_RECEIPTS = 10;
+const ABANDONED_STATUS_RE = /(?:已放弃|放弃|已取消|取消)/;
+const FAILED_STATUS_RE = /(?:已失败|失败)/;
+const EXPLICIT_FAIL_REASON_RE = /(?:彻底失败|任务失败|失利)/;
+const RECEIPT_REASON_TRIM_RE = /^[\s，,；;。、：:\-—|｜]+|[\s，,；;、：:\-—|｜]+$/g;
+
+function extractLastProgressClause(rawText) {
+  const s = text(rawText).trim();
+  if (!s) return '';
+  const parts = s
+    .split(/[\r\n;；]+|(?=\[\s*\d{1,6}[^\]\r\n]{1,20}\])/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const last = parts.length ? parts[parts.length - 1] : s;
+  const cleaned = last
+    .replace(/^\[\s*[^\]\r\n]{1,24}\]\s*/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(RECEIPT_REASON_TRIM_RE, '')
+    .trim();
+  return cleaned.length > 80 ? cleaned.slice(0, 80).trim() : cleaned;
+}
+
+function findRaceStageEntry(board, id, title, rawKey = '', entry = null) {
+  const stageMap = board && typeof board === 'object' ? board['竞速暂存'] : null;
+  if (!stageMap || typeof stageMap !== 'object' || Array.isArray(stageMap)) return null;
+  const r = obj(entry);
+  const cleanTitle = stripQuestBackendTags(title);
+  const candidates = [id, rawKey, r['id'], r['编号'], title, cleanTitle];
+  const tried = new Set();
+  for (const cand of candidates) {
+    for (const key of [text(cand), text(cand).trim()]) {
+      if (!key || tried.has(key)) continue;
+      tried.add(key);
+      if (Object.prototype.hasOwnProperty.call(stageMap, key)) {
+        const val = stageMap[key];
+        if (val && typeof val === 'object' && !Array.isArray(val)) return val;
+      }
+    }
+  }
+  return null;
+}
+
+function buildReceiptRecord({
+  id,
+  rawKey = '',
+  entry,
+  stat,
+  board,
+  prevBoard = null,
+  formal = null,
+  prevFormal = null,
+}) {
+  const r = obj(entry);
+  const rawTitle = text(r['标题']).trim();
+  const cleanTitle = stripQuestBackendTags(rawTitle) || rawTitle;
+  if (!cleanTitle) return null;
+  const itemId = text(id).trim() || cleanTitle;
+  const category = normalizeQuestCategory(r['类别']);
+  const rankMatch = text(r['等级']).trim().toUpperCase().match(/[SABCD]/);
+  const rank = rankMatch ? rankMatch[0] : 'C';
+
+  const curClaimed = obj(board['已兑现']);
+  const curLost = obj(board['已失效']);
+  const prevClaimed = prevBoard ? obj(prevBoard['已兑现']) : {};
+  const prevLost = prevBoard ? obj(prevBoard['已失效']) : {};
+  const claimedInfo = parseClaimedSet([
+    ...mergeRewardMapEntries(prevClaimed, itemId, rawTitle, rawKey),
+    ...mergeRewardMapEntries(curClaimed, itemId, rawTitle, rawKey),
+  ]);
+  const lostInfo = parseLostSet([
+    ...mergeRewardMapEntries(prevLost, itemId, rawTitle, rawKey),
+    ...mergeRewardMapEntries(curLost, itemId, rawTitle, rawKey),
+  ]);
+  const rawRewards = normalizeQuestRewards(r['预期收益']);
+  const rewardsSummary = rawRewards.map((rawRw, rwIdx) => {
+    const slot = rwIdx + 1;
+    const cleanText = cleanRewardText(rawRw) || rawRw;
+    const compact = cleanText.replace(/\s+/g, '');
+    const claimed = CLAIMED_MARK_RE.test(rawRw)
+      || claimedInfo.slots.has(slot)
+      || claimedInfo.texts.has(compact);
+    const lost = !claimed && (
+      LOST_MARK_RE.test(rawRw)
+      || lostInfo.slots.has(slot)
+      || lostInfo.texts.has(compact)
+    );
+    return {
+      栏号: slot,
+      文本: cleanText,
+      状态: claimed ? 'claimed' : (lost ? 'lost' : 'open'),
+    };
+  });
+
+  const claimedCount = rewardsSummary.filter((x) => x['状态'] === 'claimed').length;
+  const lostCount = rewardsSummary.filter((x) => x['状态'] === 'lost').length;
+  const raceStage = findRaceStageEntry(board, itemId, rawTitle, rawKey, r)
+    || (prevBoard ? findRaceStageEntry(prevBoard, itemId, rawTitle, rawKey, r) : null);
+
+  const stageRumor = raceStage
+    ? (Array.isArray(raceStage['待揭晓风声']) ? raceStage['待揭晓风声'][raceStage['待揭晓风声'].length - 1] : raceStage['待揭晓风声'])
+    : '';
+  const reason = extractLastProgressClause(formal?.progress)
+    || extractLastProgressClause(prevFormal?.progress)
+    || extractLastProgressClause(r['进展'] || r['动态'] || r['最新进展'])
+    || extractLastProgressClause(stageRumor);
+
+  const statusText = text(formal?.status || prevFormal?.status || '').trim();
+  let outcomeLabel = '已完成';
+  if (ABANDONED_STATUS_RE.test(statusText)) {
+    outcomeLabel = '已放弃';
+  } else if (FAILED_STATUS_RE.test(statusText)) {
+    outcomeLabel = '已失败';
+  } else if (raceStage && raceStage['待失败结案'] === true) {
+    outcomeLabel = '已失败';
+  } else if (claimedCount === 0 && lostCount > 0) {
+    outcomeLabel = '已失败';
+  } else if (claimedCount === 0 && EXPLICIT_FAIL_REASON_RE.test(reason)) {
+    outcomeLabel = '已失败';
+  } else if (lostCount > 0) {
+    outcomeLabel = '折损结案';
+  }
+
+  const closedDay = worldDay(stat) || normalizeDay(board['更新日']) || '';
+  return {
+    id: itemId,
+    标题: cleanTitle,
+    类别: category,
+    等级: rank,
+    终局: outcomeLabel,
+    原因: reason,
+    结案日: closedDay,
+    收益结算: rewardsSummary,
+    已阅: false,
+  };
+}
+
+function receiptIdOf(item, idx) {
+  const r = obj(item);
+  return text(r['id'] ?? r['编号'] ?? r.id ?? '').trim() || `rcpt${idx + 1}`;
+}
+
+function appendReceipts(board, records) {
+  if (!Array.isArray(records) || !records.length) return false;
+  const existing = Array.isArray(board['待阅回执'])
+    ? board['待阅回执'].filter((x) => x && typeof x === 'object' && !Array.isArray(x)).map((x) => ({ ...x }))
+    : [];
+  const seenIds = new Set(existing.map((r, idx) => receiptIdOf(r, idx)).filter(Boolean));
+  const seenNorms = new Set(
+    existing
+      .map((r) => stripTaskTitle(stripQuestBackendTags(text(r['标题'] ?? r.title).trim())))
+      .filter(Boolean),
+  );
+  let added = false;
+  for (const rec of records) {
+    if (!rec) continue;
+    const rid = text(rec.id).trim();
+    const rNorm = stripTaskTitle(rec['标题']);
+    if ((rid && seenIds.has(rid)) || (rNorm && seenNorms.has(rNorm))) continue;
+    existing.push(rec);
+    if (rid) seenIds.add(rid);
+    if (rNorm) seenNorms.add(rNorm);
+    added = true;
+  }
+  if (!added) return false;
+  board['待阅回执'] = existing.slice(-MAX_RECEIPTS);
+  return true;
+}
+
+function hasBoardObject(stat) {
+  const ev = stat && typeof stat === 'object' ? stat['事件'] : null;
+  return !!(
+    ev && typeof ev === 'object' && !Array.isArray(ev)
+    && Object.prototype.hasOwnProperty.call(ev, BOARD_KEY)
+    && ev[BOARD_KEY] && typeof ev[BOARD_KEY] === 'object' && !Array.isArray(ev[BOARD_KEY])
+  );
+}
+
+function statBoardSignature(stat) {
+  return JSON.stringify([boardNode(stat), obj(obj(stat)['任务列表'])]);
+}
+
+function findImmediatePrevStat(stat, current = {}) {
+  const historyStats = Array.isArray(current.historyStats)
+    ? current.historyStats
+    : extractHistoryStats(current.chat || current.messages);
+  if (!historyStats.length) return null;
+  let curSig = null;
+  for (const hs of historyStats) {
+    if (!hs || typeof hs !== 'object') continue;
+    if (hs === stat) continue;
+    if (curSig === null) curSig = statBoardSignature(stat);
+    if (statBoardSignature(hs) === curSig) continue;
+    return hs;
+  }
+  return null;
+}
+
+function findAiRemovedClosedEntries(stat, current = {}) {
+  if (!hasBoardObject(stat)) return [];
+  const board = boardNode(stat);
+  const prevStat = findImmediatePrevStat(stat, current);
+  if (!prevStat) return [];
+  const prevBoard = boardNode(prevStat);
+  const prevEntries = boardEntriesOf(prevBoard);
+  if (!prevEntries.length) return [];
+
+  const curEntries = boardEntriesOf(board);
+  const curIdSet = new Set();
+  const curTitleSet = new Set();
+  const curNormSet = new Set();
+  for (const e of curEntries) {
+    if (e.id) curIdSet.add(e.id);
+    if (e.rawKey) curIdSet.add(e.rawKey);
+    if (e.title) {
+      curTitleSet.add(e.title);
+      const n = stripTaskTitle(e.title);
+      if (n) curNormSet.add(n);
+    }
+  }
+
+  const ignoredList = Array.isArray(board['忽略'])
+    ? board['忽略'].map((x) => text(x).trim()).filter(Boolean)
+    : [];
+  const ignoredSet = new Set(ignoredList);
+  const ignoredNormSet = new Set(ignoredList.map(stripTaskTitle).filter(Boolean));
+
+  // 包含 已收起: true 的同楼层墓碑，防止手动收起后在同楼层被重新捕获
+  const existingReceipts = Array.isArray(board['待阅回执']) ? board['待阅回执'] : [];
+  const receiptIdSet = new Set(existingReceipts.map((r, idx) => receiptIdOf(r, idx)).filter(Boolean));
+  const receiptNormSet = new Set(
+    existingReceipts
+      .map((r) => stripTaskTitle(stripQuestBackendTags(text(obj(r)['标题'] ?? obj(r).title).trim())))
+      .filter(Boolean),
+  );
+
+  const curFormalList = formalEntriesOf(stat);
+  const prevFormalList = formalEntriesOf(prevStat);
+  const { set: prevEverSet, normSet: prevEverNormSet } = everSetsOf(prevBoard);
+  const prevClaimedMap = obj(prevBoard['已兑现']);
+  const prevLostMap = obj(prevBoard['已失效']);
+  const curClaimedMap = obj(board['已兑现']);
+  const curLostMap = obj(board['已失效']);
+
+  const matched = [];
+  for (const e of prevEntries) {
+    if (!e.title) continue;
+    const norm = stripTaskTitle(e.title);
+    if (
+      (e.id && curIdSet.has(e.id))
+      || (e.rawKey && curIdSet.has(e.rawKey))
+      || curTitleSet.has(e.title)
+      || (norm && curNormSet.has(norm))
+    ) {
+      continue;
+    }
+    if (
+      (e.id && ignoredSet.has(e.id))
+      || ignoredSet.has(e.title)
+      || (norm && ignoredNormSet.has(norm))
+    ) {
+      continue;
+    }
+    if ((e.id && receiptIdSet.has(e.id)) || (norm && receiptNormSet.has(norm))) {
+      continue;
+    }
+
+    const curFormal = matchFormalTask(curFormalList, e.title);
+    // 仍在当前正式任务列表且处于进行中：并非结案，不捕获
+    if (curFormal && !CLOSED_TASK_RE.test(curFormal.status)) continue;
+
+    const prevFormal = matchFormalTask(prevFormalList, e.title);
+    const closedInCurFormal = !!(curFormal && CLOSED_TASK_RE.test(curFormal.status));
+    const wasInPrevFormal = !!prevFormal;
+    const wasEverAccepted = prevEverSet.has(e.id)
+      || prevEverSet.has(e.title)
+      || (!!e.rawKey && prevEverSet.has(e.rawKey))
+      || (!!norm && prevEverNormSet.has(norm));
+    const hasRewardHistory = mergeRewardMapEntries(prevClaimedMap, e.id, e.title, e.rawKey).length > 0
+      || mergeRewardMapEntries(prevLostMap, e.id, e.title, e.rawKey).length > 0
+      || mergeRewardMapEntries(curClaimedMap, e.id, e.title, e.rawKey).length > 0
+      || mergeRewardMapEntries(curLostMap, e.id, e.title, e.rawKey).length > 0
+      || normalizeQuestRewards(e.raw['预期收益']).some((rw) => CLAIMED_MARK_RE.test(rw) || LOST_MARK_RE.test(rw));
+
+    if (!closedInCurFormal && !wasInPrevFormal && !wasEverAccepted && !hasRewardHistory) {
+      continue;
+    }
+    matched.push({
+      entry: e.raw,
+      id: e.id,
+      rawKey: e.rawKey,
+      formal: curFormal,
+      prevFormal,
+      prevBoard,
+    });
+  }
+  return matched;
+}
+
+/** 途径 B 检测：上一楼层板上已接取或结案的任务，本轮是否被 AI 直接从列表移除且尚未记入待阅回执。 */
+export function hasAiRemovedClosedEntries(stat, { chat, historyStats } = {}) {
+  return findAiRemovedClosedEntries(stat, { chat, historyStats }).length > 0;
+}
+
+/** 途径 B 捕获：对比紧邻上一楼层快照，为本轮被 AI 直接移出列表的结案任务补写待阅回执。 */
+export function captureAiRemovedReceipts(stat, { chat, historyStats, chatCount } = {}) {
+  const candidates = findAiRemovedClosedEntries(stat, { chat, historyStats, chatCount });
+  if (!candidates.length) return { skip: true };
+  const next = draft(stat);
+  const board = ensureBoard(next);
+  const records = candidates
+    .map((c) => buildReceiptRecord({
+      id: c.id,
+      rawKey: c.rawKey,
+      entry: c.entry,
+      stat,
+      board,
+      prevBoard: c.prevBoard,
+      formal: c.formal,
+      prevFormal: c.prevFormal,
+    }))
+    .filter(Boolean);
+  if (!appendReceipts(board, records)) return { skip: true };
+  return { stat: next, done: '已捕获结案任务回执' };
+}
+
+/** 将待阅回执中所有未阅项标记为已阅并记录当前有效消息数；无未阅项时返回 { skip: true }。 */
+export function markReceiptsRead(stat, { chat, chatCount } = {}) {
+  const curBoard = boardNode(stat);
+  if (!Array.isArray(curBoard['待阅回执']) || !curBoard['待阅回执'].length) {
+    return { skip: true };
+  }
+  const hasUnread = curBoard['待阅回执'].some(
+    (r) => r && typeof r === 'object' && !Array.isArray(r) && !(r['已收起'] ?? r.dismissed) && !(r['已阅'] ?? r.read),
+  );
+  if (!hasUnread) return { skip: true };
+
+  const next = draft(stat);
+  const board = ensureBoard(next);
+  const eff = effectiveChatCount(chat, chatCount);
+  const countStr = eff !== undefined && eff !== null && Number.isFinite(Number(eff)) ? String(eff) : '';
+  board['待阅回执'] = board['待阅回执'].map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    if ((item['已收起'] ?? item.dismissed) || (item['已阅'] ?? item.read)) return item;
+    const updated = { ...item, 已阅: true };
+    if (countStr) updated['已阅消息数'] = countStr;
+    return updated;
+  });
+  return { stat: next, done: '已将结案回执标记为已阅' };
+}
+
+/** 手动收起单条或全部待阅回执：同楼层置 已收起 墓碑防止途径 B 重复捕获，下一轮 AI 回复由 sweepExpiredReceipts 物理移除。 */
+export function dismissReceipt(stat, receiptId = '', { chat, chatCount } = {}) {
+  const targetId = text(receiptId).trim();
+  const next = draft(stat);
+  const board = ensureBoard(next);
+  if (!Array.isArray(board['待阅回执']) || !board['待阅回执'].length) {
+    delete board['待阅回执'];
+    return { stat: next, done: '已收起结案回执' };
+  }
+  const eff = effectiveChatCount(chat, chatCount);
+  const curCount = eff !== undefined && eff !== null && Number.isFinite(Number(eff)) ? Number(eff) : null;
+  const countStr = curCount !== null ? String(curCount) : '';
+
+  board['待阅回执'] = board['待阅回执'].map((item, idx) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    if (item['已收起'] === true || item.dismissed === true) return item;
+    const itemId = receiptIdOf(item, idx);
+    if (targetId && itemId !== targetId) return item;
+    const existingCount = text(item['已阅消息数'] ?? item.readMsgCount).trim();
+    return {
+      ...item,
+      已收起: true,
+      已阅: true,
+      已阅消息数: countStr || existingCount,
+    };
+  });
+  return { stat: next, done: targetId ? '已收起该条结案回执' : '已清空全部结案回执' };
+}
+
+function isReceiptExpired(receipt, curCount, isAssistantTail) {
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) return true;
+  const isDismissed = receipt['已收起'] === true || receipt.dismissed === true;
+  const isRead = isDismissed || Boolean(receipt['已阅'] ?? receipt.read);
+  if (!isRead) return false;
+  if (curCount === null || !isAssistantTail) return false;
+  const rawReadCount = receipt['已阅消息数'] ?? receipt.readMsgCount;
+  if (rawReadCount === undefined || rawReadCount === null || rawReadCount === '') return false;
+  const readCount = Number(rawReadCount);
+  return Number.isFinite(readCount) && curCount > readCount;
+}
+
+/** 是否存在已阅或已收起且已推进至下一轮 AI 回复的待清理回执（或空壳/畸形待阅回执节点）。 */
+export function hasExpiredReceipts(stat, { chat, chatCount, lastIsAssistant } = {}) {
+  const board = boardNode(stat);
+  if (!Object.prototype.hasOwnProperty.call(board, '待阅回执')) return false;
+  const list = board['待阅回执'];
+  if (!Array.isArray(list) || list.length === 0) return true;
+  const eff = effectiveChatCount(chat, chatCount);
+  const curCount = eff !== undefined && eff !== null && Number.isFinite(Number(eff)) ? Number(eff) : null;
+  const isAssistantTail = typeof lastIsAssistant === 'boolean'
+    ? lastIsAssistant
+    : lastNonSystemIsAssistant(chat) === true;
+  return list.some((r) => isReceiptExpired(r, curCount, isAssistantTail));
+}
+
+/** 静默清理已阅或已收起且已推进至下一轮 AI 回复的结案回执；清空时移除 待阅回执 键。 */
+export function sweepExpiredReceipts(stat, { chat, chatCount, lastIsAssistant } = {}) {
+  const next = draft(stat);
+  const board = ensureBoard(next);
+  if (!Object.prototype.hasOwnProperty.call(board, '待阅回执')) {
+    return { stat: next, done: '无需清理结案回执' };
+  }
+  const list = board['待阅回执'];
+  if (!Array.isArray(list) || list.length === 0) {
+    delete board['待阅回执'];
+    return { stat: next, done: '已清理空结案回执节点' };
+  }
+  const eff = effectiveChatCount(chat, chatCount);
+  const curCount = eff !== undefined && eff !== null && Number.isFinite(Number(eff)) ? Number(eff) : null;
+  const isAssistantTail = typeof lastIsAssistant === 'boolean'
+    ? lastIsAssistant
+    : lastNonSystemIsAssistant(chat) === true;
+  const kept = list.filter((r) => !isReceiptExpired(r, curCount, isAssistantTail));
+  if (kept.length) board['待阅回执'] = kept;
+  else delete board['待阅回执'];
+  return { stat: next, done: '已清理已阅结案回执' };
+}
+
+/** 静默清理任务板里已完结的残留条目（含其意向、已兑现、已失效、竞速暂存与曾接取键，并拍照留存待阅回执与提取隐藏导演引信）。 */
 export function sweepClosedQuests(stat, current = {}) {
   const next = draft(stat);
   const board = ensureBoard(next);
@@ -1007,6 +1483,9 @@ export function sweepClosedQuests(stat, current = {}) {
   const removedEntries = [];
 
   const formalList = formalEntriesOf(stat);
+  const prevStat = findImmediatePrevStat(stat, { chat: current.chat || current.messages, historyStats });
+  const prevBoard = prevStat ? boardNode(prevStat) : null;
+  const prevFormalList = prevStat ? formalEntriesOf(prevStat) : [];
   const isEntryFailedOrCanceled = (entry) => {
     const title = text(obj(entry)['标题']).trim();
     if (!title) return false;
@@ -1022,12 +1501,23 @@ export function sweepClosedQuests(stat, current = {}) {
         const id = text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
         const title = text(r['标题']).trim();
         if (id) removedIds.add(id);
+        if (r['id']) removedIds.add(text(r['id']).trim());
+        if (r['编号']) removedIds.add(text(r['编号']).trim());
         if (title) {
           removedTitles.add(title);
+          const cleanT = stripQuestBackendTags(title);
+          if (cleanT) removedTitles.add(cleanT);
           const n = stripTaskTitle(title);
           if (n) removedNorms.add(n);
         }
-        removedEntries.push({ entry, id, failedOrCanceled: isEntryFailedOrCanceled(entry) });
+        removedEntries.push({
+          entry,
+          id,
+          rawKey: '',
+          formal: matchFormalTask(formalList, title),
+          prevFormal: matchFormalTask(prevFormalList, title),
+          failedOrCanceled: isEntryFailedOrCanceled(entry),
+        });
       }
       return !closed;
     });
@@ -1041,16 +1531,44 @@ export function sweepClosedQuests(stat, current = {}) {
         const title = text(r['标题']).trim();
         if (k) removedIds.add(k);
         if (itemId) removedIds.add(itemId);
+        if (r['id']) removedIds.add(text(r['id']).trim());
+        if (r['编号']) removedIds.add(text(r['编号']).trim());
         if (title) {
           removedTitles.add(title);
+          const cleanT = stripQuestBackendTags(title);
+          if (cleanT) removedTitles.add(cleanT);
           const n = stripTaskTitle(title);
           if (n) removedNorms.add(n);
         }
-        removedEntries.push({ entry: v, id: itemId, failedOrCanceled: isEntryFailedOrCanceled(v) });
+        removedEntries.push({
+          entry: v,
+          id: itemId,
+          rawKey: k,
+          formal: matchFormalTask(formalList, title),
+          prevFormal: matchFormalTask(prevFormalList, title),
+          failedOrCanceled: isEntryFailedOrCanceled(v),
+        });
         delete board['列表'][k];
       }
       idx += 1;
     }
+  }
+
+  // 途径 A：在清除 已兑现/已失效/竞速暂存 键之前先为被清扫的完结条目拍照留存待阅回执
+  if (removedEntries.length) {
+    const receiptRecords = removedEntries
+      .map((item) => buildReceiptRecord({
+        id: item.id,
+        rawKey: item.rawKey,
+        entry: item.entry,
+        stat,
+        board,
+        prevBoard,
+        formal: item.formal,
+        prevFormal: item.prevFormal,
+      }))
+      .filter(Boolean);
+    appendReceipts(board, receiptRecords);
   }
 
   updateDirectorAfterSweep(board, stat, removedEntries, currentCount, current);
@@ -1076,6 +1594,11 @@ export function sweepClosedQuests(stat, current = {}) {
       }
     }
   }
+  pruneRaceStageKeys(
+    board,
+    new Set([...removedIds, ...removedTitles]),
+    board['列表'] && typeof board['列表'] === 'object' ? activeRewardKeys : null,
+  );
   if (Array.isArray(board['曾接取'])) {
     const remaining = boardEntriesOf(board);
     const remainIds = new Set(remaining.map((e) => e.id).filter(Boolean));
@@ -1094,7 +1617,26 @@ export function sweepClosedQuests(stat, current = {}) {
   return { stat: next, done: '已清理已完结的任务情报' };
 }
 
-/** 合并后台维护：单次顺序执行清重扫 → 扫完结残留 → 登记曾接取 → 清全地图过期词条 → 清过期关注方向与导演引信，无改动时返回 { skip: true }。 */
+/** 统一检查是否存在待执行的后台维护项（供 runtime.js 与 panel.js 复用单一真源）。 */
+export function hasPendingMaintenance(
+  stat,
+  { floor, chatCount, chat, historyStats, lastIsAssistant } = {},
+) {
+  if (questRescanDone(stat, floor, chatCount, { chat, lastIsAssistant })) return true;
+  if (hasAiRemovedClosedEntries(stat, { chat, historyStats })) return true;
+  const board = boardNode(stat);
+  if (board['列表']) {
+    if (hasClosedQuestLeftovers(stat, { chat, historyStats })) return true;
+    if (needsQuestAcceptedRecord(stat)) return true;
+  }
+  if (hasExpiredAftermath(stat)) return true;
+  if (hasExpiredOnceFocus(stat, { floor, chatCount, chat, lastIsAssistant })) return true;
+  if (hasExpiredDirectorLeads(stat, { chatCount, chat })) return true;
+  if (hasExpiredReceipts(stat, { chat, chatCount, lastIsAssistant })) return true;
+  return false;
+}
+
+/** 合并后台维护：按序执行清重扫 → 补捕 AI 直删结案回执 → 扫完结残留 → 登记曾接取 → 清过期词条 → 清过期关注方向 → 清过期导演引信 → 清已阅过期回执，无改动时返回 { skip: true }。 */
 export function maintainQuestBoard(
   stat,
   { floor, chatCount, chat, historyStats, lastIsAssistant } = {},
@@ -1106,6 +1648,13 @@ export function maintainQuestBoard(
     cur = clearQuestRescan(cur).stat;
     changed = true;
     rescanCleared = true;
+  }
+  if (hasAiRemovedClosedEntries(cur, { chat, historyStats })) {
+    const capRes = captureAiRemovedReceipts(cur, { chat, historyStats, chatCount });
+    if (capRes && capRes.stat) {
+      cur = capRes.stat;
+      changed = true;
+    }
   }
   const board = boardNode(cur);
   if (board['列表']) {
@@ -1129,6 +1678,10 @@ export function maintainQuestBoard(
   }
   if (hasExpiredDirectorLeads(cur, { chatCount, chat })) {
     cur = sweepExpiredDirectorLeads(cur, { chatCount, chat }).stat;
+    changed = true;
+  }
+  if (hasExpiredReceipts(cur, { chat, chatCount, lastIsAssistant })) {
+    cur = sweepExpiredReceipts(cur, { chat, chatCount, lastIsAssistant }).stat;
     changed = true;
   }
   if (!changed) return { skip: true };

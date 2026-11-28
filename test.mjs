@@ -49,6 +49,13 @@ import {
   recordAcceptedQuests,
   hasClosedQuestLeftovers,
   sweepClosedQuests,
+  hasAiRemovedClosedEntries,
+  captureAiRemovedReceipts,
+  markReceiptsRead,
+  dismissReceipt,
+  hasExpiredReceipts,
+  sweepExpiredReceipts,
+  hasPendingMaintenance,
   maintainQuestBoard,
 } from './src/actions.js';
 import {
@@ -58,6 +65,14 @@ import {
   readEntryMode,
   writeEntryMode,
 } from './src/entryMode.js';
+import {
+  MOTION_PREFS,
+  MOTION_PREF_KEY,
+  normalizeMotionPref,
+  readMotionEnabled,
+  writeMotionEnabled,
+} from './src/motionPref.js';
+import { mountFab } from './src/fab.js';
 import { mountWand } from './src/wand.js';
 import {
   DEFAULT_SCRIPT_REF,
@@ -2793,9 +2808,17 @@ function createMiniDom() {
         if (sel.startsWith('#') && this._id === sel.slice(1)) return this;
         return null;
       },
+      appendChild(n) {
+        this.append(n);
+        return n;
+      },
       addEventListener(type, fn) {
         if (!this._listeners.has(type)) this._listeners.set(type, []);
         this._listeners.get(type).push(fn);
+      },
+      removeEventListener(type, fn) {
+        if (!this._listeners.has(type)) return;
+        this._listeners.set(type, this._listeners.get(type).filter((x) => x !== fn));
       },
       dispatchEvent(ev) {
         const list = this._listeners.get(ev.type) || [];
@@ -5005,4 +5028,377 @@ test('先词条后任务生成顺序与假象余震/悬疑反转互斥强约束'
   }, { source: updateSrc });
   assertCleanOutput(refillHasTraitOut, 'aftermath-exists-refill');
   assert.doesNotMatch(refillHasTraitOut, /本轮先写出本区 `余波` 词条|先于任务列表/);
+});
+
+test('前端手账配置与牛皮书悬浮入口：motionPref、mountFab 丝带未读态、动效开关与样式红线', () => {
+  const mem = new Map();
+  const read = (k) => (mem.has(k) ? mem.get(k) : null);
+  const write = (k, v) => mem.set(k, String(v));
+
+  assert.equal(MOTION_PREF_KEY, 'quest_helper_motion_v1');
+  assert.equal(normalizeMotionPref('off'), MOTION_PREFS.OFF);
+  assert.equal(normalizeMotionPref('false'), MOTION_PREFS.OFF);
+  assert.equal(normalizeMotionPref('0'), MOTION_PREFS.OFF);
+  assert.equal(normalizeMotionPref('on'), MOTION_PREFS.ON);
+  assert.equal(normalizeMotionPref('invalid'), MOTION_PREFS.ON);
+  assert.equal(readMotionEnabled(read), true);
+  assert.equal(writeMotionEnabled(write, false), false);
+  assert.equal(mem.get(MOTION_PREF_KEY), 'off');
+  assert.equal(readMotionEnabled(read), false);
+  assert.equal(writeMotionEnabled(write, true), true);
+  assert.equal(mem.get(MOTION_PREF_KEY), 'on');
+
+  const doc = createMiniDom();
+  doc.hidden = false;
+  const winListeners = new Map();
+  const win = {
+    innerWidth: 1280,
+    innerHeight: 800,
+    localStorage: {
+      getItem: (k) => (mem.has(k) ? mem.get(k) : null),
+      setItem: (k, v) => mem.set(k, String(v)),
+    },
+    addEventListener(t, fn) {
+      if (!winListeners.has(t)) winListeners.set(t, []);
+      winListeners.get(t).push(fn);
+    },
+    removeEventListener(t, fn) {
+      if (!winListeners.has(t)) return;
+      winListeners.set(t, winListeners.get(t).filter((x) => x !== fn));
+    },
+  };
+  let opened = 0;
+  const fab = mountFab(doc, win, { onOpen: () => { opened += 1; } });
+  const btn = doc.getElementById('quest-helper-fab');
+  const styleEl = doc.getElementById('quest-helper-fab-style');
+  assert.ok(btn, '应挂载 #quest-helper-fab');
+  assert.ok(styleEl, '应挂载 #quest-helper-fab-style');
+  assert.match(btn.innerHTML || '', /qh-fab-ribbon/);
+
+  fab.setUnread(true);
+  assert.equal(btn.classList.contains('has-unread'), true);
+  fab.setMotionEnabled(false);
+  assert.equal(btn.classList.contains('is-no-motion'), true);
+  fab.setHidden(true);
+  assert.equal(btn.classList.contains('is-hidden'), true);
+  btn.dispatchEvent({ type: 'keydown', key: 'Enter', preventDefault() {} });
+  assert.equal(opened, 1);
+  fab.destroy();
+  assert.equal(doc.getElementById('quest-helper-fab'), null);
+  assert.equal(doc.getElementById('quest-helper-fab-style'), null);
+
+  // 前端源码红线：零外链 CSS url()、零 UNN 残留、零后台骨架泄露、真 3D 透视且无死 preserve-3d
+  const panelCss = fs.readFileSync(path.join(__dirname, 'src/panel.css'), 'utf8');
+  const panelJs = fs.readFileSync(path.join(__dirname, 'src/panel.js'), 'utf8');
+  const panelViewsJs = fs.readFileSync(path.join(__dirname, 'src/panelViews.js'), 'utf8');
+  assert.doesNotMatch(panelCss, /url\(\s*['"]?https?:/i, 'panel.css 不得依赖外部图片 URL');
+  assert.doesNotMatch(panelCss, /qh-qbadge--race|transform-style:\s*preserve-3d/i);
+  assert.match(panelCss, /perspective:\s*1200px/);
+  assert.match(panelCss, /max-height:\s*540px.*orientation:\s*landscape/s);
+  assert.doesNotMatch(panelJs, /isRace|⚡\s*多方竞速|⚡竞速/);
+  assert.doesNotMatch(`${panelCss}\n${panelJs}\n${panelViewsJs}`, /UNNCore|unn-core-studio|unn-core-fab/);
+});
+
+test('多方竞速短计时、信息隔绝藏 [✕] 延迟揭晓与第一视角任务日记（零历史回喂）', () => {
+  const plotSrc = ejsSource.replace("const _wbRole = 'all';", "const _wbRole = 'plot';").replace('// @role all', '// @role plot');
+  const updateSrc = ejsSource.replace("const _wbRole = 'all';", "const _wbRole = 'update';").replace('// @role all', '// @role update');
+  const chat2 = [{ is_user: true, mes: '继续前进' }, { is_user: false, mes: '四周寂静无声' }];
+
+  assert.equal(DATA.questBoard.raceAdvanceDays, 1);
+
+  // 1) gatingIdle 0 字节增量：写入历史 任务日记 / 待阅回执 / 竞速暂存 时 plot 与 update 均 0 增量且 < 2200 字符
+  const idleBase = {
+    世界: { 地点: '雾晶港-北码头', 时间: '复兴纪元488年-6月-12日-10:00' },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        更新日: '复兴纪元488年-6月-12日',
+        列表: [
+          { id: 'q1', 类别: '剧情任务', 等级: 'B', 标题: '迷雾长线', 方式: '调查', 预期收益: ['史诗杖 ×1'] },
+          { id: 'q2', 类别: '本地主线', 等级: 'C', 标题: '港口竞拍', 方式: '委托', 预期收益: ['金币 ×150'] },
+          { id: 'q3', 类别: '支线任务', 等级: 'D', 标题: '修补缆绳', 方式: '委托', 预期收益: ['金币 ×40'] },
+          { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '清点海货', 方式: '委托', 预期收益: ['金币 ×50'] },
+        ],
+      },
+    },
+  };
+  const idleLoaded = JSON.parse(JSON.stringify(idleBase));
+  idleLoaded['事件']['任务情报板']['待阅回执'] = [{ id: 'old1', 标题: '旧案秘闻', 终局: '已完成', 原因: '绝不能泄露给AI的回执正文' }];
+  idleLoaded['事件']['任务情报板']['任务日记'] = [{
+    id: 'd1',
+    任务id: 'old1',
+    标题: '旧案秘闻',
+    日期: '复兴纪元488年-6月-10日',
+    正文: '绝不能回喂给模型的历史日记长文内容XYZ999',
+    角注: '私密角注ABC888',
+    续篇: [{ 日期: '复兴纪元488年-6月-11日', 标签: '余震后续', 正文: '绝不能回喂的续篇DEF777' }],
+  }];
+  idleLoaded['事件']['任务情报板']['竞速暂存'] = { old1: { 标题: '旧案秘闻', 最近演化日: '复兴纪元488年-6月-11日', 待失效: [2] } };
+  const idlePlotBase = renderEjs(idleBase, { chat: chat2, lastUserMessageId: 1, source: plotSrc });
+  const idlePlotLoaded = renderEjs(idleLoaded, { chat: chat2, lastUserMessageId: 1, source: plotSrc });
+  const idleUpdBase = renderEjs(idleBase, { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+  const idleUpdLoaded = renderEjs(idleLoaded, { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+  assert.equal(idlePlotLoaded, idlePlotBase);
+  assert.equal(idleUpdLoaded, idleUpdBase);
+  assert.ok(renderEjs(idleLoaded, { chat: chat2, lastUserMessageId: 1 }).length < 2200);
+
+  // 2) 隔绝地点多级路径与「地下城」识别：铁炉堡-旧城区-地牢 / 黑石地下城 / 南郊荒野 均判隔绝；荒野-商队驿站 判可流通
+  const makeRaceStat = (loc, day, extraBoard = {}, truth = '【多方竞速】两家商行争抢秘银匣') => ({
+    世界: { 地点: loc, 时间: `${day}-12:00` },
+    任务列表: { '秘银争锋': { 状态: '进行中', 进展: '[复兴纪元488年-6月-10日] 刚接下委托。' } },
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        更新日: '复兴纪元488年-6月-10日',
+        列表: [
+          {
+            id: 'q_race',
+            类别: '本地主线',
+            等级: 'C',
+            标题: '秘银争锋',
+            方式: '委托',
+            摘要: '追回失窃的秘银匣',
+            真相: truth,
+            更新日: '复兴纪元488年-6月-10日',
+            预期收益: ['稀有护符 ×1', '优良秘银 ×2', '优良工具 ×1', '金币 ×400', '商行凭证 ×1'],
+          },
+          { id: 'q2', 类别: '支线任务', 等级: 'D', 标题: '支A', 预期收益: ['金币 ×30'] },
+          { id: 'q3', 类别: '支线任务', 等级: 'D', 标题: '支B', 预期收益: ['金币 ×30'] },
+          { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '支C', 预期收益: ['金币 ×30'] },
+          { id: 'q5', 类别: '支线任务', 等级: 'D', 标题: '支D', 预期收益: ['金币 ×30'] },
+        ],
+        ...extraBoard,
+      },
+    },
+  });
+
+  for (const isoLoc of ['铁炉堡-旧城区-地牢', '艾尔登大陆-黑石地下城', '白港镇-南郊荒野']) {
+    const isoUpd = renderEjs(makeRaceStat(isoLoc, '复兴纪元488年-6月-11日'), { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+    assertCleanOutput(isoUpd, `race-iso-${isoLoc}`);
+    assert.match(isoUpd, /疑似与外界隔绝的区域，按正文实际场景判断/);
+    assert.match(isoUpd, /隔绝暂存Patch/);
+    assert.doesNotMatch(isoUpd, /无来源报点|请结合实际场景判断|有份量的|人设口吻|第三人称战报/);
+  }
+
+  // 同日隔绝防双扣：若 最近演化日 已为今日（6月-11日），即使位于黑石地下城（跨区域名）也不再重复演进
+  const sameDayIso = renderEjs(
+    makeRaceStat('艾尔登大陆-黑石地下城', '复兴纪元488年-6月-11日', {
+      竞速暂存: { q_race: { 标题: '秘银争锋', 最近演化日: '复兴纪元488年-6月-11日', 待失效: [2], 待揭晓风声: ['昨夜北门有人急租快船'] } },
+    }),
+    { chat: chat2, lastUserMessageId: 1, source: updateSrc },
+  );
+  assert.doesNotMatch(sameDayIso, /待演进:竞速/);
+
+  // 多日隔绝保留前日风声数组：6月-12日仍在铁炉堡-旧城区-地牢时，隔绝暂存Patch 保留前日风声数组且不覆写
+  const day2Iso = renderEjs(
+    makeRaceStat('铁炉堡-旧城区-地牢', '复兴纪元488年-6月-12日', {
+      竞速暂存: { q_race: { 标题: '秘银争锋', 最近演化日: '复兴纪元488年-6月-11日', 待失效: [2], 待揭晓风声: ['昨夜北门有人急租快船'] } },
+    }),
+    { chat: chat2, lastUserMessageId: 1, source: updateSrc },
+  );
+  assert.match(day2Iso, /昨夜北门有人急租快船/);
+  assert.match(day2Iso, /新增环境侧面风声/);
+
+  // 回到可流通环境（荒野-商队驿站）：flush 释放暂存失效 + 清暂存Patch；plot 零加粗输出竞速风声
+  const returnStat = makeRaceStat('铁炉堡-旧城区-商队驿站', '复兴纪元488年-6月-11日', {
+    竞速暂存: { q_race: { 标题: '秘银争锋', 最近演化日: '复兴纪元488年-6月-11日', 待失效: [2], 待揭晓风声: ['昨夜北门有人急租快船'] } },
+  });
+  const returnPlot = renderEjs(returnStat, { chat: chat2, lastUserMessageId: 1, source: plotSrc });
+  const returnUpd = renderEjs(returnStat, { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+  assert.equal((returnPlot.match(/\*\*[^*]+\*\*/g) || []).length, 0);
+  assert.match(returnPlot, /竞速风声:/);
+  assert.match(returnPlot, /昨夜北门有人急租快船/);
+  assert.match(returnUpd, /失效Patch.*"path":\s*"\/事件\/任务情报板\/已失效"/);
+  assert.match(returnUpd, /清暂存Patch.*"op":\s*"remove",\s*"path":\s*"\/事件\/任务情报板\/竞速暂存"/);
+
+  // 3) 【假象余震】【多方竞速】一阶段 40% 软保护（5 栏最多 2 栏非核心）+ 触顶回城 warningOnly 仍补发未公开暂存的 失效Patch + plot 盲演不泄密
+  const asRaceStat = makeRaceStat(
+    '铁炉堡-商业街',
+    '复兴纪元488年-6月-13日',
+    {
+      竞速暂存: { q_race: { 标题: '秘银争锋', 最近演化日: '复兴纪元488年-6月-12日', 待失效: [2, 3], 待揭晓风声: ['旧港仓连夜清空'] } },
+    },
+    '【假象余震】【多方竞速】学徒典当木匣给掮客｜余震引信：匣内残留不属于本地的暗紫色冻霜',
+  );
+  const asRacePlot = renderEjs(asRaceStat, { chat: chat2, lastUserMessageId: 1, source: plotSrc });
+  const asRaceUpd = renderEjs(asRaceStat, { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+  assert.doesNotMatch(asRacePlot, /假象余震|余震引信|暗紫色冻霜|悬疑反转/);
+  assert.match(asRaceUpd, /暂不新增失效栏位（城镇揭晓时将暂存转入公开失效：\[2\].*\[3\]/);
+  assert.match(asRaceUpd, /失效Patch.*"q_race":\s*\[2,\s*3\]/);
+  assert.match(asRaceUpd, /清暂存Patch/);
+
+  // 4) 任务日记续写索引（区分首次无 续篇 vs 已有 续篇 数组）、余震二段同源子串匹配与零旧正文泄露
+  const diaryStat = makeRaceStat('铁炉堡-商业街', '复兴纪元488年-6月-12日', {
+    任务日记: [
+      { id: 'd0', 任务id: 'q_old', 标题: '秘银争锋', 日期: '复兴纪元488年-6月-10日', 正文: '历史隐私正文AAA111' },
+      { id: 'd1', 任务id: 'q_other', 标题: '守门人风波', 日期: '复兴纪元488年-6月-10日', 正文: '历史隐私正文BBB222', 续篇: [{ 日期: '6月-11日', 正文: '旧续篇CCC333' }] },
+    ],
+  });
+  diaryStat['任务列表']['守门人风波·暗账追查'] = { 状态: '进行中', 进展: '[复兴纪元488年-6月-12日] 追查旧账。' };
+  diaryStat['事件']['任务情报板']['列表'].push({
+    id: 'q_as2',
+    类别: '本地主线',
+    等级: 'B',
+    标题: '【假象余震二段】守门人风波·暗账追查',
+    方式: '调查',
+    真相: '【假象余震二段】旧账指向城邦议会',
+    预期收益: ['史诗饰品 ×1'],
+  });
+  const diaryUpd = renderEjs(diaryStat, { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+  assertCleanOutput(diaryUpd, 'diary-update');
+  assert.doesNotMatch(diaryUpd, /历史隐私正文AAA111|历史隐私正文BBB222|旧续篇CCC333/);
+  assert.match(diaryUpd, /"op":"insert","path":"\/事件\/任务情报板\/任务日记\/0\/续篇","value":\[/);
+  assert.match(diaryUpd, /"op":"insert","path":"\/事件\/任务情报板\/任务日记\/1\/续篇\/-"/);
+  assert.match(returnUpd, /保留「意向」「忽略」「已兑现」「已失效」「曾接取」「上次重扫日」「余波」「区域访问日」「关注方向」「导演状态」「竞速暂存」「待阅回执」「任务日记」/);
+});
+
+test('待阅结案回执（双路截获、同楼层收起防重抓墓碑、先看后删、diaryIndex 原始索引与对象型列表别名清理）', () => {
+  // 1) state.js：绝不泄露 竞速暂存 到 rewardItems.lost，不暴露 isRace，且 diaryIndex 返回原始 entry.index（跳过空项后不偏移）
+  const hiddenStageStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { '秘银争锋': { 状态: '进行中', 进展: '[6月-10日] 进行中' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        竞速暂存: { q_race: { 标题: '秘银争锋', 最近演化日: '6月-11日', 待失效: [2, 3], 待揭晓风声: ['风声'] } },
+        任务日记: [
+          null,
+          { id: 'd_raw1', 任务id: 'q_race', 标题: '秘银争锋', 日期: '6月-11日', 心情: '紧张', 正文: '第一人称正文' },
+        ],
+        列表: [
+          {
+            id: 'q_race',
+            类别: '本地主线',
+            等级: 'C',
+            标题: '秘银争锋',
+            真相: '【多方竞速】公开竞夺',
+            预期收益: ['稀有护符 ×1', '优良秘银 ×2', '优良工具 ×1', '金币 ×400', '凭证 ×1'],
+          },
+        ],
+      },
+    },
+  };
+  const stHidden = readState(hiddenStageStat);
+  assert.equal(Object.prototype.hasOwnProperty.call(stHidden.questBoard.items[0], 'isRace'), false);
+  assert.deepEqual(stHidden.questBoard.items[0].rewardItems.map((r) => r.lost), [false, false, false, false, false]);
+  assert.equal(stHidden.questBoard.diaryEntries.length, 1);
+  assert.equal(stHidden.questBoard.diaryEntries[0].index, 1);
+  assert.equal(stHidden.questBoard.items[0].diaryIndex, 1);
+
+  // 2) Path B（AI 直接 remove 列表，甚至删空 列表 键）截获回执，且重扫/迁区淘汰的未接取旧任务绝不误抓
+  const prevStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { '暗巷追截': { 状态: '进行中', 进展: '[6月-12日] 追查失窃货车。' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        曾接取: ['q_ai_rm'],
+        已兑现: { q_ai_rm: [1] },
+        已失效: { q_ai_rm: [2] },
+        列表: [
+          { id: 'q_ai_rm', 类别: '本地主线', 等级: 'C', 标题: '暗巷追截', 预期收益: ['稀有护符 ×1', '金币 ×200'] },
+          { id: 'q_unacc', 类别: '支线任务', 等级: 'D', 标题: '未接取杂务', 预期收益: ['金币 ×30'] },
+        ],
+      },
+    },
+  };
+  const curAfterAiRemove = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-13日' },
+    任务列表: {},
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        // AI 甚至直接删掉了 列表 键
+      },
+    },
+  };
+  const chatTurn1 = [
+    { is_user: true, mes: '交差' },
+    { is_user: false, mes: '任务结案' },
+  ];
+  assert.equal(hasAiRemovedClosedEntries(curAfterAiRemove, { historyStats: [curAfterAiRemove, prevStat] }), true);
+  assert.equal(hasPendingMaintenance(curAfterAiRemove, { chat: chatTurn1, chatCount: 2, historyStats: [curAfterAiRemove, prevStat] }), true);
+  const captured = maintainQuestBoard(curAfterAiRemove, { chat: chatTurn1, chatCount: 2, historyStats: [curAfterAiRemove, prevStat] });
+  assert.ok(!captured.skip);
+  const stCap = readState(captured.stat);
+  assert.equal(stCap.questBoard.receipts.length, 1, '只应捕获已接取结案的暗巷追截，不误抓未接取杂务');
+  assert.equal(stCap.questBoard.receipts[0].displayTitle, '暗巷追截');
+  assert.equal(stCap.questBoard.receipts[0].outcome, 'degraded');
+  assert.equal(stCap.questBoard.receipts[0].outcomeLabel, '折损结案');
+  assert.equal(stCap.questBoard.unreadReceiptCount, 1);
+
+  // 3) dismissReceipt 同楼层打墓碑：立即从 readState 隐藏，且同楼层 maintainQuestBoard 绝不重新抓取复活！
+  const dismissed = dismissReceipt(captured.stat, 'q_ai_rm', { chat: chatTurn1, chatCount: 2 });
+  assert.ok(!dismissed.skip);
+  const stDismissed = readState(dismissed.stat);
+  assert.equal(stDismissed.questBoard.receipts.length, 0);
+  assert.equal(stDismissed.questBoard.unreadReceiptCount, 0);
+  assert.equal(hasAiRemovedClosedEntries(dismissed.stat, { historyStats: [dismissed.stat, prevStat] }), false);
+
+  // 下一 AI 回复楼层（chatCount = 4）自动物理清理墓碑并删除空的 待阅回执
+  const chatTurn2 = [...chatTurn1, { is_user: true, mes: '继续走' }, { is_user: false, mes: '来到广场' }];
+  assert.equal(hasExpiredReceipts(dismissed.stat, { chat: chatTurn2, chatCount: 4 }), true);
+  const sweptTombstone = sweepExpiredReceipts(dismissed.stat, { chat: chatTurn2, chatCount: 4 });
+  assert.equal(Object.prototype.hasOwnProperty.call(sweptTombstone.stat['事件']['任务情报板'], '待阅回执'), false);
+
+  // 4) markReceiptsRead → 同回合与用户回合保留 → 下一 AI 回复清理
+  const marked = markReceiptsRead(captured.stat, { chat: chatTurn1, chatCount: 2 });
+  assert.equal(readState(marked.stat).questBoard.receipts.length, 1);
+  assert.equal(readState(marked.stat).questBoard.unreadReceiptCount, 0);
+  assert.equal(hasExpiredReceipts(marked.stat, { chat: chatTurn1, chatCount: 2 }), false, '同回合不得清除');
+  const chatUserNext = [...chatTurn1, { is_user: true, mes: '还没出 AI 回复' }];
+  assert.equal(hasExpiredReceipts(marked.stat, { chat: chatUserNext, chatCount: 3 }), false, '用户回合尚未落地不得清除');
+  assert.equal(hasExpiredReceipts(marked.stat, { chat: chatTurn2, chatCount: 4 }), true, '下一 AI 回复应触发清除');
+
+  // 5) Path A（sweepClosedQuests 携带 prevBoard 识别竞速失败结案）+ 对象型列表 rawKey 别名清理 竞速暂存
+  const prevFailStat = {
+    世界: { 地点: '铁炉堡', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { '海港竞速': { 状态: '进行中', 进展: '[6月-11日] 尚在赶路' } },
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        竞速暂存: { q_fail_id: { 标题: '海港竞速', 最近演化日: '6月-12日', 待失效: [1, 2], 待揭晓风声: ['货船已提前起航'], 待失败结案: true } },
+        列表: {
+          slot_key_1: { id: 'q_fail_id', 类别: '本地主线', 等级: 'C', 标题: '海港竞速', 预期收益: ['稀有器 ×1', '金币 ×200'] },
+          slot_key_2: { id: 'q_keep_id', 类别: '支线任务', 等级: 'D', 标题: '保留任务', 预期收益: ['金币 ×50'] },
+        },
+      },
+    },
+  };
+  const curFailStat = {
+    世界: { 地点: '铁炉堡', 时间: '复兴纪元488年-6月-13日' },
+    任务列表: {},
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        曾接取: ['q_fail_id'],
+        竞速暂存: {
+          q_fail_id: { 标题: '海港竞速', 最近演化日: '6月-12日', 待失效: [1, 2], 待失败结案: true },
+          q_keep_id: { 标题: '保留任务', 最近演化日: '6月-12日', 待失效: [] },
+        },
+        列表: {
+          slot_key_1: { id: 'q_fail_id', 类别: '本地主线', 等级: 'C', 标题: '海港竞速', 预期收益: ['稀有器 ×1', '金币 ×200'] },
+          slot_key_2: { id: 'q_keep_id', 类别: '支线任务', 等级: 'D', 标题: '保留任务', 预期收益: ['金币 ×50'] },
+        },
+      },
+    },
+  };
+  const sweptFail = sweepClosedQuests(curFailStat, { chat: chatTurn1, chatCount: 2, historyStats: [curFailStat, prevFailStat] });
+  const failBoard = sweptFail.stat['事件']['任务情报板'];
+  assert.equal(Object.prototype.hasOwnProperty.call(failBoard['竞速暂存'] || {}, 'q_fail_id'), false, '已结案的别名键 竞速暂存 应清理');
+  assert.equal(Object.prototype.hasOwnProperty.call(failBoard['竞速暂存'] || {}, 'q_keep_id'), true, '活跃对象型任务以 entry.id 为键的 竞速暂存 不得被误判孤儿清理');
+  const failReceipt = readState(sweptFail.stat).questBoard.receipts[0];
+  assert.equal(failReceipt.outcome, 'failed');
+  assert.equal(failReceipt.outcomeLabel, '已失败');
+
+  // ignoreQuest 同步清理对象型别名键 竞速暂存
+  const ignored = ignoreQuest(sweptFail.stat, 'q_keep_id', '保留任务');
+  assert.equal(Object.prototype.hasOwnProperty.call(ignored.stat['事件']['任务情报板'], '竞速暂存'), false);
 });
