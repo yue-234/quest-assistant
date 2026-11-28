@@ -2532,26 +2532,36 @@ body {
     flex: 0 0 auto;
     height: auto;
     flex-wrap: wrap;
-    padding: 6px 10px 0;
-    gap: 6px;
+    padding: 4px 10px 0;
+    gap: 4px 6px;
   }
 
   .qh-top-left {
     order: 1;
+    flex: 1 1 0;
+    min-width: 0;
   }
 
   .qh-top-right {
     order: 2;
+    flex: 0 0 auto;
+  }
+
+  .qh-top-titles {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .qh-top-title {
     font-size: 14px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .qh-top-sub {
-    font-size: 11px;
-  }
-
+  .qh-top-sub,
   .qh-top-close-text {
     display: none;
   }
@@ -2645,6 +2655,7 @@ body {
 
   .qh-top-left {
     order: 1;
+    flex: 0 0 auto;
   }
 
   .qh-top-sub,

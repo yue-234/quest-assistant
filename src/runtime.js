@@ -412,10 +412,11 @@ export function start() {
   let bgCooldownUntil = 0;
   let graceRetry = 0;
 
-  const refreshOpenPanel = () => {
-    if (!panelOpened || !frame) return;
+  const refreshOpenPanel = (options) => {
+    if (!frame) return;
+    if (!panelOpened && !(options && options.forceResetReceiptAttempt)) return;
     try {
-      frame.contentWindow?.questHelperPanel?.refresh?.();
+      frame.contentWindow?.questHelperPanel?.refresh?.(options);
     } catch {
       /* 忽略跨域或卸载态 */
     }
@@ -568,7 +569,7 @@ export function start() {
     if (clearSettle) clearReplySettle();
     graceRetry = 0;
     syncEntryUnread();
-    refreshOpenPanel();
+    refreshOpenPanel(clearSettle ? { forceResetReceiptAttempt: true } : undefined);
     // 删改楼层后补检全部待清理项，存在时短延迟执行维护
     try {
       if (hasAnyPendingMaintenance()) {
@@ -585,7 +586,7 @@ export function start() {
     clearReplySettle();
     graceRetry = 0;
     syncEntryUnread();
-    refreshOpenPanel();
+    refreshOpenPanel({ forceResetReceiptAttempt: true });
     if (!generating()) {
       bgTimer = setTimeout(() => {
         void runQuestBoardMaintenance();

@@ -5,6 +5,7 @@ import { DATA, DATA_VERSION } from './data.js';
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const text = (v) => String(v ?? '');
+const safeStr = (v) => (typeof v === 'string' ? v : (typeof v === 'number' && Number.isFinite(v) ? String(v) : ''));
 const int = (v) => {
   const m = text(v).replace(/[,，]/g, '').match(/-?\d+/);
   return m ? Number(m[0]) : 0;
@@ -28,7 +29,7 @@ export function fpOf(stat) {
 
 /** 将各类世界时间格式归一为稳定的「世界日」键。 */
 export function normalizeDay(raw) {
-  const s = text(raw).trim();
+  const s = safeStr(raw).trim();
   if (!s) return '';
 
   const ymd = s.match(/^(.*?)(\d+)\s*年.*?(\d{1,2})\s*月.*?(\d{1,2})\s*日/);
@@ -140,7 +141,8 @@ export function boardNode(stat) {
 
 const QUEST_CATEGORY_ORDER = { 剧情任务: 0, 本地主线: 1, 支线任务: 2 };
 const SUB_PLACE_SUFFIX =
-  /(?:区|街|巷|道|路|广场|市场|集市|酒馆|旅馆|客栈|大厅|大殿|宫殿|房|室|店|铺|阁|楼|层|号|码头|站台|营地|入口|门口|走廊|甲板|房间|内部|露台|塔顶|地下|外廊|庭院|花园|港口区)$/;
+  /(?:区|街|巷|道|路|广场|市场|集市|酒馆|旅馆|客栈|大厅|大殿|宫殿|房|室|店|铺|阁|楼|层|号|码头|站台|营地|入口|门口|走廊|甲板|房间|内部|露台|塔顶|地下|外廊|庭院|花园|港口区|地牢|地下城|下水道|地下水渠|地下室|地窖|暗牢|密室|地宫|矿井|水渠|监牢|囚室|甬道|回廊)$/;
+const MACRO_REGION_SUFFIX = /(?:大陆|大区|帝国|王国|联盟|公国|法环|群岛|海域|山脉|高原|荒原)$/;
 
 function normGeo(v) {
   return text(v).trim().toLowerCase().replace(/\s+/g, '');
@@ -158,7 +160,8 @@ function splitLoc(v) {
  * 同城内部街道/酒馆/房间移动命中同一区域，不误判换区。
  */
 export function resolveRegionText(rawText, geoData = null) {
-  const raw = text(rawText).trim();
+  if (typeof rawText !== 'string') return { key: '', name: '', raw: '' };
+  const raw = rawText.trim();
   if (!raw) return { key: '', name: '', raw: '' };
 
   const places = Array.isArray(geoData && geoData.places) ? geoData.places : [];
@@ -196,7 +199,7 @@ export function resolveRegionText(rawText, geoData = null) {
         .map(normGeo)
         .filter(Boolean);
       const d = depthOf(place);
-      const imp = Number(place.importance || 0);
+      const imp = Number.isFinite(Number(place.importance)) ? Number(place.importance) : 0;
       for (const tk of tokens) {
         let sc = null;
         if (nQuery === tk) sc = [2, d, 4, segs.length, imp, tk.length];
@@ -223,7 +226,11 @@ export function resolveRegionText(rawText, geoData = null) {
   const parts = splitLoc(raw);
   if (!parts.length) return { key: normGeo(raw), name: raw, raw };
   let trimmed = parts.slice(0, Math.min(parts.length, 4));
-  while (trimmed.length > 1 && SUB_PLACE_SUFFIX.test(trimmed[trimmed.length - 1])) {
+  while (
+    trimmed.length > 1
+    && SUB_PLACE_SUFFIX.test(trimmed[trimmed.length - 1])
+    && !(trimmed.length === 2 && MACRO_REGION_SUFFIX.test(trimmed[0]))
+  ) {
     trimmed = trimmed.slice(0, -1);
   }
   const name = trimmed[trimmed.length - 1];
@@ -292,7 +299,14 @@ export function cleanRewardText(raw) {
 }
 
 function toRewardRawArray(raw) {
-  if (Array.isArray(raw)) return [...raw];
+  if (Array.isArray(raw)) {
+    const out = [];
+    for (let i = 0; i < raw.length; i += 1) {
+      const x = raw[i];
+      if (typeof x === 'string' || (typeof x === 'number' && Number.isFinite(x))) out.push(x);
+    }
+    return out;
+  }
   if (typeof raw === 'string' && raw.trim()) {
     return raw.split(/[、，,;\n；|｜]+/).map((x) => x.trim()).filter(Boolean);
   }
@@ -300,7 +314,7 @@ function toRewardRawArray(raw) {
 }
 
 /** 合并奖励状态 map 中同一任务通过 id、rawKey 与 title 保存的条目，兼容对象带空格键名。 */
-export function mergeRewardMapEntries(map, id, title = '', rawKey = '') {
+export function mergeRewardMapEntries(map, id, title = '', rawKey = '', extraKeys = []) {
   if (!map || typeof map !== 'object' || Array.isArray(map)) return [];
   const k1 = text(id).trim();
   const k2 = text(title).trim();
@@ -311,10 +325,24 @@ export function mergeRewardMapEntries(map, id, title = '', rawKey = '') {
     seen.add(k);
     out.push(...toRewardRawArray(map[k]));
   };
-  for (const k of [k1, text(id), k2, text(rawKey)]) collectKey(k);
-  if (k1) {
+  const candidates = [k1, text(id), k2, text(rawKey)];
+  const trimMatchSet = new Set();
+  if (k1) trimMatchSet.add(k1);
+  if (Array.isArray(extraKeys)) {
+    for (const ek of extraKeys) {
+      const rawEk = text(ek);
+      const trimEk = rawEk.trim();
+      if (rawEk) candidates.push(rawEk);
+      if (trimEk) {
+        candidates.push(trimEk);
+        trimMatchSet.add(trimEk);
+      }
+    }
+  }
+  for (const k of candidates) collectKey(k);
+  if (trimMatchSet.size) {
     for (const k of Object.keys(map)) {
-      if (text(k).trim() === k1) collectKey(k);
+      if (trimMatchSet.has(text(k).trim())) collectKey(k);
     }
   }
   return out;
@@ -352,9 +380,14 @@ export function parseLostSet(raw) {
 
 export function normalizeQuestRewards(raw) {
   if (Array.isArray(raw)) {
-    return raw.map((x) => text(x).trim()).filter(Boolean);
+    const out = [];
+    for (let i = 0; i < raw.length; i += 1) {
+      const s = safeStr(raw[i]).trim();
+      if (s) out.push(s);
+    }
+    return out;
   }
-  const s = text(raw).trim();
+  const s = safeStr(raw).trim();
   if (!s) return [];
   return s
     .split(/[、，,;\n；|｜]+/)
@@ -445,13 +478,14 @@ export function normalizeQuestFocus(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { text: '', mode: 'long', messageCount: '' };
   }
-  const clean = cleanFocusText(raw['文本'] ?? raw.text ?? '');
+  const rawFocusText = raw['文本'] ?? raw.text;
+  const clean = cleanFocusText(typeof rawFocusText === 'string' ? rawFocusText : '');
   if (!clean) {
     return { text: '', mode: 'long', messageCount: '' };
   }
   const modeRaw = raw['模式'] ?? raw.mode;
   const mode = modeRaw === 'once' ? 'once' : 'long';
-  const messageCount = mode === 'once' ? text(raw['消息数'] ?? raw.messageCount).trim() : '';
+  const messageCount = mode === 'once' ? safeStr(raw['消息数'] ?? raw.messageCount).trim() : '';
   return { text: clean, mode, messageCount };
 }
 
@@ -466,7 +500,9 @@ function parseDiaryEntries(rawDiary) {
   if (!Array.isArray(rawDiary)) return [];
   const out = [];
   for (let idx = 0; idx < rawDiary.length; idx += 1) {
-    const r = obj(rawDiary[idx]);
+    const item = rawDiary[idx];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const r = obj(item);
     const title = text(r['标题'] ?? r.title).trim();
     const body = text(r['正文'] ?? r['内容'] ?? r.body).trim();
     if (!title && !body) continue;
@@ -522,6 +558,26 @@ function parseDiaryEntries(rawDiary) {
   return out;
 }
 
+const DIARY_CORE_STOP_RE = /(?:的|之|与|和|在|调查|追查|委托|任务|事件|案件|风波|危机|阴谋|传闻|后续|余震|异动|秘密|真相|暗账|试炼|护送|救援|清理|探索)/g;
+
+function diarySharedCoreScore(normA, normB) {
+  if (!normA || !normB || normA.length < 3 || normB.length < 3) return 0;
+  let best = 0;
+  for (let i = 0; i < normA.length; i += 1) {
+    for (let len = normA.length - i; len >= 3; len -= 1) {
+      if (len <= best) break;
+      const sub = normA.slice(i, i + len);
+      if (/[的之与和在]/.test(sub) || !normB.includes(sub)) continue;
+      const stripped = sub.replace(DIARY_CORE_STOP_RE, '');
+      if (stripped.length >= 3 || (sub.length >= 4 && stripped.length >= 2)) {
+        best = len;
+        break;
+      }
+    }
+  }
+  return best;
+}
+
 function findDiaryIndex(diaryEntries, questId, title) {
   if (!Array.isArray(diaryEntries) || !diaryEntries.length) return -1;
   const qid = text(questId).trim();
@@ -544,6 +600,17 @@ function findDiaryIndex(diaryEntries, questId, title) {
       return dNorm.length >= 3 && (norm.includes(dNorm) || dNorm.includes(norm));
     });
     if (sub) return sub.index;
+    let bestEntry = null;
+    let bestScore = 0;
+    for (const d of diaryEntries) {
+      const dNorm = stripTaskTitle(d.displayTitle || d.title);
+      const score = diarySharedCoreScore(norm, dNorm);
+      if (score > bestScore) {
+        bestScore = score;
+        bestEntry = d;
+      }
+    }
+    if (bestEntry) return bestEntry.index;
   }
   return -1;
 }
@@ -567,7 +634,9 @@ function parseReceipts(rawReceipts, diaryEntries) {
   if (!Array.isArray(rawReceipts)) return [];
   const out = [];
   for (let idx = 0; idx < rawReceipts.length; idx += 1) {
-    const r = obj(rawReceipts[idx]);
+    const item = rawReceipts[idx];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const r = obj(item);
     if (r['已收起'] === true || r.dismissed === true) continue;
     const title = text(r['标题'] ?? r.title).trim();
     if (!title) continue;
@@ -732,6 +801,7 @@ export function wasInHistoryFormalTasks(historyStats, id, title) {
       : Object.entries(obj(hBoard['列表'])).map(([k, v], idx) => ({ item: v, rawKey: text(k).trim(), idx }));
     if (hBoardList.length === 0) continue;
     const onBoard = hBoardList.some(({ item, rawKey, idx }) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
       const r = obj(item);
       const itemId = rawKey || text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
       const itemTitle = text(r['标题']).trim();
@@ -788,7 +858,10 @@ function parseUntilOrdinal(untilRaw, curInfo) {
 
 /** 解析单条区域/世界词条，支持「[绿/黄/红][至到期日]【短标签】正文」（前缀顺序任意）、无色阶与旧纯文本兼容格式。 */
 export function parseAftermathEntry(raw, currentDay = '') {
-  const str = text(raw).trim();
+  if (typeof raw !== 'string') {
+    return { text: '', tone: '', tag: '', body: '', until: '', isTemp: false, daysLeft: null, expired: false };
+  }
+  const str = raw.trim();
   if (!str) {
     return { text: '', tone: '', tag: '', body: '', until: '', isTemp: false, daysLeft: null, expired: false };
   }
@@ -845,18 +918,21 @@ export function questBoardState(stat, current = {}) {
   const currentDay = worldDay(stat);
   const lastRescanDay = normalizeDay(board['上次重扫日']);
   const rescanCooldownToday = Boolean(nullCore && currentDay && lastRescanDay && lastRescanDay === currentDay);
-  const boardRegionKey = text(board['区域键'] || board['区域']).trim();
-  const boardRegionName = text(board['区域'] || board['区域名']).trim();
-  const intents = Array.isArray(board['意向'])
-    ? board['意向'].map((x) => text(x).trim()).filter(Boolean)
-    : [];
+  const boardRegionKey = safeStr(board['区域键'] || board['区域']).trim();
+  const boardRegionName = safeStr(board['区域'] || board['区域名']).trim();
+  const collectSafeStrings = (arr) => {
+    if (!Array.isArray(arr)) return [];
+    const out = [];
+    for (let i = 0; i < arr.length; i += 1) {
+      const s = safeStr(arr[i]).trim();
+      if (s) out.push(s);
+    }
+    return out;
+  };
+  const intents = collectSafeStrings(board['意向']);
   const intentSet = new Set(intents);
-  const ignored = Array.isArray(board['忽略'])
-    ? board['忽略'].map((x) => text(x).trim()).filter(Boolean)
-    : [];
-  const everAcceptedList = Array.isArray(board['曾接取'])
-    ? board['曾接取'].map((x) => text(x).trim()).filter(Boolean)
-    : [];
+  const ignored = collectSafeStrings(board['忽略']);
+  const everAcceptedList = collectSafeStrings(board['曾接取']);
   const everAcceptedSet = new Set(everAcceptedList);
   const everAcceptedNormSet = new Set(everAcceptedList.map(stripTaskTitle).filter(Boolean));
   const historyStats = Array.isArray(current.historyStats)
@@ -879,9 +955,22 @@ export function questBoardState(stat, current = {}) {
     })
     .filter((t) => !!t.key);
 
-  const rawList = Array.isArray(board['列表'])
-    ? board['列表'].map((entry, idx) => ({ entry, rawKey: '', idx }))
-    : Object.entries(obj(board['列表'])).map(([k, v], idx) => ({ entry: v, rawKey: text(k), idx }));
+  const rawList = [];
+  if (Array.isArray(board['列表'])) {
+    for (let idx = 0; idx < board['列表'].length; idx += 1) {
+      const entry = board['列表'][idx];
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      rawList.push({ entry, rawKey: '', idx });
+    }
+  } else {
+    let idx = 0;
+    for (const [k, v] of Object.entries(obj(board['列表']))) {
+      const curIdx = idx;
+      idx += 1;
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+      rawList.push({ entry: v, rawKey: text(k), idx: curIdx });
+    }
+  }
 
   const regionChanged = !sameRegion(region, boardRegionKey, boardRegionName, current.geoData || null);
 
@@ -893,11 +982,13 @@ export function questBoardState(stat, current = {}) {
     const out = [];
     if (Array.isArray(raw)) {
       for (let idx = 0; idx < raw.length; idx += 1) {
+        if (typeof raw[idx] !== 'string') continue;
         const parsed = parseAftermathEntry(raw[idx], currentDay);
         if (parsed.text && !parsed.expired) out.push({ key: scopeKey, index: idx, ...parsed });
       }
       return out;
     }
+    if (typeof raw !== 'string') return out;
     const parsed = parseAftermathEntry(raw, currentDay);
     if (parsed.text && !parsed.expired) out.push({ key: scopeKey, index: 0, ...parsed });
     return out;
@@ -953,16 +1044,19 @@ export function questBoardState(stat, current = {}) {
       if (formal) matchedFormalKeys.add(formal.key);
       if (formal && CLOSED_TASK_RE.test(formal.status)) return null;
       const accepted = !!formal;
-      const id = text(rawKey).trim() || text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
+      const rawIdField = safeStr(r['id']).trim();
+      const rawNumField = safeStr(r['编号']).trim();
+      const innerId = rawIdField || rawNumField;
+      const id = text(rawKey).trim() || innerId || `q${idx + 1}`;
       const category = normalizeQuestCategory(r['类别']);
-      const rankRaw = text(r['等级']).trim().toUpperCase().match(/[SABCD]/);
+      const rankRaw = safeStr(r['等级']).trim().toUpperCase().match(/[SABCD]/);
       const rank = rankRaw ? rankRaw[0] : 'C';
       const wayInfo = normalizeQuestWay(r['方式']);
-      const location = text(r['地点'] || boardRegionName || region.name).trim();
-      const guide = text(r['引导'] || r['切入'] || r['接取方式']).trim();
-      const deadline = text(r['时限']).trim();
-      const summary = text(r['摘要']).trim();
-      const boardProgressRaw = text(r['进展'] || r['动态'] || r['最新进展']).trim();
+      const location = safeStr(r['地点'] || boardRegionName || region.name).trim();
+      const guide = safeStr(r['引导'] || r['切入'] || r['接取方式']).trim();
+      const deadline = safeStr(r['时限']).trim();
+      const summary = safeStr(r['摘要']).trim();
+      const boardProgressRaw = safeStr(r['进展'] || r['动态'] || r['最新进展']).trim();
       const boardProgress = /^(?:尚未接取|未接取|暂未接取|未开始|尚未开始|待接取|待开启|暂无进展|暂无|无|待定|未知|待更新|冻结|—|-+|none|n\/a)$/i.test(boardProgressRaw)
         ? ''
         : boardProgressRaw;
@@ -970,8 +1064,10 @@ export function questBoardState(stat, current = {}) {
       const progress = accepted ? (formal.progress || boardProgress) : '';
       const itemUpdatedDay = normalizeDay(r['更新日']);
       const rawRewards = normalizeQuestRewards(r['预期收益']);
-      const claimedInfo = parseClaimedSet(mergeRewardMapEntries(claimedMap, id, title, rawKey));
-      const lostInfo = parseLostSet(mergeRewardMapEntries(lostMap, id, title, rawKey));
+      const cleanTitle = stripQuestBackendTags(title);
+      const rewardExtraKeys = [rawIdField, rawNumField, cleanTitle];
+      const claimedInfo = parseClaimedSet(mergeRewardMapEntries(claimedMap, id, title, rawKey, rewardExtraKeys));
+      const lostInfo = parseLostSet(mergeRewardMapEntries(lostMap, id, title, rawKey, rewardExtraKeys));
       const rewardItems = rawRewards.map((rawRw, rwIdx) => {
         const slot = rwIdx + 1;
         const cleanText = cleanRewardText(rawRw) || rawRw;
@@ -992,6 +1088,8 @@ export function questBoardState(stat, current = {}) {
       const lostCount = rewardItems.filter((x) => x.lost).length;
       const normTitle = stripTaskTitle(title);
       const everAccepted = everAcceptedSet.has(id)
+        || (!!rawIdField && everAcceptedSet.has(rawIdField))
+        || (!!rawNumField && everAcceptedSet.has(rawNumField))
         || everAcceptedSet.has(title)
         || (!!rawKey && everAcceptedSet.has(rawKey))
         || (!!normTitle && everAcceptedNormSet.has(normTitle));
@@ -1000,7 +1098,11 @@ export function questBoardState(stat, current = {}) {
         return null;
       }
       const cfg = DATA.questBoard.categories[category] || DATA.questBoard.categories['支线任务'];
-      const intent = intentSet.has(id) || intentSet.has(title) || (!!rawKey && intentSet.has(rawKey));
+      const intent = intentSet.has(id)
+        || (!!rawIdField && intentSet.has(rawIdField))
+        || (!!rawNumField && intentSet.has(rawNumField))
+        || intentSet.has(title)
+        || (!!rawKey && intentSet.has(rawKey));
       const staleRegion = !accepted && !cfg.crossRegion && regionChanged;
       const diaryIndex = findDiaryIndex(diaryEntries, id, title);
       return {

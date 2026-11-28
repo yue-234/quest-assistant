@@ -331,7 +331,6 @@ export function mountFab(doc, win, { onOpen } = {}) {
   btn.setAttribute('aria-label', '打开冒险手账与任务情报板');
   btn.setAttribute('title', '冒险手账 · 任务情报（点击打开，按住可拖动）');
   btn.innerHTML = FAB_INNER_HTML;
-  doc.body.append(btn);
 
   let saved = loadSavedPos(win);
   let curX = 0;
@@ -365,7 +364,27 @@ export function mountFab(doc, win, { onOpen } = {}) {
     applyPos(clamp(x, b.minX, b.maxX), clamp(y, b.minY, b.maxY));
   };
 
+  // 先落位再挂载并在首帧禁用 transition，避免从 (0, 0) 滑入
+  btn.style.transition = 'none';
   placeFromSaved();
+  doc.body.append(btn);
+  void btn.offsetWidth;
+
+  let restoreRaf = 0;
+  let restoreTimer = 0;
+  let destroyed = false;
+  const setTimer = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : setTimeout;
+  const clearTimer = typeof win.clearTimeout === 'function' ? win.clearTimeout.bind(win) : clearTimeout;
+  const restoreTransition = () => {
+    restoreRaf = 0;
+    restoreTimer = 0;
+    if (!destroyed && btn.isConnected) btn.style.transition = '';
+  };
+  if (typeof win.requestAnimationFrame === 'function') {
+    restoreRaf = win.requestAnimationFrame(restoreTransition);
+  } else {
+    restoreTimer = setTimer(restoreTransition, 0);
+  }
 
   let pointerId = null;
   let startClientX = 0;
@@ -479,6 +498,15 @@ export function mountFab(doc, win, { onOpen } = {}) {
       btn.classList.toggle('is-no-motion', !enabled);
     },
     destroy() {
+      destroyed = true;
+      if (restoreRaf && typeof win.cancelAnimationFrame === 'function') {
+        win.cancelAnimationFrame(restoreRaf);
+        restoreRaf = 0;
+      }
+      if (restoreTimer) {
+        clearTimer(restoreTimer);
+        restoreTimer = 0;
+      }
       btn.removeEventListener('pointerdown', onPointerDown);
       btn.removeEventListener('keydown', onKeyDown);
       win.removeEventListener('pointermove', onPointerMove);

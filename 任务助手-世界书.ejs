@@ -13,7 +13,7 @@ const _data = {"questBoard":{"rescanFp":100,"storyAdvanceDays":5,"raceAdvanceDay
 
 const _int = (v) => { const m = String(v ?? '').replace(/[,，]/g, '').match(/-?\d+/); return m ? Number(m[0]) : 0; };
 const _obj = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
-const _txt = (v) => String(v ?? '');
+const _txt = (v) => (typeof v === 'string' ? v : (typeof v === 'number' && Number.isFinite(v) ? String(v) : ''));
 const _escPtr = (s) => _txt(s).replace(/~/g, '~0').replace(/\//g, '~1');
 const _isNullCore = typeof destinyImmersiveMode === 'function'
   ? !!destinyImmersiveMode()
@@ -74,7 +74,8 @@ const _day = _normalizeDay(_world['时间']);
 // 区域识别（与 src/state.js 的 resolveRegionText 保持一致）
 const _normGeo = (v) => _txt(v).trim().toLowerCase().replace(/\s+/g, '');
 const _splitLoc = (v) => _txt(v).split(/[-－—>＞/／,，、;；·•・\n]+/).map((s) => s.trim()).filter(Boolean);
-const _subPlaceRe = /(?:区|街|巷|道|路|广场|市场|集市|酒馆|旅馆|客栈|大厅|大殿|宫殿|房|室|店|铺|阁|楼|层|号|码头|站台|营地|入口|门口|走廊|甲板|房间|内部|露台|塔顶|地下|外廊|庭院|花园|港口区)$/;
+const _subPlaceRe = /(?:区|街|巷|道|路|广场|市场|集市|酒馆|旅馆|客栈|大厅|大殿|宫殿|房|室|店|铺|阁|楼|层|号|码头|站台|营地|入口|门口|走廊|甲板|房间|内部|露台|塔顶|地下|外廊|庭院|花园|港口区|地牢|地下城|下水道|地下水渠|地下室|地窖|暗牢|密室|地宫|矿井|水渠|监牢|囚室|甬道|回廊)$/;
+const _macroRegionRe = /(?:大陆|大区|帝国|王国|联盟|公国|法环|群岛|海域|山脉|高原|荒原)$/;
 const _geoData = (() => {
   try {
     if (typeof getLocalVar === 'function') {
@@ -85,7 +86,8 @@ const _geoData = (() => {
   return {};
 })();
 const _resolveRegionText = (rawText) => {
-  const raw = _txt(rawText).trim();
+  if (typeof rawText !== 'string') return { key: '', name: '', raw: '' };
+  const raw = rawText.trim();
   if (!raw) return { key: '', name: '', raw: '' };
   const places = Array.isArray(_geoData.places) ? _geoData.places : [];
   if (places.length) {
@@ -106,7 +108,7 @@ const _resolveRegionText = (rawText) => {
     for (const place of places) {
       if (!place || place.is_geographic === false) continue;
       const tokens = [place.id, place.name, ...(Array.isArray(place.keywords) ? place.keywords : [])].map(_normGeo).filter(Boolean);
-      const d = depthOf(place), imp = Number(place.importance || 0);
+      const d = depthOf(place), imp = Number.isFinite(Number(place.importance)) ? Number(place.importance) : 0;
       for (const tk of tokens) {
         let sc = null;
         if (nQuery === tk) sc = [2, d, 4, segs.length, imp, tk.length];
@@ -128,7 +130,11 @@ const _resolveRegionText = (rawText) => {
   const parts = _splitLoc(raw);
   if (!parts.length) return { key: _normGeo(raw), name: raw, raw };
   let trimmed = parts.slice(0, Math.min(parts.length, 4));
-  while (trimmed.length > 1 && _subPlaceRe.test(trimmed[trimmed.length - 1])) trimmed = trimmed.slice(0, -1);
+  while (
+    trimmed.length > 1
+    && _subPlaceRe.test(trimmed[trimmed.length - 1])
+    && !(trimmed.length === 2 && _macroRegionRe.test(trimmed[0]))
+  ) trimmed = trimmed.slice(0, -1);
   const name = trimmed[trimmed.length - 1];
   return { key: _normGeo(name), name, raw };
 };
@@ -222,9 +228,9 @@ const _rawFocusCount = _rawFocusCountStr !== '' && Number.isFinite(Number(_rawFo
   : null;
 const _qbFocusRawText = _txt(
   _rawFocusObj
-    ? (_rawFocusObj['文本'] ?? _rawFocusObj.text)
-    : (Array.isArray(_rawFocus) ? '' : _rawFocus),
-).replace(/\s+/g, ' ').replace(/\*{2,}/g, '').trim().slice(0, 40).trim();
+    ? (typeof (_rawFocusObj['文本'] ?? _rawFocusObj.text) === 'string' ? (_rawFocusObj['文本'] ?? _rawFocusObj.text) : '')
+    : (typeof _rawFocus === 'string' ? _rawFocus : ''),
+).replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').replace(/\*{2,}/g, '').trim().slice(0, 40).trim();
 const _hasDirector = !!(
   _hasQb &&
   Object.prototype.hasOwnProperty.call(_qb, '导演状态') &&
@@ -286,7 +292,7 @@ const _stripPlotTruth = (truthRaw) => _txt(truthRaw)
   .replace(/^\s*[｜|；;]+\s*|\s*[｜|；;]+\s*$/g, '')
   .trim();
 const _aftermathArr = (raw) => (Array.isArray(raw)
-  ? raw.map((x) => _txt(x).trim()).filter(Boolean)
+  ? raw.map((x) => (typeof x === 'string' ? x.trim() : '')).filter(Boolean)
   : (typeof raw === 'string' && raw.trim() ? [raw.trim()] : []));
 const _claimedMarkRe = /(?:[✓✔☑]|[\[【（(]\s*(?:已兑现|已发放|已领取|已获得|[✓✔☑])\s*[\]】）)]|\[\s*\d+\s*[✓✔☑]\s*\])/;
 const _lostMarkRe = /(?:[✕✗✘]|[\[【（(]\s*(?:已失效|已错失|已作废|[✕✗✘×])\s*[\]】）)]|\[\s*\d+\s*[✕✗✘×]\s*\]|^\s*×(?!\s*\d)|(?:\s+×|(?<!\d)×)\s*$)/;
@@ -312,7 +318,29 @@ const _parseClaimed = (raw) => {
   }
   return { slots, texts };
 };
-const _parseSlotMap = (map, id, title, rawKey = '') => {
+const _findMatchedMapKey = (map, hasMap, candidates) => {
+  if (!hasMap) return '';
+  const tried = new Set();
+  const trimSet = new Set();
+  for (const cand of candidates) {
+    const raw = _txt(cand);
+    const trimmed = raw.trim();
+    if (raw && !tried.has(raw)) {
+      tried.add(raw);
+      if (Object.prototype.hasOwnProperty.call(map, raw)) return raw;
+    }
+    if (trimmed && !tried.has(trimmed)) {
+      tried.add(trimmed);
+      if (Object.prototype.hasOwnProperty.call(map, trimmed)) return trimmed;
+    }
+    if (trimmed) trimSet.add(trimmed);
+  }
+  for (const k of Object.keys(map)) {
+    if (trimSet.has(_txt(k).trim())) return k;
+  }
+  return '';
+};
+const _parseSlotMap = (map, id, title, rawKey = '', extraKeys = []) => {
   const res = { slots: new Set(), texts: new Set() };
   const k1 = _txt(id).trim();
   const k2 = _txt(title).trim();
@@ -324,10 +352,24 @@ const _parseSlotMap = (map, id, title, rawKey = '') => {
     for (const s of extra.slots) res.slots.add(s);
     for (const t of extra.texts) res.texts.add(t);
   };
-  for (const k of [k1, _txt(id), k2, _txt(rawKey)]) mergeKey(k);
-  if (k1) {
+  const candidates = [k1, _txt(id), k2, _txt(rawKey)];
+  const trimMatchSet = new Set();
+  if (k1) trimMatchSet.add(k1);
+  if (Array.isArray(extraKeys)) {
+    for (const ek of extraKeys) {
+      const rawEk = _txt(ek);
+      const trimEk = rawEk.trim();
+      if (rawEk) candidates.push(rawEk);
+      if (trimEk) {
+        candidates.push(trimEk);
+        trimMatchSet.add(trimEk);
+      }
+    }
+  }
+  for (const k of candidates) mergeKey(k);
+  if (trimMatchSet.size) {
     for (const k of Object.keys(map)) {
-      if (_txt(k).trim() === k1) mergeKey(k);
+      if (trimMatchSet.has(_txt(k).trim())) mergeKey(k);
     }
   }
   return res;
@@ -821,6 +863,7 @@ const _wasInHistFormal = (id, title) => {
       : Object.entries(_obj(hb['列表'])).map(([k, v], idx) => ({ item: v, rawKey: _txt(k).trim(), idx }));
     if (hbList.length === 0) continue;
     const onBoard = hbList.some(({ item, rawKey, idx }) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
       const r = _obj(item);
       const itemId = rawKey || _txt(r['id'] || r['编号']).trim() || `q${idx + 1}`;
       const itemTitle = _txt(r['标题']).trim();
@@ -845,7 +888,8 @@ const _lastMsgNorm = _stripTaskTitle(_lastMsgRaw);
 const _storyAdvanceDays = (_data.questBoard && Number(_data.questBoard.storyAdvanceDays)) || 5;
 const _raceAdvanceDays = (_data.questBoard && Number(_data.questBoard.raceAdvanceDays)) || 1;
 const _populatedLocRe = /(?:城|镇|村|港|酒馆|旅馆|客栈|集市|市场|广场|学院|商会|协会|公会|驿站|营地|王都|主城|街|巷|坊|码头|店|铺|殿|府|教堂|神殿|驻地|要塞|哨所)/;
-const _isolatedLocRe = /(?:荒野|地牢|密室|遗迹|废墟|森林|深林|丛林|洞窟|洞穴|山洞|矿洞|矿坑|牢房|监狱|深渊|沼泽|荒漠|沙漠|雪原|冰原|峡谷|墓穴|地宫|地下城|古墓|禁地|荒原|山谷|密道|暗道|秘境|绝壁|孤岛|无人区)/;
+const _populatedEndRe = /(?:城|镇|村|港|酒馆|旅馆|客栈|集市|市场|广场|学院|商会|协会|公会|驿站|营地|王都|主城|街|巷|坊|码头|店|铺|殿|府|教堂|神殿|驻地|要塞|哨所)$/;
+const _isolatedLocRe = /(?:荒野|地牢|密室|遗迹|废墟|森林|深林|丛林|洞窟|洞穴|山洞|矿洞|矿坑|牢房|监狱|深渊|沼泽|荒漠|沙漠|雪原|冰原|峡谷|墓穴|地宫|地下城|古墓|禁地|荒原|山谷|密道|暗道|秘境|绝壁|孤岛|无人区|地下水渠|下水道|地下室|暗牢|地窖)/;
 const _rawWorldLoc = _txt(_world['地点']).trim();
 const _isIsolatedLoc = (() => {
   if (!_rawWorldLoc) return false;
@@ -858,7 +902,7 @@ const _isIsolatedLoc = (() => {
     const hitPop = !!segForPop && _populatedLocRe.test(segForPop);
     if (hitIso && !hitPop) return true;
     if (hitPop && !hitIso) return false;
-    if (hitIso && hitPop) return true;
+    if (hitIso && hitPop) return !_populatedEndRe.test(segForPop);
   }
   return false;
 })();
@@ -872,6 +916,24 @@ const _diaryIndexMeta = _rawDiaryArr
     return { idx, questId: dQuestId, title: dTitle, norm: _stripTaskTitle(dTitle), hasSequelKey, hasSequelArr };
   })
   .filter((x) => x.questId || x.title);
+const _diaryCoreStopRe = /(?:的|之|与|和|在|调查|追查|委托|任务|事件|案件|风波|危机|阴谋|传闻|后续|余震|异动|秘密|真相|暗账|试炼|护送|救援|清理|探索)/g;
+const _diarySharedCoreScore = (normA, normB) => {
+  if (!normA || !normB || normA.length < 3 || normB.length < 3) return 0;
+  let best = 0;
+  for (let i = 0; i < normA.length; i += 1) {
+    for (let len = normA.length - i; len >= 3; len -= 1) {
+      if (len <= best) break;
+      const sub = normA.slice(i, i + len);
+      if (/[的之与和在]/.test(sub) || !normB.includes(sub)) continue;
+      const stripped = sub.replace(_diaryCoreStopRe, '');
+      if (stripped.length >= 3 || (sub.length >= 4 && stripped.length >= 2)) {
+        best = len;
+        break;
+      }
+    }
+  }
+  return best;
+};
 const _findDiaryMeta = (id, title) => {
   if (!_diaryIndexMeta.length) return null;
   if (id) {
@@ -886,6 +948,16 @@ const _findDiaryMeta = (id, title) => {
   if (norm.length >= 3) {
     const sub = _diaryIndexMeta.find((d) => d.norm.length >= 3 && (norm.includes(d.norm) || d.norm.includes(norm)));
     if (sub) return sub;
+    let bestEntry = null;
+    let bestScore = 0;
+    for (const d of _diaryIndexMeta) {
+      const score = _diarySharedCoreScore(norm, d.norm);
+      if (score > bestScore) {
+        bestScore = score;
+        bestEntry = d;
+      }
+    }
+    if (bestEntry) return bestEntry;
   }
   return null;
 };
@@ -893,27 +965,49 @@ const _findDiaryIdx = (id, title) => {
   const m = _findDiaryMeta(id, title);
   return m ? m.idx : -1;
 };
-const _findRaceStage = (id, title, rawKey = '') => {
+const _findRaceStage = (id, title, rawKey = '', extraKeys = []) => {
   if (!_hasRaceStage) return null;
   const cleanTitle = _stripBackendTags(title);
   const tried = new Set();
-  for (const cand of [id, rawKey, title, cleanTitle]) {
+  const trimSet = new Set();
+  const cands = [id, ...(Array.isArray(extraKeys) ? extraKeys : []), rawKey, title, cleanTitle];
+  for (const cand of cands) {
     for (const key of [_txt(cand), _txt(cand).trim()]) {
       if (!key || tried.has(key)) continue;
       tried.add(key);
+      if (key.trim()) trimSet.add(key.trim());
       if (Object.prototype.hasOwnProperty.call(_raceStageMap, key)) {
         const data = _obj(_raceStageMap[key]);
         if (Object.keys(data).length) return { key, data };
       }
     }
   }
+  for (const k of Object.keys(_raceStageMap)) {
+    if (trimSet.has(_txt(k).trim())) {
+      const data = _obj(_raceStageMap[k]);
+      if (Object.keys(data).length) return { key: k, data };
+    }
+  }
   return null;
 };
 const _qbRegionChanged = !_sameRegion(_region, _qbRegionKey, _qbRegionName);
 const _qbListIsArr = Array.isArray(_qb['列表']);
-const _qbRawList = _qbListIsArr
-  ? _qb['列表'].map((entry, idx) => ({ entry, rawKey: '', idx }))
-  : Object.entries(_obj(_qb['列表'])).map(([k, v], idx) => ({ entry: v, rawKey: _txt(k), idx }));
+const _qbRawList = [];
+if (_qbListIsArr) {
+  for (let idx = 0; idx < _qb['列表'].length; idx += 1) {
+    const entry = _qb['列表'][idx];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    _qbRawList.push({ entry, rawKey: '', idx });
+  }
+} else {
+  let idx = 0;
+  for (const [k, v] of Object.entries(_obj(_qb['列表']))) {
+    const curIdx = idx;
+    idx += 1;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+    _qbRawList.push({ entry: v, rawKey: _txt(k), idx: curIdx });
+  }
+}
 const _qbClosedTitles = [];
 const _qbItems = _qbRawList
   .map(({ entry, rawKey, idx }) => {
@@ -926,15 +1020,20 @@ const _qbItems = _qbRawList
       _qbClosedTitles.push(closedTag);
       return null;
     }
-    const id = _txt(rawKey).trim() || _txt(r['id'] || r['编号']).trim() || `q${idx + 1}`;
+    const rawIdField = _txt(r['id']).trim();
+    const rawNumField = _txt(r['编号']).trim();
+    const innerId = rawIdField || rawNumField;
+    const id = _txt(rawKey).trim() || innerId || `q${idx + 1}`;
     const cat = _txt(r['类别']).includes('剧情')
       ? '剧情任务'
       : (_txt(r['类别']).includes('主线') ? '本地主线' : '支线任务');
     const rawRewards = Array.isArray(r['预期收益'])
       ? r['预期收益'].map((x) => _txt(x).trim()).filter(Boolean)
       : _txt(r['预期收益']).split(/[、，,;\n；|｜]+/).map((x) => x.trim()).filter(Boolean);
-    const claimedInfo = _parseSlotMap(_claimedMap, id, title, rawKey);
-    const lostInfo = _parseSlotMap(_lostMap, id, title, rawKey);
+    const cleanTitle = _stripBackendTags(title);
+    const mapAliases = [rawIdField, rawNumField, cleanTitle];
+    const claimedInfo = _parseSlotMap(_claimedMap, id, title, rawKey, mapAliases);
+    const lostInfo = _parseSlotMap(_lostMap, id, title, rawKey, mapAliases);
     const rewardItems = rawRewards.map((rw, rwIdx) => {
       const slot = rwIdx + 1;
       const cleanText = _cleanRw(rw) || rw;
@@ -956,6 +1055,8 @@ const _qbItems = _qbRawList
     const accepted = !!formal;
     const normTitle = _stripTaskTitle(title);
     const everAccepted = _qbEverSet.has(id)
+      || (!!rawIdField && _qbEverSet.has(rawIdField))
+      || (!!rawNumField && _qbEverSet.has(rawNumField))
       || _qbEverSet.has(title)
       || (!!rawKey && _qbEverSet.has(rawKey))
       || (!!normTitle && _qbEverNormSet.has(normTitle));
@@ -969,7 +1070,7 @@ const _qbItems = _qbRawList
     const isAftershockStage1 = (_hasAftershockTag(truth) || _hasAftershockTag(title) || _hasAftershockFuse(truth))
       && !_hasAftershockSecondTag(truth)
       && !_hasAftershockSecondTag(title);
-    const raceStageInfo = accepted && isRace ? _findRaceStage(id, title, rawKey) : null;
+    const raceStageInfo = accepted && isRace ? _findRaceStage(id, title, rawKey, [rawIdField, rawNumField]) : null;
     const stagedData = raceStageInfo ? raceStageInfo.data : null;
     const stagedKey = raceStageInfo ? raceStageInfo.key : '';
     const stagedLost = stagedData
@@ -1034,6 +1135,8 @@ const _qbItems = _qbRawList
       ? _findDiaryMeta(id, title)
       : null;
     const diaryIdx = diaryMeta ? diaryMeta.idx : -1;
+    const claimedMapKey = _findMatchedMapKey(_claimedMap, _hasClaimed, [id, rawKey, rawIdField, rawNumField, title, cleanTitle]);
+    const lostMapKey = _findMatchedMapKey(_lostMap, _hasLost, [id, rawKey, rawIdField, rawNumField, title, cleanTitle]);
     return {
       id,
       rawKey,
@@ -1069,9 +1172,15 @@ const _qbItems = _qbRawList
       rewardItems,
       lostCount,
       remainingSlots,
-      hasClaimedKey: _hasClaimed && (Object.prototype.hasOwnProperty.call(_claimedMap, id) || (!!rawKey && Object.prototype.hasOwnProperty.call(_claimedMap, rawKey))),
-      hasLostKey: _hasLost && (Object.prototype.hasOwnProperty.call(_lostMap, id) || (!!rawKey && Object.prototype.hasOwnProperty.call(_lostMap, rawKey))),
-      intent: _qbIntentSet.has(id) || _qbIntentSet.has(title) || (!!rawKey && _qbIntentSet.has(rawKey)),
+      claimedMapKey,
+      lostMapKey,
+      hasClaimedKey: !!claimedMapKey,
+      hasLostKey: !!lostMapKey,
+      intent: _qbIntentSet.has(id)
+        || (!!rawIdField && _qbIntentSet.has(rawIdField))
+        || (!!rawNumField && _qbIntentSet.has(rawNumField))
+        || _qbIntentSet.has(title)
+        || (!!rawKey && _qbIntentSet.has(rawKey)),
     };
   })
   .filter(Boolean);
@@ -1178,10 +1287,10 @@ const _visitPatchHint = (() => {
     return `\`{ "op": "insert", "path": "/事件/任务情报板/区域访问日", "value": { ${entries} } }\``;
   }
   const curOp = _lastVisitKey ? 'replace' : 'insert';
-  const curPatch = `\`{ "op": "${curOp}", "path": "/事件/任务情报板/区域访问日/${_escPtr(_visitRegionKey)}", "value": ${JSON.stringify(_day)} }\``;
+  const curPatch = `\`{ "op": "${curOp}", "path": ${JSON.stringify(`/事件/任务情报板/区域访问日/${_escPtr(_visitRegionKey)}`)}, "value": ${JSON.stringify(_day)} }\``;
   if (oldVisitKey) {
     const oldOp = oldVisitKeyMatched ? 'replace' : 'insert';
-    const oldPatch = `\`{ "op": "${oldOp}", "path": "/事件/任务情报板/区域访问日/${_escPtr(oldVisitKey)}", "value": ${JSON.stringify(_day)} }\``;
+    const oldPatch = `\`{ "op": "${oldOp}", "path": ${JSON.stringify(`/事件/任务情报板/区域访问日/${_escPtr(oldVisitKey)}`)}, "value": ${JSON.stringify(_day)} }\``;
     return `${oldPatch} 与 ${curPatch}`;
   }
   return curPatch;
@@ -1456,21 +1565,23 @@ const _qbLostMergeInAdv = !!_qbLostMergeNote && _qbNeedAdv && _qbHasNonFailAdv;
 const _qbLostMergeInBody = !!_qbLostMergeNote && !_qbLostMergeInAdv;
 const _claimPatchHint = (it) => {
   if (!_hasQb) return '';
+  const targetKey = it.claimedMapKey || it.id;
   if (!_hasClaimed) {
-    return `{ "op": "insert", "path": "/事件/任务情报板/已兑现", "value": { ${JSON.stringify(it.id)}: [栏号] } }`;
+    return `{ "op": "insert", "path": "/事件/任务情报板/已兑现", "value": { ${JSON.stringify(targetKey)}: [栏号] } }`;
   }
   const op = it.hasClaimedKey ? 'replace' : 'insert';
-  return `{ "op": "${op}", "path": "/事件/任务情报板/已兑现/${_escPtr(it.id)}", "value": [累计栏号] }`;
+  return `{ "op": "${op}", "path": ${JSON.stringify(`/事件/任务情报板/已兑现/${_escPtr(targetKey)}`)}, "value": [累计栏号] }`;
 };
 const _lostPatchHint = (it, suggestedSlots) => {
   if (!_hasQb) return '';
+  const targetKey = it.lostMapKey || it.id;
   const hasArr = Array.isArray(suggestedSlots) && suggestedSlots.length > 0;
   const valStr = hasArr ? JSON.stringify(suggestedSlots) : '[累计失效栏号]';
   if (!_hasLost) {
-    return `{ "op": "insert", "path": "/事件/任务情报板/已失效", "value": { ${JSON.stringify(it.id)}: ${valStr} } }`;
+    return `{ "op": "insert", "path": "/事件/任务情报板/已失效", "value": { ${JSON.stringify(targetKey)}: ${valStr} } }`;
   }
   const op = it.hasLostKey ? 'replace' : 'insert';
-  return `{ "op": "${op}", "path": "/事件/任务情报板/已失效/${_escPtr(it.id)}", "value": ${valStr} }`;
+  return `{ "op": "${op}", "path": ${JSON.stringify(`/事件/任务情报板/已失效/${_escPtr(targetKey)}`)}, "value": ${valStr} }`;
 };
 const _raceStagePatchHint = (it, adv) => {
   if (!_hasQb) return '';
@@ -1583,7 +1694,7 @@ const _dueLeadDiaryIdx = _dueLead ? _findDiaryIdx('', _dueLead.title) : -1;
 const _removePatchHint = (it) => {
   if (!_hasQb || !_qb['列表']) return '';
   if (_qbListIsArr) return `{ "op": "remove", "path": "/事件/任务情报板/列表/${it.rawIdx}" }`;
-  return `{ "op": "remove", "path": "/事件/任务情报板/列表/${_escPtr(it.rawKey)}" }`;
+  return `{ "op": "remove", "path": ${JSON.stringify(`/事件/任务情报板/列表/${_escPtr(it.rawKey)}`)} }`;
 };
 _%>
 <% if (!_emitUpdate) { _%>
@@ -1614,6 +1725,9 @@ _%>
 <% } _%>
 <% if (_hasRaceDue) { _%>
     竞速风声: 下方标注竞速演进或待揭晓的已接取任务正被对手抢占先机。当前如果在城镇、酒馆、集市、驿站或有外界情报流通的环境，借助邻桌闲谈、商贩抱怨、公告变动等侧面半截传闻透出危机征兆（不直接报出精确位置或完整经过，禁止同行队友在缺乏外界来源时直接告知对手去向）；如果在荒野、地牢、密室等与外界隔绝的环境，不强行安排信使或传闻，也不提前显露隐藏折损
+<% } _%>
+<% if (_hasRaceStage && _isIsolatedLoc) { _%>
+    隔绝留白: 当前处于与外界隔绝的环境，变量 `竞速暂存` 中暂存的 `待揭晓风声` 与隐藏折损属于未流通后台记录，禁止提前写入正文或通过信使、井口传闻、同行队友转述（待回到城镇或可流通环境后再自然揭晓）
 <% } _%>
 <% if (_dueLead) { _%>
     异常细节: 原<% if (!_dueLead.sameRegion) { %>在「<%- _dueLead.region %>」<% } else { %>已<% } %>结案的「<%- _dueLead.title %>」在无关日常细节、战利品<% if (!_dueLead.sameRegion) { %>、来信、跨区传闻<% } %>或环境变化中<%- _dueLead.kind === '假象余震' ? '露出物理裂痕' : '显露后续异动' %>（<%- _dueLead.text %>）；本轮在正文中自然带出这一处<%- _dueLead.kind === '假象余震' ? '异常细节' : '后续线索' %>供 <user> 追查，不动已发奖励
@@ -1733,13 +1847,16 @@ _%>
 <% if (_hasNonRaceDue) { _%>
 <% if (_emitPlot) { _%>
 <%- _ind %>    演进: 对下方标注 `待演进` 的已接取剧情任务按阶梯推进 1 步（第 1 步筹码转移或原路失效；第 2 步冲突公开化、中间站恶化；第 3 步造成不可逆后果，写入区域或世界 `[黄/红]` 词条并转入止损，继续搁置按失败结案并移出 `/任务列表` 与任务情报板），静默同步至 `/任务列表`（不双写任务情报板）<% if (!_qbNeedGen || !_genHintRule) { %>，需要时在正文中通过当地传闻或情报渠道自然带出一句<% } %>
-<%- _ind %>    写回: 确认近期未随当前剧情推进后，普通演进只更新 `/任务列表/<任务名>/进展`（开头附 `[<%- _day %>]`）及必要的 `目标`/`关注度`，并按下方该条预抽定的 `本步失效` 与 `失效Patch` 写入 `/事件/任务情报板/已失效`（不得减免或替换栏号）；彻底失败时按该条提示零新收益结案、移出 `/任务列表` 与任务情报板并写入 `[黄/红]` 词条（不再更新进展或写 `失效Patch`）<% if (_qbLostMergeInAdv) { %><%- _qbLostMergeNote %><% } %>
+<%- _ind %>    写回: 确认近期未随当前剧情推进后，普通演进只更新 `/任务列表/<任务名>/进展`（开头附 `[<%- _day %>]`）及必要的 `目标`/`关注度`<% if (_qbHasNonFailAdv || _qbLostPatchCount > 0) { %>，并按下方该条预抽定的 `本步失效` 与 `失效Patch` 写入 `/事件/任务情报板/已失效`（不得减免或替换栏号）<% } %>；彻底失败时按该条提示零新收益结案、移出 `/任务列表` 与任务情报板并写入 `[黄/红]` 词条（不再更新进展或写 `失效Patch`）<% if (_qbLostMergeInAdv) { %><%- _qbLostMergeNote %><% } %>
 <% } else { _%>
-<%- _ind %>    写回: 确认下方标注 `待演进` 的已接取剧情任务近期未随当前剧情推进后，按上文「剧情演进」三步阶梯推进 1 步并写入对应变量（第 3 步同步写入 `[黄/红]` 词条并转入止损）：普通演进更新 `/任务列表/<任务名>/进展`（开头附 `[<%- _day %>]`）及必要的 `目标`/`关注度`（不双写任务情报板），并按该条预抽定的 `本步失效` 与 `失效Patch` 写入 `/事件/任务情报板/已失效`（不得减免或替换栏号）；彻底失败时按该条提示零新收益结案、移出 `/任务列表` 与任务情报板并写入 `[黄/红]` 词条（不再更新进展或写 `失效Patch`）<% if (_qbLostMergeInAdv) { %><%- _qbLostMergeNote %><% } %>
+<%- _ind %>    写回: 确认下方标注 `待演进` 的已接取剧情任务近期未随当前剧情推进后，按上文「剧情演进」三步阶梯推进 1 步并写入对应变量（第 3 步同步写入 `[黄/红]` 词条并转入止损）：普通演进更新 `/任务列表/<任务名>/进展`（开头附 `[<%- _day %>]`）及必要的 `目标`/`关注度`（不双写任务情报板）<% if (_qbHasNonFailAdv || _qbLostPatchCount > 0) { %>，并按该条预抽定的 `本步失效` 与 `失效Patch` 写入 `/事件/任务情报板/已失效`（不得减免或替换栏号）<% } %>；彻底失败时按该条提示零新收益结案、移出 `/任务列表` 与任务情报板并写入 `[黄/红]` 词条（不再更新进展或写 `失效Patch`）<% if (_qbLostMergeInAdv) { %><%- _qbLostMergeNote %><% } %>
 <% } _%>
 <% } _%>
 <% if (_hasRaceDue) { _%>
 <%- _ind %>    竞速演进: 标注竞速演进或待揭晓的任务按当前环境分流处理（当前环境参考：<%- _isIsolatedLoc ? '疑似与外界隔绝的区域，按正文实际场景判断' : '常规区域，若正文实际在无外界信息流的封闭空间内按隔绝分支处理' %>）。①在城镇、酒馆、集市、驿站或有外界情报流通的环境：<% if (_emitPlot) { %>借助环境侧面半截传闻透出风声（禁止全知播报或同行队友在缺乏外界来源时直接告知对手去向），<% } %>按该条 `失效Patch` 将累计失效栏号写入 `/事件/任务情报板/已失效`<% if (_qbLostMergeInAdv && !_hasNonRaceDue) { %><%- _qbLostMergeNote %><% } %>，同步更新 `/任务列表/<任务名>/进展`（开头附 `[<%- _day %>]`，仅记外界可见风声），存在 `清暂存Patch` 时同步移除 `/事件/任务情报板/竞速暂存` 对应记录<%- _raceAllClearNote %>；彻底失败时按该条提示零新收益结案并移出。②在荒野、地牢、密室等无外界信息流的环境：<% if (_emitPlot) { %>正文不强行安排信使或传闻，<% } %>不写入公开 `已失效`、不改写可见 `进展`，仅按该条 `隔绝暂存Patch` 写入或更新 `/事件/任务情报板/竞速暂存`（含 `标题`/`最近演化日`/`待失效`/`待揭晓风声`，仅彻底失败时附 `待失败结案`）<%- _raceMultiStageNote %>，待重返人群环境后合并揭晓
+<% } _%>
+<% if (_emitPlot && _hasRaceStage && _isIsolatedLoc) { _%>
+<%- _ind %>    隔绝留白: 当前处于与外界隔绝的环境，变量 `竞速暂存` 中暂存的 `待揭晓风声` 与隐藏折损属于未流通后台记录，禁止提前写入正文或通过信使、井口传闻、同行队友转述（待回到城镇或可流通环境后再自然揭晓）
 <% } _%>
 <% } _%>
 <%- _ind %>  本轮指令（<%- _region.name || '未记录' %><% if (_worldTime) { %>｜<%- _worldTime %><% } %>）: <% if (_qbMode === 'rescan') { %><% if (_isNullCore) { %><user> 已启动今日免费地区情报重扫（每日 1 次）：<% } else { %><user> 已支付 <%- _data.questBoard.rescanFp %> FP 启动地区情报重扫：<% } %><% if (_localAftermathShown.length === 0) { %>先为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日；随后<% } %><% if (_qbShownItems.length > 0) { %>保留剧情任务、已接取与 `★已锁定` 项，按当前区域重新生成 1~2 条本地主线 + 2~3 条支线任务<% } else { %>当前没有需保留的旧任务，按当前区域全新生成 1~2 条本地主线 + 2~3 条支线任务<% } %><% if (!_qbHasStoryItem) { %>（没有剧情任务时补 1 条剧情任务）<% } %>（<% if (_qbShownItems.length > 0) { %>下方列出的保留项在 `列表` 中保持原 `id`/等级/内容/更新日不变，不重编、不添 `进展`，写回 `预期收益` 时去掉 `[n□]`/`[n✓]`/`[n✕]` 前缀；<% } %>未列出的旧未接取未锁定本地任务不保留，整表 `<%- _qbExistKeys.includes('列表') ? 'replace' : 'insert' %>` 写入 `列表`）<% } else if (_qbMode === 'init') { %>首次初始化任务情报板：<% if (_localAftermathShown.length === 0) { %>先为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日；再<% } %>生成 1 条剧情任务 + 1~2 条本地主线 + 2~3 条支线任务<% if (_localAftermathShown.length > 0) { %>，并记录区域访问日<% } %><% } else if (_qbMode === 'relocate') { %>已跨区域迁入「<%- _region.name %>」（原「<%- _qbRegionName %>」）：<% if (_localAftermathShown.length === 0) { %>先为当前区域写入 3 条差异化色阶的初始常驻词条（禁止纯色；当地正有短期活动时额外叠加 1~<%- _maxTempAftermath %> 条限时词条），并记录区域访问日；随后<% } else if (_awayDays === null) { %>返回旧区域（首次记录访问日）：无明确剧情变故或到期预告事件时保持原词条不变，并记录区域访问日；随后<% } else if (_revisitDue) { %>返回旧区域（已离开 <%- _awayDays %> 天）：按上方词条规则演进或改写本区最多 1 条词条（没有明显变化时保持不变），并更新区域访问日；随后<% } else { %>返回旧区域（离开不足 <%- _regionRevisitDays %> 天）：无明确剧情变故或到期预告事件时保持原词条不变，并更新区域访问日；随后<% } %><% if (_qbShownItems.length > 0) { %>保留下方现有项（写回 `预期收益` 时去掉 `[n□]`/`[n✓]`/`[n✕]` 前缀）<% if (_qbNeedAdv) { %>并推进<%- _advTargetLabel %><% } %>，<% } else { %>当前没有需保留的旧任务，<% if (_qbNeedAdv) { %>推进<%- _advTargetLabel %>并<% } %><% } %>按新区生成 1~2 条本地主线 + 2~3 条支线任务（没有剧情任务时补 1 条）<% } else if (_qbMode === 'refill') { %>补足空缺：按当前区域补足未接取的剧情任务、本地主线或支线空缺<% if (_qbNeedAdv) { %>，并推进<%- _advTargetLabel %><% } %><% } else if (_qbMode === 'advance') { %><%- _advModeLead %>：按上方「剧情演进」推进标注 `待演进` 的条目<% } else { %>同区域常规停留：<% if (_qbHasTracked && _hasQb) { %>发放板上收益时按 `兑现Patch` 写入，发生折损失效时按 `失效Patch` 写入，<% } %>发生重大剧情或事件链变故时按规则更新区域或世界词条，其余仅移除过期或已完结项<% if (!_dueLead) { %>；没有变动（含本轮刚跨城）时跳过写板<% } else { %>；本轮另有待引爆因果线，按下方「因果引爆」追加追查任务并清理引信<% } %><% } %><% if (_qbClosedTitles.length) { %>（同步将已完结任务移出任务情报板：<%- _qbClosedTitles.join('、') %>）<% } %>

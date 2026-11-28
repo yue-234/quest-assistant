@@ -86,8 +86,11 @@ function latestSwipeId() {
     const ctx = parentWindow.SillyTavern?.getContext?.();
     const chat = ctx?.chat || parentWindow.SillyTavern?.chat;
     if (Array.isArray(chat) && chat.length > 0) {
-      const last = chat[chat.length - 1];
-      return last ? (last.swipe_id ?? 0) : null;
+      for (let i = chat.length - 1; i >= 0; i -= 1) {
+        const msg = chat[i];
+        if (!msg || msg.is_system) continue;
+        return msg.swipe_id ?? 0;
+      }
     }
   } catch {
     /* 忽略 */

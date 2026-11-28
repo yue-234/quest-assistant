@@ -26,6 +26,8 @@ import {
   mergeRewardMapEntries,
   parseClaimedSet,
   parseLostSet,
+  normalizeDay,
+  resolveRegionText,
   CLAIMED_MARK_RE,
   LOST_MARK_RE,
 } from './src/state.js';
@@ -94,6 +96,7 @@ import {
 } from './src/scriptRef.js';
 import {
   clearReplySettle,
+  commit,
   generating,
   markMvuSettled,
   markReplyReceived,
@@ -5401,4 +5404,365 @@ test('待阅结案回执（双路截获、同楼层收起防重抓墓碑、先�
   // ignoreQuest 同步清理对象型别名键 竞速暂存
   const ignored = ignoreQuest(sweptFail.stat, 'q_keep_id', '保留任务');
   assert.equal(Object.prototype.hasOwnProperty.call(ignored.stat['事件']['任务情报板'], '竞速暂存'), false);
+});
+
+test('边界加固：多回执墓碑上限、位置防撞、稀疏空洞、原型污染与状态/别名一致', async () => {
+  // 1) >=11 条同时结案：活跃可见保留 10 条（未阅优先），超出部分写入 已收起 墓碑且同楼层二次维护不重复抓取
+  const prev12List = Array.from({ length: 12 }, (_, i) => ({
+    id: `q_cap_${i + 1}`,
+    类别: '支线任务',
+    等级: 'D',
+    标题: `并发委托${i + 1}`,
+    预期收益: [`金币 ×${(i + 1) * 10}`],
+  }));
+  const prev12Tasks = Object.fromEntries(prev12List.map((q) => [q['标题'], { 状态: '进行中', 进展: '[6月-12日] 执行中' }]));
+  const prev12Stat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: prev12Tasks,
+    事件: { 任务情报板: { 区域键: '雾晶港', 区域: '雾晶港', 列表: prev12List } },
+  };
+  const cur12Empty = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-13日' },
+    任务列表: {},
+    事件: { 任务情报板: { 区域键: '雾晶港', 区域: '雾晶港' } },
+  };
+  const chatCap = [
+    { is_user: true, mes: '汇报结果' },
+    { is_user: false, mes: '全部完成' },
+  ];
+  const m1 = maintainQuestBoard(cur12Empty, { chat: chatCap, chatCount: 2, historyStats: [cur12Empty, prev12Stat] });
+  assert.ok(!m1.skip);
+  const rawReceipts12 = m1.stat['事件']['任务情报板']['待阅回执'];
+  assert.equal(rawReceipts12.length, 12, '10 条可见回执 + 2 条同楼层防重抓墓碑');
+  assert.equal(readState(m1.stat).questBoard.receipts.length, 10, 'readState 仅暴露 10 条可见回执');
+  const tombstones = rawReceipts12.filter((r) => r['已收起'] === true);
+  assert.equal(tombstones.length, 2);
+  assert.ok(tombstones.every((r) => r['已阅'] === true && r['已阅消息数'] === '2'));
+
+  // 同一楼层再运行 maintainQuestBoard 必须收敛为 skip: true（无死循环）
+  const m2 = maintainQuestBoard(m1.stat, { chat: chatCap, chatCount: 2, historyStats: [m1.stat, prev12Stat] });
+  assert.equal(m2.skip, true);
+  assert.equal(hasPendingMaintenance(m1.stat, { chat: chatCap, chatCount: 2, historyStats: [m1.stat, prev12Stat] }), false);
+
+  // 2) clearQuestRescan 改写 cur 且同帧存在 Path B 竞速失败待抓时，prevStat 不得失真
+  const prevMixedStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { 港湾夺标: { 状态: '进行中', 进展: '[6月-12日] 仍在追查。' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        竞速暂存: { q_race_mix: { 标题: '港湾夺标', 最近演化日: '6月-12日', 待失效: [1], 待失败结案: true } },
+        列表: [{ id: 'q_race_mix', 类别: '本地主线', 等级: 'C', 标题: '港湾夺标', 预期收益: ['稀有甲 ×1'] }],
+      },
+    },
+  };
+  const curMixedStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-13日' },
+    任务列表: {},
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        上次重扫日: '复兴纪元488年-6月-13日-msg2',
+        竞速暂存: { q_race_mix: { 标题: '港湾夺标', 最近演化日: '6月-12日', 待失效: [1], 待失败结案: true } },
+        列表: [],
+      },
+    },
+  };
+  const chatMixed = [{ is_user: true, mes: 'a' }, { is_user: false, mes: 'b' }];
+  const mixedMaint = maintainQuestBoard(curMixedStat, { floor: 1, chatCount: 2, chat: chatMixed, historyStats: [curMixedStat, prevMixedStat] });
+  assert.ok(!mixedMaint.skip);
+  const mixRec = readState(mixedMaint.stat).questBoard.receipts.find((r) => r.id === 'q_race_mix');
+  assert.ok(mixRec);
+  assert.equal(mixRec.outcome, 'failed', 'clearQuestRescan 与 Path B 同帧不得丢失 prevStat 里的待失败竞速标志');
+
+  // 3) 无显式 id 位置兜底 q1 防撞、已完成文本含「失利」不被覆盖、dismissReceipt 兜底值
+  const prevNoId = {
+    世界: { 地点: '雾晶港', 时间: '6月-12日' },
+    任务列表: { '护送商队（个人）': { 状态: '已完成', 进展: '[6月-12日] 截杀刺客，敌方失利退走，护送圆满完成。' } },
+    事件: { 任务情报板: { 区域键: '雾晶港', 列表: [{ 类别: '支线任务', 等级: 'D', 标题: '护送商队', 预期收益: ['金币 ×100'] }] } },
+  };
+  const curNoIdReplaced = {
+    世界: { 地点: '雾晶港', 时间: '6月-13日' },
+    任务列表: { 新城调查: { 状态: '进行中' } },
+    事件: { 任务情报板: { 区域键: '雾晶港', 列表: [{ 类别: '支线任务', 等级: 'D', 标题: '新城调查', 预期收益: ['金币 ×50'] }] } },
+  };
+  const capNoId = captureAiRemovedReceipts(curNoIdReplaced, { chat: chatCap, chatCount: 2, historyStats: [curNoIdReplaced, prevNoId] });
+  assert.ok(!capNoId.skip);
+  const recNoId = readState(capNoId.stat).questBoard.receipts[0];
+  assert.equal(recNoId.displayTitle, '护送商队');
+  assert.equal(recNoId.outcome, 'done', '显式 已完成 绝不能被 progress 中「失利」字样覆盖为 已失败');
+  assert.equal(recNoId.outcomeLabel, '已完成');
+
+  // 无 chatCount 调用 dismissReceipt 也写入 '0' 墓碑，后续楼层可清理
+  const disNoCount = dismissReceipt(capNoId.stat, recNoId.id);
+  assert.equal(disNoCount.stat['事件']['任务情报板']['待阅回执'][0]['已阅消息数'], '0');
+  assert.equal(hasExpiredReceipts(disNoCount.stat, { chatCount: 2, lastIsAssistant: true }), true);
+
+  // 4) 稀疏数组空洞 + __proto__ 原型安全 + 对象型别名清理 + 无列表键孤儿清理
+  const sparseArr = [];
+  sparseArr[1] = { id: 'q_sp', 类别: '支线任务', 等级: 'D', 标题: '空洞旁委托', 预期收益: ['金币 ×20'] };
+  const protoList = JSON.parse('{"__proto__":{"id":"__proto__","类别":"支线任务","标题":"原型键任务","预期收益":["金币 ×5"]}}');
+  const weirdStat = {
+    世界: { 地点: '雾晶港', 时间: { bad: 2 } },
+    任务列表: { 空洞旁委托: { 状态: '进行中' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        关注方向: { bad: 3 },
+        余波: { 雾晶港: [true, { bad: 4 }, '[绿]【港务通畅】正常运行。'] },
+        列表: sparseArr,
+      },
+    },
+  };
+  assert.equal(normalizeDay(weirdStat['世界']['时间']), '');
+  assert.equal(resolveRegionText({ bad: 1 }).name, '');
+  const stWeird = readState(weirdStat);
+  assert.equal(stWeird.questBoard.focus.text, '');
+  assert.equal(stWeird.questBoard.focus.active, false);
+  assert.equal(stWeird.questBoard.aftermath.local.length, 1);
+  assert.equal(stWeird.questBoard.items.length, 1);
+  assert.doesNotMatch(JSON.stringify(stWeird), /\[object Object\]|\bNaN\b/);
+
+  const protoStat = {
+    世界: { 地点: '雾晶港', 时间: '6月-12日' },
+    事件: { 任务情报板: { 区域键: '雾晶港', 列表: protoList } },
+  };
+  const cycledProto = cycleQuestRewardState(protoStat, '__proto__', 1, '原型键任务');
+  assert.equal(Object.prototype.hasOwnProperty.call(Object.prototype, '__proto__') && Object.prototype['__proto__']?.[0] !== undefined, false);
+  assert.equal(Object.getPrototypeOf(cycledProto.stat['事件']['任务情报板']['已兑现']), Object.prototype);
+  assert.equal(Object.prototype.hasOwnProperty.call(cycledProto.stat['事件']['任务情报板']['已兑现'], '__proto__'), true);
+
+  // 无 列表 键时孤儿 意向 / 曾接取 / 已兑现 仍能触发并完成维护
+  const orphanStat = {
+    世界: { 地点: '雾晶港', 时间: '6月-12日' },
+    事件: { 任务情报板: { 区域键: '雾晶港', 意向: ['q_ghost'], 曾接取: ['q_ghost'], 已兑现: { q_ghost: [1] } } },
+  };
+  assert.equal(hasPendingMaintenance(orphanStat, { chatCount: 2 }), true);
+  const orphanMaint = maintainQuestBoard(orphanStat, { chatCount: 2 });
+  assert.ok(!orphanMaint.skip);
+  assert.equal(Object.keys(orphanMaint.stat['事件']['任务情报板']['已兑现'] || {}).length, 0);
+
+  // 5) 对象型列表 r['id']/r['编号'] 合并 + ignoreQuest + 空白 rawKey
+  const aliasStat = {
+    世界: { 地点: '雾晶港', 时间: '6月-12日' },
+    任务列表: { 港口密令: { 状态: '进行中', 进展: '[6月-12日] 进行中' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        已兑现: { NUM_8: [1] },
+        已失效: { inner_alias_id: [2] },
+        列表: {
+          '  slot_padded ': {
+            id: 'inner_alias_id',
+            编号: 'NUM_8',
+            类别: '支线任务',
+            等级: 'D',
+            标题: '【支线】港口密令',
+            预期收益: ['护符 ×1', '金币 ×50'],
+          },
+        },
+      },
+    },
+  };
+  const stAlias = readState(aliasStat);
+  assert.equal(stAlias.questBoard.items[0].rewardItems[0].claimed, true);
+  assert.equal(stAlias.questBoard.items[0].rewardItems[1].lost, true);
+  const ignoredAlias = ignoreQuest(aliasStat, 'inner_alias_id', '港口密令');
+  assert.equal(Object.keys(ignoredAlias.stat['事件']['任务情报板']['列表'] || {}).length, 0);
+  assert.equal(Object.keys(ignoredAlias.stat['事件']['任务情报板']['已兑现'] || {}).length, 0);
+  assert.equal(Object.keys(ignoredAlias.stat['事件']['任务情报板']['已失效'] || {}).length, 0);
+
+  // 6) commit.js latestSwipeId 跳过末尾 is_system: true 消息并拦截真实楼层 swipe 变更
+  const savedGlobals = {
+    Mvu: globalThis.Mvu,
+    TavernHelper: globalThis.TavernHelper,
+    SillyTavern: globalThis.SillyTavern,
+    document: globalThis.document,
+    getComputedStyle: globalThis.getComputedStyle,
+  };
+  try {
+    let sysChat = [
+      { is_user: true, mes: 'u1', swipe_id: 0 },
+      { is_user: false, mes: 'a1', swipe_id: 0 },
+      { is_user: false, is_system: true, mes: 'sys_note' },
+    ];
+    let sysStat = {
+      主角: {},
+      世界: { 地点: '雾晶港', 时间: '6月-12日' },
+      事件: { 任务情报板: { 区域键: '雾晶港', 列表: [] } },
+    };
+    globalThis.document = { getElementById: () => ({ id: 'mes_stop' }) };
+    globalThis.getComputedStyle = () => ({ display: 'none' });
+    globalThis.TavernHelper = { getLastMessageId: () => sysChat.length - 1, refreshOneMessage: async () => {} };
+    globalThis.SillyTavern = { getContext: () => ({ chatId: 'sys_swipe_test', chat: sysChat, saveChat: async () => {} }) };
+    let gateResolve;
+    const gate = new Promise((r) => { gateResolve = r; });
+    globalThis.Mvu = {
+      getMvuData: () => ({ stat_data: sysStat }),
+      replaceMvuData: async () => { await gate; },
+    };
+    const pWait = commit((s) => ({ stat: s, done: 'first' }), { redraw: false });
+    const pBlocked = commit((s) => ({ stat: { ...s, touched: true }, done: 'second' }), { redraw: false });
+    await new Promise((r) => setTimeout(r, 10));
+    sysChat[1].swipe_id = 1; // 即使末尾挂着 is_system 消息，也应精准侦测到 chat[1] 切页
+    gateResolve();
+    const [rWait, rBlocked] = await Promise.all([pWait, pBlocked]);
+    assert.equal(rWait.done, 'first');
+    assert.match(rBlocked.error || '', /操作期间聊天或最新楼层已变化|已变化|切换|刷新/);
+  } finally {
+    globalThis.Mvu = savedGlobals.Mvu;
+    globalThis.TavernHelper = savedGlobals.TavernHelper;
+    globalThis.SillyTavern = savedGlobals.SillyTavern;
+    if (savedGlobals.document === undefined) delete globalThis.document;
+    else globalThis.document = savedGlobals.document;
+    if (savedGlobals.getComputedStyle === undefined) delete globalThis.getComputedStyle;
+    else globalThis.getComputedStyle = savedGlobals.getComputedStyle;
+  }
+});
+
+test('地名分层解析、复合聚落隔绝判定、JSON Patch 转义、0 收益措辞与移动端/FAB 前端修复契约', () => {
+  const dual = buildWorldbookJson(ejsSource, SCRIPT_VERSION);
+  const updateSrc = dual.entries['1'].content;
+  const chat2 = [{ is_user: true, mes: '继续' }, { is_user: false, mes: '周围一片安静' }];
+
+  // 1) state.js resolveRegionText & 世界书 _subPlaceRe 保持一致：地下城/下水道/地牢归属所属城镇，2 段大陆/帝国保留独立子区
+  assert.equal(resolveRegionText('阿斯塔利亚大陆-雾晶港-学院下水道-古代地牢').name, '雾晶港');
+  assert.equal(resolveRegionText('铁炉堡-旧城区-地牢').name, '铁炉堡');
+  assert.equal(resolveRegionText('艾尔登大陆-黑石地下城').name, '黑石地下城');
+  assert.equal(resolveRegionText('霜语城-港口').name, '港口');
+  assert.equal(resolveRegionText('雾晶港', { places: [{ id: 'p1', name: '雾晶港', is_geographic: true, importance: 'not_a_number', keywords: ['雾晶港'] }] }).name, '雾晶港');
+
+  for (const [loc, expectRegion] of [
+    ['阿斯塔利亚大陆-雾晶港-学院下水道-古代地牢', '雾晶港'],
+    ['铁炉堡-旧城区-地牢', '铁炉堡'],
+    ['艾尔登大陆-黑石地下城', '黑石地下城'],
+    ['霜语城-港口', '港口'],
+  ]) {
+    const upInit = renderEjs(
+      { 世界: { 地点: loc, 时间: '6月-12日' }, 事件: {} },
+      { chat: chat2, lastUserMessageId: 1, source: updateSrc },
+    );
+    assert.match(upInit, new RegExp(`本轮指令（${expectRegion}｜`));
+    const upStay = renderEjs(
+      {
+        世界: { 地点: loc, 时间: '6月-12日' },
+        事件: { 任务情报板: { 区域键: expectRegion, 区域: expectRegion, 列表: [{ id: 'q1', 类别: '支线任务', 等级: 'D', 标题: '驻留测试', 预期收益: ['金币 ×10'] }] } },
+      },
+      { chat: chat2, lastUserMessageId: 1, source: updateSrc },
+    );
+    assert.doesNotMatch(upStay, /跨区域迁移|切换区域键/, `${loc} 不得被误判离开 ${expectRegion}`);
+  }
+
+  // 2) _isIsolatedLoc 复合聚落与地下封闭空间判定
+  const makeIsoStat = (loc) => ({
+    世界: { 地点: loc, 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { 秘银争锋: { 状态: '进行中', 进展: '[6月-10日] 进行中' } },
+    事件: {
+      任务情报板: {
+        区域键: '白港镇',
+        区域: '白港镇',
+        更新日: '复兴纪元488年-6月-11日',
+        曾接取: ['q_iso'],
+        列表: [{ id: 'q_iso', 类别: '本地主线', 等级: 'C', 标题: '秘银争锋', 真相: '【多方竞速】公开抢单', 预期收益: ['稀有器 ×1', '金币 ×200'] }],
+      },
+    },
+  });
+  for (const pubLoc of ['白港镇-北郊-森林村', '荒野商队驿站', '雪原镇', '孤岛港']) {
+    const up = renderEjs(makeIsoStat(pubLoc), { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+    assert.match(up, /当前环境参考：常规区域/, `${pubLoc} 应判定为常规可流通聚落`);
+    assert.match(up, /｜本步失效（/, `${pubLoc} 应生成公开本步失效提示`);
+    assert.doesNotMatch(up, /当前环境参考：疑似与外界隔绝的区域/, `${pubLoc} 不得落入隔绝分支`);
+  }
+  for (const isoLoc of ['雾晶港-地下水渠', '王都-暗牢', '铁炉堡-旧城区-地牢']) {
+    const up = renderEjs(makeIsoStat(isoLoc), { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+    assert.match(up, /当前环境参考：疑似与外界隔绝的区域/, `${isoLoc} 应判定为与外界隔绝区域`);
+    assert.match(up, /｜隔绝暂存Patch：/, `${isoLoc} 应提供隔绝暂存Patch`);
+  }
+
+  // 3) 含 " / \ 与前后空白 rawKey 的 JSON Patch 可合法 JSON.parse，且 0 有效收益剧情演进不出 失效Patch 误导
+  const escStat = {
+    世界: { 地点: '雾晶港-广场', 时间: '复兴纪元488年-6月-20日' },
+    任务列表: { '零收益线': { 状态: '进行中', 进展: '[6月-10日] 久未推进。' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        更新日: '复兴纪元488年-6月-20日',
+        曾接取: ['零收益线'],
+        列表: {
+          ' key/with"quote\\and_space ': {
+            id: 'q"slash/id\\1',
+            类别: '剧情任务',
+            等级: 'B',
+            标题: '零收益线',
+            真相: '【已兑现零剩】仅剧情推进',
+            预期收益: [],
+          },
+          q_fill1: { id: 'q_fill1', 类别: '本地主线', 等级: 'C', 标题: '填充主线A', 预期收益: ['金币 ×50'] },
+          q_fill2: { id: 'q_fill2', 类别: '支线任务', 等级: 'D', 标题: '填充支线B', 预期收益: ['金币 ×10'] },
+          q_fill3: { id: 'q_fill3', 类别: '支线任务', 等级: 'D', 标题: '填充支线C', 预期收益: ['金币 ×10'] },
+        },
+      },
+    },
+  };
+  const escUpd = renderEjs(escStat, { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+  assert.match(escUpd, /本轮指令.*推进/, '应准确命中 advance 剧情演进模式');
+  assert.doesNotMatch(escUpd, /预抽定的 `本步失效`|｜本步失效|｜失效Patch：/, '0 有效收益剧情演进不应输出预抽定本步失效或失效Patch 要求');
+  const removePatchMatch = escUpd.match(/完结移出：(\{[^\n]+\})/);
+  assert.ok(removePatchMatch, '应包含带转义 rawKey 的 完结移出 JSON Patch');
+  assert.doesNotThrow(() => {
+    const parsed = JSON.parse(removePatchMatch[1]);
+    assert.equal(parsed.op, 'remove');
+    assert.equal(parsed.path, '/事件/任务情报板/列表/ key~1with"quote\\and_space ');
+  });
+
+  // 4) 前端修复源码契约（移动端顶栏 2 行隐藏副标、FAB 挂载前定位禁用首帧滑入、panel/runtime 回执重试与切聊天代次护栏）
+  const panelCss = fs.readFileSync(path.join(__dirname, 'src/panel.css'), 'utf8');
+  const fabJs = fs.readFileSync(path.join(__dirname, 'src/fab.js'), 'utf8');
+  const panelJs = fs.readFileSync(path.join(__dirname, 'src/panel.js'), 'utf8');
+  const runtimeJs = fs.readFileSync(path.join(__dirname, 'src/runtime.js'), 'utf8');
+  assert.match(panelCss, /\.qh-top-sub,\s*\n\s*\.qh-top-close-text\s*\{\s*display:\s*none;/);
+  assert.match(fabJs, /btn\.style\.transition\s*=\s*'none'[\s\S]*?placeFromSaved\(\)[\s\S]*?doc\.body\.append\(btn\)/);
+  assert.match(panelJs, /chatEpoch/);
+  assert.match(panelJs, /receiptMarkGen/);
+  assert.match(panelJs, /tailMesDigest/);
+  assert.match(runtimeJs, /forceResetReceiptAttempt:\s*true/);
+
+  // 5) 跨修饰词前缀的任务日记核心词匹配与隔绝环境 竞速暂存 防泄密（隔绝留白）
+  const sequelCoreStat = {
+    世界: { 地点: '艾尔登大陆-黑石地下城', 时间: '复兴纪元488年-6月-11日' },
+    任务列表: {
+      '圣银匣·暗账追查': { 状态: '进行中', 进展: '[6月-11日] 已追至地城门口。' },
+      '秘银争锋': { 状态: '进行中', 进展: '[6月-10日] 进行中。' },
+    },
+    事件: {
+      任务情报板: {
+        区域键: '黑石地下城',
+        区域: '黑石地下城',
+        更新日: '复兴纪元488年-6月-11日',
+        竞速暂存: { q_race: { 标题: '秘银争锋', 最近演化日: '复兴纪元488年-6月-11日', 待失效: [1], 待揭晓风声: ['昨夜北门有人急租快船'] } },
+        任务日记: [
+          { id: 'd_orig', 任务id: 'q_silver_old', 标题: '失窃的圣银匣', 日期: '6月-10日', 正文: '先前的案情' },
+          { id: 'd_gen', 任务id: 'q_gen_old', 标题: '港口调查事件', 日期: '6月-10日', 正文: '港口的事' },
+        ],
+        列表: [
+          { id: 'q_s2', 类别: '本地主线', 等级: 'B', 标题: '【假象余震二段】圣银匣·暗账追查', 预期收益: ['金币 ×100'] },
+          { id: 'q_race', 类别: '本地主线', 等级: 'C', 标题: '秘银争锋', 真相: '【多方竞速】公开抢单', 预期收益: ['金币 ×100'] },
+          { id: 'q_nohit', 类别: '支线任务', 等级: 'D', 标题: '商队调查事件', 预期收益: ['金币 ×20'] },
+        ],
+      },
+    },
+  };
+  const stCore = readState(sequelCoreStat);
+  assert.equal(stCore.questBoard.items[0].diaryIndex, 0, '圣银匣·暗账追查 应通过核心词 圣银匣 命中 失窃的圣银匣 日记');
+  assert.equal(stCore.questBoard.items[2].diaryIndex, -1, '纯通用词缀 调查事件 不得与 港口调查事件 误撞');
+  const coreUpd = renderEjs(sequelCoreStat, { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+  assert.match(coreUpd, /"op":"insert","path":"\/事件\/任务情报板\/任务日记\/0\/续篇"/);
+  const plotSrc = dual.entries['0'].content;
+  const isoPlot = renderEjs(sequelCoreStat, { chat: chat2, lastUserMessageId: 1, source: plotSrc });
+  assert.equal((isoPlot.match(/\*\*[^*]+\*\*/g) || []).length, 0);
+  assert.match(isoPlot, /隔绝留白:/, '存在 竞速暂存 且处于隔绝地城时 plot 应注入 隔绝留白 防透出变量内风声');
+  assert.doesNotMatch(isoPlot, /昨夜北门有人急租快船/, '隔绝地城内 plot 不应回显 待揭晓风声 原文');
 });

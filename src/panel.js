@@ -85,6 +85,17 @@ let busyToken = 0;
 let sweeping = false;
 let markingReceipts = false;
 let receiptMarkAttemptKey = '';
+let chatEpoch = 0;
+let receiptMarkGen = 0;
+let lastAttemptChatCount = null;
+let receiptRetryTimer = 0;
+let receiptRetryCount = 0;
+
+function clearReceiptRetry() {
+  receiptRetryCount = 0;
+  clearTimeout(receiptRetryTimer);
+  receiptRetryTimer = 0;
+}
 let focusComposing = false;
 let verComposing = false;
 let pendingDeferredRefresh = false;
@@ -152,14 +163,23 @@ function chatCount() {
   return effectiveChatCount(chatArray());
 }
 
-function lastSwipeId(chat) {
-  if (!Array.isArray(chat)) return '';
+function lastNonSystemMessage(chat) {
+  if (!Array.isArray(chat)) return null;
   for (let i = chat.length - 1; i >= 0; i -= 1) {
     const msg = chat[i];
-    if (!msg || msg.is_system) continue;
-    return msg.swipe_id ?? '';
+    if (msg && !msg.is_system) return msg;
   }
-  return '';
+  return null;
+}
+
+function lastSwipeId(chat) {
+  return lastNonSystemMessage(chat)?.swipe_id ?? '';
+}
+
+function tailMesDigest(chat) {
+  const raw = lastNonSystemMessage(chat)?.mes;
+  const mes = typeof raw === 'string' ? raw : String(raw ?? '');
+  return `${mes.length}:${mes.slice(0, 24)}`;
 }
 
 function currentStat() {
@@ -303,6 +323,7 @@ function switchTab(nextTab, { diaryIndex } = {}) {
     ui.selectedDiaryIndex = diaryIndex;
     ui.mobileDiaryIndexOpen = false;
   }
+  if (valid === 'board') clearReceiptRetry();
   if (valid === 'settings') {
     void refreshWorldbookStatus();
     void refreshLatestTag({ force: true });
@@ -924,7 +945,10 @@ function renderBoardView(state, qb, { regionDisplay, canEditMode, compact }) {
   const receiptsNode = renderReceiptsStrip(qb.receipts, {
     onDismiss: (receiptId) => run(
       '已收起结案回执',
-      (s) => dismissReceipt(s, receiptId, { chat: chatArray(), chatCount: chatCount() }),
+      (s) => {
+        const liveChat = chatArray();
+        return dismissReceipt(s, receiptId, { chat: liveChat, chatCount: effectiveChatCount(liveChat) ?? 0 });
+      },
       { redraw: false },
     ),
     onJumpDiary: (diaryIdx) => jumpToDiary(diaryIdx),
@@ -1609,8 +1633,16 @@ function render(options = {}) {
 
   const stat = currentStat();
   const curFloor = lastFloor();
-  const curCount = chatCount();
   const chatSnapshot = chatArray();
+  const curCount = effectiveChatCount(chatSnapshot);
+  const effectiveCountNow = curCount ?? 0;
+
+  if (lastAttemptChatCount !== null && effectiveCountNow < lastAttemptChatCount) {
+    receiptMarkGen += 1;
+    receiptMarkAttemptKey = '';
+    lastAttemptChatCount = effectiveCountNow;
+    clearReceiptRetry();
+  }
 
   const curChatId = host.readChatId?.() || '';
   if (
@@ -1831,25 +1863,63 @@ function render(options = {}) {
     if (ui.activeTab === 'board' && unreadReceipts > 0) {
       const receiptSig = (qb.receipts || []).map((r) => `${r.id}:${r.read ? 1 : 0}`).join('|');
       const swipeKey = lastSwipeId(chatSnapshot);
-      const attemptKey = `${curChatId}:${curCount}:${swipeKey}:${receiptSig}`;
+      const tailDigest = tailMesDigest(chatSnapshot);
+      const attemptKey = `${curChatId}:${effectiveCountNow}:${swipeKey}:${receiptMarkGen}:${tailDigest}:${receiptSig}`;
       if (
         !markingReceipts &&
         receiptMarkAttemptKey !== attemptKey &&
         !generating() &&
         !replySettleRemainingMs({ chatCount: curCount, chatId: curChatId })
       ) {
+        clearTimeout(receiptRetryTimer);
+        receiptRetryTimer = 0;
         markingReceipts = true;
         receiptMarkAttemptKey = attemptKey;
+        lastAttemptChatCount = effectiveCountNow;
+        const commitEpoch = chatEpoch;
+        const scheduleReceiptRetry = () => {
+          if (
+            commitEpoch !== chatEpoch ||
+            ui.activeTab !== 'board' ||
+            !root ||
+            !root.classList.contains('qh-open') ||
+            root.classList.contains('qh-closing') ||
+            receiptRetryCount >= 5
+          ) {
+            return;
+          }
+          const delay = receiptRetryCount === 0 ? 0 : 100;
+          receiptRetryCount += 1;
+          clearTimeout(receiptRetryTimer);
+          receiptRetryTimer = setTimeout(() => {
+            receiptRetryTimer = 0;
+            if (
+              commitEpoch === chatEpoch &&
+              ui.activeTab === 'board' &&
+              root &&
+              root.classList.contains('qh-open') &&
+              !root.classList.contains('qh-closing')
+            ) {
+              render();
+            }
+          }, delay);
+        };
         commit(
-          (s) => markReceiptsRead(s, { chat: chatArray(), chatCount: chatCount() }),
+          (s) => {
+            const liveChat = chatArray();
+            return markReceiptsRead(s, { chat: liveChat, chatCount: effectiveChatCount(liveChat) ?? 0 });
+          },
           { core: CORE_NAME, speaker: SPEAKER, redraw: false, expectedChatId: curChatId },
         )
           .then((result) => {
+            if (commitEpoch !== chatEpoch) return;
             markingReceipts = false;
             if (result && result.error) {
               if (receiptMarkAttemptKey === attemptKey) receiptMarkAttemptKey = '';
+              scheduleReceiptRetry();
               return;
             }
+            receiptRetryCount = 0;
             if (result && !result.skipped) {
               app?.onUnreadSync?.();
               if (root && root.classList.contains('qh-open') && !root.classList.contains('qh-closing')) {
@@ -1858,8 +1928,10 @@ function render(options = {}) {
             }
           })
           .catch(() => {
+            if (commitEpoch !== chatEpoch) return;
             markingReceipts = false;
             if (receiptMarkAttemptKey === attemptKey) receiptMarkAttemptKey = '';
+            scheduleReceiptRetry();
           });
       }
     }
@@ -2003,6 +2075,7 @@ app = {
       }
     }
     cancelClose();
+    clearReceiptRetry();
     ui.questEditRewards = false;
     ui.confirmDeleteTrait = '';
     ui.entryMode = readEntryMode(host.readStorage);
@@ -2054,6 +2127,7 @@ app = {
       focusComposing = false;
       verComposing = false;
       pendingDeferredRefresh = false;
+      clearReceiptRetry();
       root.classList.remove('qh-open');
       if (typeof app.onClose === 'function') app.onClose(closeOpts);
     };
@@ -2082,7 +2156,12 @@ app = {
     closeTimer = setTimeout(finish, 320);
   },
 
-  refresh() {
+  refresh(options = {}) {
+    if (options && options.forceResetReceiptAttempt) {
+      receiptMarkGen += 1;
+      receiptMarkAttemptKey = '';
+      clearReceiptRetry();
+    }
     if (root && root.classList.contains('qh-open') && !root.classList.contains('qh-closing')) render();
   },
 
@@ -2101,10 +2180,12 @@ app = {
     focusComposing = false;
     verComposing = false;
     pendingDeferredRefresh = false;
+    clearReceiptRetry();
     root.classList.remove('qh-open');
   },
 
   resetForChatChange() {
+    chatEpoch += 1;
     ui.activeTab = 'board';
     ui.prevTab = 'board';
     ui.questCategory = '全部';
@@ -2123,6 +2204,9 @@ app = {
     pendingDeferredRefresh = false;
     receiptMarkAttemptKey = '';
     markingReceipts = false;
+    receiptMarkGen = 0;
+    lastAttemptChatCount = null;
+    clearReceiptRetry();
     ui.worldbookInfo = null;
     ui.worldbookState = 'idle';
     worldbookFetchPromise = null;
