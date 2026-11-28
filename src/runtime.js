@@ -13,7 +13,14 @@ import {
   questRescanDone,
   maintainQuestBoard,
 } from './actions.js';
-import { commit, generating } from './commit.js';
+import {
+  clearReplySettle,
+  commit,
+  generating,
+  markMvuSettled,
+  markReplyReceived,
+  replySettleRemainingMs,
+} from './commit.js';
 import { SCRIPT_VERSION } from './data.js';
 import * as host from './host.js';
 import { mountFab } from './fab.js';
@@ -390,14 +397,23 @@ export function start() {
   let bgCooldownUntil = 0;
   let graceRetry = 0;
 
+  const refreshOpenPanel = () => {
+    if (!panelOpened || !frame) return;
+    try {
+      frame.contentWindow?.questHelperPanel?.refresh?.();
+    } catch {
+      /* 忽略跨域或卸载态 */
+    }
+  };
+
   const runQuestBoardMaintenance = async () => {
     if (generating()) {
-      if (graceRetry < 20) {
+      if (graceRetry < 60) {
         graceRetry += 1;
         clearTimeout(bgTimer);
         bgTimer = setTimeout(() => {
           void runQuestBoardMaintenance();
-        }, 1500);
+        }, graceRetry <= 20 ? 1500 : 5000);
       }
       return;
     }
@@ -433,6 +449,14 @@ export function start() {
     const curFloor = readHostFloor();
     const curCount = effectiveChatCount(chatSnapshot);
     const curChatId = host.readChatId();
+    const settleWaitMs = replySettleRemainingMs({ chatCount: curCount, chatId: curChatId });
+    if (settleWaitMs > 0) {
+      clearTimeout(bgTimer);
+      bgTimer = setTimeout(() => {
+        void runQuestBoardMaintenance();
+      }, settleWaitMs + 40);
+      return;
+    }
 
     const needClearRescan = questRescanDone(stat, curFloor, curCount, {
       chat: chatSnapshot,
@@ -451,6 +475,7 @@ export function start() {
     const needSweepLeads = hasExpiredDirectorLeads(stat, { chatCount: curCount, chat: chatSnapshot });
 
     if (!needClearRescan && !needSweep && !needRecord && !needSweepExpired && !needClearOnceFocus && !needSweepLeads) {
+      refreshOpenPanel();
       return;
     }
 
@@ -472,12 +497,12 @@ export function start() {
       );
       if (stopped || (curChatId && host.readChatId() !== curChatId)) return;
       if (result && result.error && result.error.includes('生成')) {
-        if (graceRetry < 20) {
+        if (graceRetry < 60) {
           graceRetry += 1;
           clearTimeout(bgTimer);
           bgTimer = setTimeout(() => {
             void runQuestBoardMaintenance();
-          }, 1500);
+          }, graceRetry <= 20 ? 1500 : 5000);
         }
         return;
       }
@@ -493,9 +518,17 @@ export function start() {
     }
   };
 
-  const scheduleMaintenance = () => {
-    graceRetry = 0;
-    const delay = bgSweeping ? 500 : Math.max(400, bgCooldownUntil - Date.now() + 50);
+  const scheduleMaintenance = (fromMvuEnd = false) => {
+    const snap = readHostChat();
+    const curCount = effectiveChatCount(snap);
+    const curChatId = host.readChatId();
+    if (fromMvuEnd) {
+      markMvuSettled(curCount, curChatId);
+    } else {
+      markReplyReceived(curCount, curChatId);
+      graceRetry = 0;
+    }
+    const delay = bgSweeping ? 500 : Math.max(fromMvuEnd ? 150 : 400, bgCooldownUntil - Date.now() + 50);
     clearTimeout(bgTimer);
     bgTimer = setTimeout(() => {
       void runQuestBoardMaintenance();
@@ -504,6 +537,7 @@ export function start() {
 
   listen(stEvents && stEvents.CHAT_CHANGED ? stEvents.CHAT_CHANGED : 'chat_id_changed', () => {
     clearTimeout(bgTimer);
+    clearReplySettle();
     graceRetry = 0;
     try {
       frame?.contentWindow?.questHelperPanel?.resetForChatChange?.();
@@ -513,18 +547,36 @@ export function start() {
     close();
     syncEntryUnread();
   });
-  const onPassiveRefresh = () => {
+  const hasAnyPendingMaintenance = () => {
+    const stat = host.readStat?.();
+    const b = stat?.['事件']?.[BOARD_KEY];
+    if (!stat || !b || typeof b !== 'object') return false;
+    const chat = readHostChat();
+    const curFloor = readHostFloor();
+    const curCount = effectiveChatCount(chat);
+    const hasPendingRescan = !!(b['待重扫'] && typeof b['待重扫'] === 'object' && Object.keys(b['待重扫']).length);
+    const clearRescan = questRescanDone(stat, curFloor, curCount, { chat });
+    return clearRescan
+      || (!!b['列表'] && hasClosedQuestLeftovers(stat, { chat }))
+      || (!!b['列表'] && needsQuestAcceptedRecord(stat))
+      || hasExpiredAftermath(stat)
+      || ((!hasPendingRescan || clearRescan) && hasExpiredOnceFocus(stat, {
+        floor: curFloor,
+        chatCount: curCount,
+        chat,
+        rescanCleared: clearRescan,
+      }))
+      || hasExpiredDirectorLeads(stat, { chatCount: curCount, chat });
+  };
+  const onPassiveRefresh = (clearSettle = false) => {
     clearTimeout(bgTimer);
+    if (clearSettle) clearReplySettle();
     graceRetry = 0;
     syncEntryUnread();
-    // 若删改楼层前存在待清理项，短延迟后补跑一次过期清理
+    refreshOpenPanel();
+    // 删改楼层后补检全部待清理项，存在时短延迟执行维护
     try {
-      const b = host.readStat?.()?.['事件']?.[BOARD_KEY] || {};
-      const hasPending = !!(b['待重扫'] && typeof b['待重扫'] === 'object' && Object.keys(b['待重扫']).length);
-      const nf = normalizeQuestFocus(b['关注方向']);
-      const hasOnce = nf.mode === 'once' && !!nf.text;
-      const hasLeads = Array.isArray(b['导演状态']?.['待引爆']) && b['导演状态']['待引爆'].length > 0;
-      if (hasPending || hasOnce || hasLeads) {
+      if (hasAnyPendingMaintenance()) {
         bgTimer = setTimeout(() => {
           void runQuestBoardMaintenance();
         }, 800);
@@ -534,15 +586,23 @@ export function start() {
     }
   };
   const onSwipeRefresh = () => {
-    // swipe 跳过重扫：仅清除挂起的维护定时器并同步红点，不误杀待重扫与仅本次方向
     clearTimeout(bgTimer);
+    clearReplySettle();
     graceRetry = 0;
     syncEntryUnread();
+    refreshOpenPanel();
+    if (!generating()) {
+      bgTimer = setTimeout(() => {
+        void runQuestBoardMaintenance();
+      }, 800);
+    }
   };
-  listen(stEvents && stEvents.MESSAGE_RECEIVED ? stEvents.MESSAGE_RECEIVED : 'message_received', scheduleMaintenance);
+  listen(stEvents && stEvents.MESSAGE_RECEIVED ? stEvents.MESSAGE_RECEIVED : 'message_received', () => scheduleMaintenance(false));
+  // 主模型输出 <UpdateVariable> 后 MVU 解析完成也会发出该事件，用于提前结束防抢跑缓冲
+  listen(win.Mvu?.events?.VARIABLE_UPDATE_ENDED || 'mag_variable_update_ended', () => scheduleMaintenance(true));
   listen(stEvents && stEvents.MESSAGE_SWIPED ? stEvents.MESSAGE_SWIPED : 'message_swiped', onSwipeRefresh);
-  listen(stEvents && stEvents.MESSAGE_EDITED ? stEvents.MESSAGE_EDITED : 'message_edited', onPassiveRefresh);
-  listen(stEvents && stEvents.MESSAGE_DELETED ? stEvents.MESSAGE_DELETED : 'message_deleted', onPassiveRefresh);
+  listen(stEvents && stEvents.MESSAGE_EDITED ? stEvents.MESSAGE_EDITED : 'message_edited', () => onPassiveRefresh(false));
+  listen(stEvents && stEvents.MESSAGE_DELETED ? stEvents.MESSAGE_DELETED : 'message_deleted', () => onPassiveRefresh(true));
 
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     const onPageHide = () => stop();

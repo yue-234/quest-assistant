@@ -2,6 +2,74 @@
 import { parentWindow, readChatId } from './host.js';
 
 const QUEUE_KEY = '__questHelperCommitQueue';
+const REPLY_SETTLE_KEY = '__questHelperReplySettle';
+const MVU_SETTLE_KEY = '__questHelperMvuSettle';
+const DEFAULT_REPLY_SETTLE_MS = 1200;
+
+/** 记录宿主页最近一次主回复落楼时刻（防止在 MVU 解析 <UpdateVariable> 完成前抢跑写回）。 */
+export function markReplyReceived(chatCount = null, chatId = '') {
+  try {
+    delete parentWindow[MVU_SETTLE_KEY];
+    parentWindow[REPLY_SETTLE_KEY] = {
+      chatCount: typeof chatCount === 'number' && Number.isFinite(chatCount) ? chatCount : null,
+      chatId: chatId ? String(chatId) : '',
+      at: Date.now(),
+    };
+  } catch {
+    /* 忽略宿主环境写入异常 */
+  }
+}
+
+/** 记录宿主页最近一次 MVU 变量更新完成事件（匹配当前会话时提前结束防抢跑等待）。 */
+export function markMvuSettled(chatCount = null, chatId = '') {
+  try {
+    parentWindow[MVU_SETTLE_KEY] = {
+      chatCount: typeof chatCount === 'number' && Number.isFinite(chatCount) ? chatCount : null,
+      chatId: chatId ? String(chatId) : '',
+      at: Date.now(),
+    };
+  } catch {
+    /* 忽略宿主环境写入异常 */
+  }
+}
+
+/** 清除宿主页上的主回复解析缓冲信号。 */
+export function clearReplySettle() {
+  try {
+    delete parentWindow[REPLY_SETTLE_KEY];
+    delete parentWindow[MVU_SETTLE_KEY];
+  } catch {
+    /* 忽略 */
+  }
+}
+
+function matchSignal(rec, chatCount, chatId) {
+  if (!rec || typeof rec !== 'object') return false;
+  const curId = chatId ? String(chatId) : '';
+  if (curId && rec.chatId && rec.chatId !== curId) return false;
+  if (rec.chatCount !== null && typeof chatCount === 'number' && Number.isFinite(chatCount) && rec.chatCount !== chatCount) {
+    return false;
+  }
+  return true;
+}
+
+/** 返回主回复落楼后等待 MVU 解析的剩余毫秒数（已落定或超时返回 0）。 */
+export function replySettleRemainingMs({ chatCount = null, chatId = '', waitMs = DEFAULT_REPLY_SETTLE_MS } = {}) {
+  try {
+    const rec = parentWindow[REPLY_SETTLE_KEY];
+    const mvuRec = parentWindow[MVU_SETTLE_KEY];
+    if (matchSignal(mvuRec, chatCount, chatId)) {
+      if (!rec || !rec.at || !matchSignal(rec, chatCount, chatId) || (mvuRec.at && mvuRec.at >= rec.at)) {
+        return 0;
+      }
+    }
+    if (!rec || !rec.at || !matchSignal(rec, chatCount, chatId)) return 0;
+    const elapsed = Date.now() - rec.at;
+    return elapsed >= 0 && elapsed < waitMs ? waitMs - elapsed : 0;
+  } catch {
+    return 0;
+  }
+}
 
 /** 宿主页正在生成回复时禁止写变量，避免并发踩踏与覆盖。 */
 export function generating() {

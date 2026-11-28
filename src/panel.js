@@ -18,7 +18,7 @@ import {
   needsQuestAcceptedRecord,
   maintainQuestBoard,
 } from './actions.js';
-import { commit, generating } from './commit.js';
+import { commit, generating, replySettleRemainingMs } from './commit.js';
 import * as host from './host.js';
 import { ENTRY_MODES, readEntryMode, writeEntryMode } from './entryMode.js';
 import {
@@ -29,6 +29,7 @@ import {
   hasNewerScriptVersion,
   normalizeScriptRef,
   readScriptRef,
+  worldbookCompatibilityBadge,
 } from './scriptRef.js';
 
 const QUEST_SEEN_KEY = 'quest_helper_seen_progress_v1';
@@ -1085,6 +1086,7 @@ function render(options = {}) {
   if (
     !sweeping &&
     !generating() &&
+    !replySettleRemainingMs({ chatCount: curCount, chatId: curChatId }) &&
     (rescanDone
       || hasClosedQuestLeftovers(stat, { chat: chatSnapshot })
       || needsQuestAcceptedRecord(stat)
@@ -1254,26 +1256,11 @@ function syncVersionControls() {
   }
   if (wbBadgeEl) {
     wbBadgeEl.classList.remove('is-ok', 'is-warn', 'is-muted');
-    if (ui.worldbookState === 'loading' && !ui.worldbookInfo) {
-      wbBadgeEl.textContent = '检测中';
-      wbBadgeEl.classList.add('is-muted');
-    } else if (wbCheck.status === 'matched') {
-      wbBadgeEl.textContent = '✓ 与脚本匹配';
-      wbBadgeEl.classList.add('is-ok');
-    } else if (wbCheck.mismatch) {
-      if (wbCheck.status === 'disabled') wbBadgeEl.textContent = '条目未启用';
-      else if (wbCheck.status === 'partial_disabled') wbBadgeEl.textContent = '双条目未全开';
-      else if (wbCheck.status === 'duplicate_role') wbBadgeEl.textContent = '同角色条目重复';
-      else if (wbCheck.status === 'legacy_dual_mixed') wbBadgeEl.textContent = '新旧条目混用';
-      else if (wbCheck.status === 'missing_mvu_tag') wbBadgeEl.textContent = '缺少 [mvu_*] 标签';
-      else if (wbCheck.status === 'version_unannotated') wbBadgeEl.textContent = '部分未标版本';
-      else if (ui.worldbookInfo?.versionConflict) wbBadgeEl.textContent = '双条目版本不一致';
-      else wbBadgeEl.textContent = '版本不匹配 · 建议更新';
-      wbBadgeEl.classList.add('is-warn');
-    } else {
-      wbBadgeEl.textContent = wbCheck.status === 'unversioned' ? '无版本号' : '未识别';
-      wbBadgeEl.classList.add('is-muted');
-    }
+    const badge = worldbookCompatibilityBadge(wbCheck, ui.worldbookInfo, {
+      loading: ui.worldbookState === 'loading' && !ui.worldbookInfo,
+    });
+    wbBadgeEl.textContent = badge.text;
+    wbBadgeEl.classList.add(`is-${badge.tone}`);
   }
   if (wbSubEl) {
     if (wbCheck.mismatch || wbCheck.status === 'version_unannotated') {

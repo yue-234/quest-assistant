@@ -75,7 +75,15 @@ import {
   checkWorldbookCompatibility,
   fetchAvailableScriptRefs,
   fetchScriptByRef,
+  worldbookCompatibilityBadge,
 } from './src/scriptRef.js';
+import {
+  clearReplySettle,
+  generating,
+  markMvuSettled,
+  markReplyReceived,
+  replySettleRemainingMs,
+} from './src/commit.js';
 import {
   readMessages,
   readActiveWorldbookInfo,
@@ -3158,6 +3166,55 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.equal(dualJson.entries['0'].order, 1150);
   assert.equal(dualJson.entries['1'].comment, `[mvu_plot]任务助手-变量更新${SCRIPT_VERSION}`);
   assert.equal(dualJson.entries['1'].order, 99999);
+  assert.doesNotMatch(dualJson.entries['0'].comment, /\[mvu_update\]/i);
+  assert.doesNotMatch(dualJson.entries['1'].comment, /\[mvu_update\]/i);
+
+  // 边界兼容补充：无 @role 单条目不因 [mvu_plot] 误报半启用、禁用旧 [mvu_update] 不误报、legacy_mvu_update 优先及徽章全覆盖
+  const wbSingleWithPlotTag = inspectWorldbookEntries([
+    {
+      bookName: '主世界书',
+      entries: [
+        { name: '[mvu_plot]任务助手v1.4.8', enabled: true, content: '<任务情报板>...</任务情报板>\n任务情报板变量更新规则' },
+      ],
+    },
+  ]);
+  assert.equal(checkWorldbookCompatibility(wbSingleWithPlotTag, { loadedRef: 'v1.4.8', scriptVersion: 'v1.4.8' }).status, 'matched');
+
+  const wbSingleLegacyUpdateTag = inspectWorldbookEntries([
+    {
+      bookName: '主世界书',
+      entries: [
+        { name: '[mvu_update]任务助手v1.4.8', enabled: true, content: '// @version v1.4.8\n/事件/任务情报板' },
+      ],
+    },
+  ]);
+  assert.equal(checkWorldbookCompatibility(wbSingleLegacyUpdateTag, { loadedRef: 'v1.4.8', scriptVersion: 'v1.4.8' }).status, 'legacy_mvu_update');
+
+  const wbDualWithDisabledLegacy = inspectWorldbookEntries([
+    {
+      bookName: '命定任务助手世界书',
+      entries: [
+        { name: '[mvu_plot]任务助手-剧情引导v1.4.8', enabled: true, content: '// @role plot\n/事件/任务情报板' },
+        { name: '[mvu_plot]任务助手-变量更新v1.4.8', enabled: true, content: '// @role update\n<任务情报板变量更新协议>' },
+        { name: '[mvu_update]任务助手-变量更新v1.4.7', enabled: false, content: '// @role update\n<任务情报板变量更新协议>' },
+      ],
+    },
+  ]);
+  assert.equal(checkWorldbookCompatibility(wbDualWithDisabledLegacy, { loadedRef: 'v1.4.8', scriptVersion: 'v1.4.8' }).status, 'matched');
+
+  assert.deepEqual(
+    worldbookCompatibilityBadge({ status: 'legacy_mvu_update', mismatch: true }, {}),
+    { text: '含旧 [mvu_update] 前缀', tone: 'warn' },
+  );
+  assert.deepEqual(
+    worldbookCompatibilityBadge({ status: 'missing_mvu_tag', mismatch: true }, {}),
+    { text: '缺少 [mvu_plot] 标签', tone: 'warn' },
+  );
+  assert.deepEqual(
+    worldbookCompatibilityBadge({ status: 'matched', mismatch: false }, {}),
+    { text: '✓ 与脚本匹配', tone: 'ok' },
+  );
+
   const plotSrc = dualJson.entries['0'].content;
   const updateSrc = dualJson.entries['1'].content;
 
@@ -3252,8 +3309,11 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.match(updateOut, /启动地区情报重扫：保留剧情任务、已接取与 `★已锁定` 项，按当前区域重新生成 1~2 条本地主线 \+ 2~3 条支线任务/);
   assert.match(updateOut, /没有剧情任务时补 1 条剧情任务/);
   assert.match(updateOut, /为当前区域写入 3 条差异化色阶的初始常驻词条/);
+  assert.match(updateOut, /"op": "remove", "path": "\/事件\/任务情报板\/待重扫"/);
+  assert.match(updateOut, /不在单次遭遇内完结/);
+  assert.match(updateOut, /不在击败敌方或处理表象后草率完结/);
 
-  // maintain 模式下正文未直呼锁定任务标题时，update 轮仍保留 ★已锁定 项与兑现Patch
+  // maintain 模式下正文未直呼锁定任务标题时，update 轮仍保留 ★已锁定 项与兑现Patch，且不重复输出词条正文
   const maintainLockedStat = {
     世界: { 地点: '铁炉堡-北区', 时间: '复兴纪元488年-5月-26日' },
     任务列表: {},
@@ -3283,11 +3343,13 @@ test('脚本版本号配置与实时最新版本拉取：归一化、Semver排�
   assert.match(maintainLockedUpdateOut, /兑现Patch/);
   assert.match(maintainLockedUpdateOut, /当前区余波键：已存在（铁炉堡）/);
   assert.match(maintainLockedUpdateOut, /本区词条（键: `铁炉堡`，已存在）:/);
+  assert.doesNotMatch(maintainLockedUpdateOut, /高炉运转稳定，武器工坊供应充足/);
 
-  // init 模式下将首批余波并入整板 insert 示例，不重复要求独立 insert 余波
+  // init 模式下将首批余波并入整板 insert 示例，不重复要求独立 insert 余波，并保留生成完结约束
   const initUpdateOut = renderEjs({ 世界: { 地点: '雾晶港', 时间: '复兴纪元488年-5月-26日' }, 事件: {} }, { source: updateSrc });
   assert.match(initUpdateOut, /"余波": \{ "雾晶港": /);
   assert.match(initUpdateOut, /不再单独 `insert \/事件\/任务情报板\/余波`/);
+  assert.match(initUpdateOut, /不在单次遭遇内完结/);
 
   // 续写（continue/append/appendFinal）与重Roll（swipe）在 nc+1 与 nc+2 下均不得触发重扫
   const extraChat11Ai = extraChat12.slice(0, 11);
@@ -4831,4 +4893,35 @@ test('三轮收口回归：toastr.ok映射、入队队列级swipe锁、额外键
   assert.doesNotMatch(causalDueAll, /露出物理裂痕/);
   assert.match(causalDueAll, /同轮多处涉及「导演状态」变更时合并处理/);
   assert.doesNotMatch(causalDueAll, /拿满核心奖励|属 `OTHER SPECIFIC REQUIREMENTS`|改写替换|另含多地脉络|全额发齐/);
+
+  // 7) 防抢跑短窗口信号与 generating()
+  const savedCommitGlobals = {
+    document: globalThis.document,
+    getComputedStyle: globalThis.getComputedStyle,
+  };
+  try {
+    globalThis.document = { getElementById: () => ({ id: 'mes_stop' }) };
+    globalThis.getComputedStyle = () => ({ display: 'inline-block' });
+    assert.equal(generating(), true);
+    globalThis.getComputedStyle = () => ({ display: 'none' });
+    assert.equal(generating(), false);
+
+    clearReplySettle();
+    assert.equal(replySettleRemainingMs({ chatCount: 10, chatId: 'c1' }), 0);
+    markReplyReceived(10, 'c1');
+    assert.ok(replySettleRemainingMs({ chatCount: 10, chatId: 'c1', waitMs: 1200 }) > 0);
+    assert.equal(replySettleRemainingMs({ chatCount: 11, chatId: 'c1', waitMs: 1200 }), 0);
+    assert.equal(replySettleRemainingMs({ chatCount: 10, chatId: 'c2', waitMs: 1200 }), 0);
+    markMvuSettled(10, 'c1');
+    assert.equal(replySettleRemainingMs({ chatCount: 10, chatId: 'c1', waitMs: 1200 }), 0);
+    // 删楼重发回到相同 chatCount=10 时，新一轮 markReplyReceived 必须清除旧 MVU 信号并重新生效
+    markReplyReceived(10, 'c1');
+    assert.ok(replySettleRemainingMs({ chatCount: 10, chatId: 'c1', waitMs: 1200 }) > 0);
+    clearReplySettle();
+  } finally {
+    if (savedCommitGlobals.document === undefined) delete globalThis.document;
+    else globalThis.document = savedCommitGlobals.document;
+    if (savedCommitGlobals.getComputedStyle === undefined) delete globalThis.getComputedStyle;
+    else globalThis.getComputedStyle = savedCommitGlobals.getComputedStyle;
+  }
 });

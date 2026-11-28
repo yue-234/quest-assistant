@@ -106,6 +106,8 @@ function detectEntryRole(entry) {
   const content = String(entry?.content ?? '');
   const hasPlotTag = /\[mvu_plot\]/i.test(title);
   const hasUpdateTag = /\[mvu_update\]/i.test(title);
+  const hasPlotMarkup = content.includes('<任务情报板>') || content.includes('推进规则:');
+  const hasUpdateMarkup = content.includes('<任务情报板变量更新协议>') || content.includes('任务情报板变量更新规则');
 
   let role = 'all';
   const roleMeta = content.match(/\/\/\s*@role\s+(plot|update|all)\b/i);
@@ -120,6 +122,12 @@ function detectEntryRole(entry) {
     role = 'plot';
   } else if (title.includes('变量更新')) {
     role = 'update';
+  } else if (hasPlotMarkup && hasUpdateMarkup) {
+    role = 'all';
+  } else if (hasUpdateMarkup) {
+    role = 'update';
+  } else if (hasPlotMarkup) {
+    role = 'plot';
   } else if (hasPlotTag && !hasUpdateTag) {
     role = 'plot';
   } else if (hasUpdateTag && !hasPlotTag) {
@@ -294,6 +302,15 @@ export function checkWorldbookCompatibility(wbInfo, scriptMeta = {}) {
       message: '世界书中同时启用了多份同角色任务助手条目，请清理重复条目',
     };
   }
+  if (wbInfo.legacyMvuUpdate) {
+    return {
+      status: 'legacy_mvu_update',
+      mismatch: true,
+      worldbookVersion: wbInfo.version || '',
+      scriptVersion: scriptVer,
+      message: '检测到世界书条目标题仍包含 [mvu_update] 前缀，当前版本已改为双 [mvu_plot] 条目随主模型运行，请重新导入最新双条目世界书或将分拆条目标题前缀改为 [mvu_plot]',
+    };
+  }
   if (wbInfo.partialDisabled) {
     const missingLabel = wbInfo.missingRole === 'plot'
       ? '「剧情引导 [mvu_plot]」'
@@ -304,15 +321,6 @@ export function checkWorldbookCompatibility(wbInfo, scriptMeta = {}) {
       worldbookVersion: wbInfo.version || '',
       scriptVersion: scriptVer,
       message: `任务助手双条目世界书仅启用了部分条目，缺少${missingLabel}，请同时启用两个条目`,
-    };
-  }
-  if (wbInfo.legacyMvuUpdate) {
-    return {
-      status: 'legacy_mvu_update',
-      mismatch: true,
-      worldbookVersion: wbInfo.version || '',
-      scriptVersion: scriptVer,
-      message: '检测到世界书条目标题仍包含 [mvu_update] 前缀，当前版本已改为双条目统一使用 [mvu_plot] 随主模型运行，请将前缀改为 [mvu_plot] 或重新导入最新世界书',
     };
   }
   if (wbInfo.missingMvuTag) {
@@ -367,6 +375,24 @@ export function checkWorldbookCompatibility(wbInfo, scriptMeta = {}) {
     scriptVersion: scriptVer,
     message: `世界书版本 ${wbInfo.version} 与当前脚本 ${scriptVer || '未知'} 不匹配，建议更新至一致版本`,
   };
+}
+
+/** 根据世界书兼容性检查结果生成设置页徽章文案与样式色调。 */
+export function worldbookCompatibilityBadge(wbCheck, wbInfo, { loading = false } = {}) {
+  if (loading && !wbInfo) return { text: '检测中', tone: 'muted' };
+  if (wbCheck?.status === 'matched') return { text: '✓ 与脚本匹配', tone: 'ok' };
+  if (wbCheck?.mismatch) {
+    if (wbCheck.status === 'disabled') return { text: '条目未启用', tone: 'warn' };
+    if (wbCheck.status === 'partial_disabled') return { text: '双条目未全开', tone: 'warn' };
+    if (wbCheck.status === 'duplicate_role') return { text: '同角色条目重复', tone: 'warn' };
+    if (wbCheck.status === 'legacy_dual_mixed') return { text: '新旧条目混用', tone: 'warn' };
+    if (wbCheck.status === 'legacy_mvu_update') return { text: '含旧 [mvu_update] 前缀', tone: 'warn' };
+    if (wbCheck.status === 'missing_mvu_tag') return { text: '缺少 [mvu_plot] 标签', tone: 'warn' };
+    if (wbCheck.status === 'version_unannotated') return { text: '部分未标版本', tone: 'warn' };
+    if (wbInfo?.versionConflict) return { text: '双条目版本不一致', tone: 'warn' };
+    return { text: '版本不匹配 · 建议更新', tone: 'warn' };
+  }
+  return { text: wbCheck?.status === 'unversioned' ? '无版本号' : '未识别', tone: 'muted' };
 }
 
 /** 读取玩家自定义覆盖的版本号；未设置时返回空字符串（由加载器采用默认 main 最新分支）。 */

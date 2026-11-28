@@ -11,8 +11,13 @@
 #### 重要更新
 - **【移除 MVU 额外模型支持，统一双 `[mvu_plot]` 子条目主模型注入】**【需更新世界书】【需更新脚本】：
   - 彻底移除 MVU「额外模型更新变量」通路，保留双子条目导出架构（`uid: 0` `[mvu_plot]任务助手-剧情引导`、`order: 1150` 与 `uid: 1` `[mvu_plot]任务助手-变量更新`、`order: 99999`），统一使用 `[mvu_plot]` 随主模型注入，彻底规避部分预设总结模块收集 `[mvu_update]` 整表内容构建正则导致 `Regular expression too large` 报错的问题。
-  - `src/scriptRef.js` 调整 `detectEntryRole` 优先级并新增 `legacy_mvu_update` 兼容告警，检测旧版带 `[mvu_update]` 前缀的双条目世界书时自动提醒迁移。
-  - 精简 `commit.js`、`state.js`、`actions.js`、`runtime.js`、`panel.js` 及 `任务助手-世界书.ejs`，移除 `mag_variable_update_ended`、1800ms 宽限轮询、`nc+2` 与 `isDuringExtraAnalysis()` 判定；`update` 子条目同步开启防剧透与「正文正面推进，不提前点破引信」限制（仅 `若本轮结案留种` 保留客观矛盾 JSON）。
+  - `src/scriptRef.js` 调整 `detectEntryRole` 优先级（加入正文 `<任务情报板>`/`<任务情报板变量更新协议>` 结构启发式兜底）、导出 `worldbookCompatibilityBadge` 并新增 `legacy_mvu_update` 兼容告警与顺位优化，检测旧版含 `[mvu_update]` 前缀的条目时自动提醒迁移。
+  - 精简 `commit.js`、`state.js`、`actions.js`、`runtime.js`、`panel.js` 及 `任务助手-世界书.ejs`，移除 `extraAnalysisActive`、`1800ms` 额外模型宽限轮询、`nc+2` 与 `isDuringExtraAnalysis()` 判定，改为轻量 1200ms 主回复防抢跑缓冲（结合 `VARIABLE_UPDATE_ENDED` / `mag_variable_update_ended` 在主模型 `<UpdateVariable>` 解析完后即刻唤醒）；`update` 子条目同步开启防剧透与「正文正面推进，不提前点破引信」限制（仅 `若本轮结案留种` 保留客观矛盾 JSON）。
+
+#### 优化与修复
+- **【双 `[mvu_plot]` 沙盘去重与多轮审计回归修复】**【需更新世界书】【需更新脚本】：
+  - 修复 `runtime.js` `refreshOpenPanel` 未定义导致后台维护后异常与面板不刷新问题，恢复 `graceRetry < 60` 阶梯退避，补齐 `onSwipeRefresh`/`onPassiveRefresh` 全量待清理项检查与 `MESSAGE_DELETED` / 删楼重发防抢跑穿透清理；修复 `panel.js` 设置页 `legacy_mvu_update` 与 `缺少 [mvu_plot] 标签` 徽章展示。
+  - 优化双 `[mvu_plot]` 联动输出：移除 `生成规格` 中残留的 `_emitPlot` 死门控，并在 `update` 非整表重置轮省略重复词条正文、`摘要`、`幕后真相` 与三步阶梯抄写（日常维护降幅达百余至三百余字符），同步在 `rescan` 写板后引导移除 `/事件/任务情报板/待重扫`。
 
 #### 其他
 - **【额外模型还原备份与文档同步】**：新增 [额外模型支持还原参考备份](docs/extra-analysis-backup.md) 记录基线提交 `34ea146` 与还原清单；同步更新 `README.md`、`使用说明.md`、[提示词写作与古风清理](docs/archaic-wording-cleanup.md) 与 `test.mjs` 回归用例。

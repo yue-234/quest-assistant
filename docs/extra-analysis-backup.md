@@ -67,6 +67,7 @@ const _emitPlot = _wbRole !== 'update';
 const _emitUpdate = _wbRole !== 'plot';
 
 // 额外模型重扫 / 单次关注方向窗口判定（支持 nc + 1 到 nc + 2）
+const _prevNonSysMsg = _nonSysMsgs.length >= 2 ? _nonSysMsgs[_nonSysMsgs.length - 2] : null;
 const _hasExtraApi = typeof Mvu === 'object' && Mvu && typeof Mvu.isDuringExtraAnalysis === 'function';
 const _skipRescanGenTypes = ['swipe', 'continue', 'append', 'appendFinal'];
 const _isSkipRescanGen = _skipRescanGenTypes.includes(_genType);
@@ -183,7 +184,7 @@ if (atCount !== null && nowCount !== null) {
 - `RESCAN_GRACE_MS = 1800`
 - `evalGrace(curCount, extraFinished, extraAnalyzing, curChatId)`：在 `extraAnalyzing || extraFinished` 时关闭等待；若在消息落楼 1800ms 宽限期内返回 `allowGrace: false, waitGraceMs: rem + 50`。
 - 事件监听：`listen('mag_variable_update_ended', () => scheduleMaintenance(true))`；在 `scheduleMaintenance(fromMvuEnd)` 中区分 `MESSAGE_RECEIVED`（调 `recordMsgReceived`）与 `mag_variable_update_ended`（调 `recordMvuUpdateEnded`）；在 `onSwipeRefresh` / `onPassiveRefresh` / `CHAT_CHANGED` 中按聊天协调清除或延续宽限；在 `runQuestBoardMaintenance` 中遇到 `generating()` 或返回 `'生成'` 错误时最多重试 `graceRetry < 60`（前 20 次每 1.5s，之后每 5s，覆盖长时额外模型分析）。
-- `src/panel.js`：在 `render()` 和 `triggerRescan` 中读取 `extraAnalysisActive()`、`isMvuUpdateEndedFor(...)`、`isMsgRecvWithinGrace(...)` 并传入 `maintainQuestBoard` 与 `readState`。
+- `src/panel.js`：在 `render()` 与 `renderContent()` 内部重扫提交闭包中读取 `extraAnalysisActive()`、`isMvuUpdateEndedFor(...)`、`isMsgRecvWithinGrace(...)` 并传入 `requestQuestRescan`、`maintainQuestBoard` 与 `readState`。
 
 ---
 
@@ -191,7 +192,7 @@ if (atCount !== null && nowCount !== null) {
 
 1. 用 `git diff <当前提交> 34ea146 -- build.mjs 任务助手-世界书.ejs src/ test.mjs` 审阅当时全部改动点；
 2. 恢复 `build.mjs` 第二条目 `comment` 为 `[mvu_update]任务助手-变量更新${ver}`（或拆成多条 `[mvu_update]` 以满足正则字数限制）；
-3. 恢复 `src/scriptRef.js` 中的 `[mvu_update]` 角色判定与 `missing_mvu_tag` 检查；
-4. 恢复 `src/commit.js`、`src/state.js`、`src/actions.js`、`src/runtime.js`、`src/panel.js` 中的额外模型信号、1800ms 宽限期与 `mag_variable_update_ended` 监听；
+3. 恢复 `src/scriptRef.js` 中的 `[mvu_update]` 角色判定与 `missing_mvu_tag` 检查（并清理取消额外模型后新增的 `hasLegacyUpdateTag` / `legacyMvuUpdate` / `legacy_mvu_update` 检测分支及 `src/panel.js` 对应徽章文案）；
+4. 恢复 `src/commit.js`、`src/state.js`、`src/actions.js`（含 `requestQuestRescan`、`maintainQuestBoard` 与 `focusOpts` 对 `extraAnalyzing`/`extraFinished`/`allowGrace` 的透传）、`src/runtime.js`、`src/panel.js` 中的额外模型信号、1800ms 宽限期与 `mag_variable_update_ended` 监听；
 5. 恢复 `任务助手-世界书.ejs` 中 `_inExtraUpdateTurn` 与 `Mvu.isDuringExtraAnalysis()` 窗口判定及 `_emitPlot` / `update` 双视角差异；
 6. 参照 `34ea146:test.mjs` 补回 `isDuringExtraAnalysis`、双条目 `[mvu_plot]+[mvu_update]`、1800ms 宽限与 `recordMvuUpdateEnded` 测试断言并运行 `node --test test.mjs`。
