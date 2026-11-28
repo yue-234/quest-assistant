@@ -5,7 +5,7 @@ import { DATA } from './data.js';
 import {
   BOARD_KEY, CORE_NAME, SPEAKER, fpOf, boardNode, effectiveChatCount, rescanFresh, lastNonSystemIsAssistant,
   normalizeDay, worldDay, addWorldDays, resolveRegion, resolveRegionText, normalizeQuestCategory,
-  normalizeQuestFocus, isOnceFocusExpired,
+  normalizeQuestFocus, isOnceFocusExpired, stripQuestBackendTags,
   cleanRewardText, parseClaimedSet, parseLostSet,
   mergeRewardMapEntries, normalizeQuestRewards,
   CLAIMED_MARK_RE, LOST_MARK_RE,
@@ -456,18 +456,22 @@ export function clearExpiredOnceFocus(stat, current) {
   return { stat: next, done: '已清理过期的仅本次关注方向' };
 }
 
-function applyRescanFocus(board, effCountStr, focusText, focusMode) {
+function applyRescanFocus(board, effCountStr, focusText, focusMode, current = {}) {
   if (focusText !== undefined) {
     writeFocusToBoard(board, focusText, focusMode || 'long', effCountStr);
     return;
   }
   const existing = normalizeQuestFocus(board['关注方向']);
   if (existing.text && existing.mode === 'once') {
-    board['关注方向'] = {
-      文本: existing.text,
-      模式: 'once',
-      消息数: effCountStr,
-    };
+    if (isOnceFocusExpired(board, current)) {
+      delete board['关注方向'];
+    } else {
+      board['关注方向'] = {
+        文本: existing.text,
+        模式: 'once',
+        消息数: effCountStr,
+      };
+    }
   }
 }
 
@@ -508,7 +512,12 @@ export function requestQuestRescan(
     楼层: floor === undefined || floor === null ? '' : String(floor),
     消息数: effCountStr,
   };
-  applyRescanFocus(board, effCountStr, focusText, focusMode);
+  applyRescanFocus(board, effCountStr, focusText, focusMode, {
+    floor,
+    chatCount: effectiveCount,
+    chat,
+    extraAnalyzing,
+  });
   return {
     stat: next,
     done: nullCore
@@ -757,21 +766,26 @@ export function hasClosedQuestLeftovers(stat, current = {}) {
 
 const FUSE_TRIM_EDGE_RE = /^[\s"'“”‘’【】\[\]()（）:：\-—·,，;；]+|[\s"'“”‘’【】\[\]()（）:：\-—·,，;；。！？!?]+$/g;
 
-function extractDirectorLead(entry, id, stat, board, currentCount, current = {}) {
+const FAILED_OR_CANCELED_RE = /(?:已失败|失败|已取消|取消|放弃)/;
+
+function extractDirectorLead(entry, id, stat, board, currentCount, current = {}, failedOrCanceled = false) {
   const r = obj(entry);
-  const title = text(r['标题']).trim();
+  const rawTitle = text(r['标题']).trim();
+  const title = stripQuestBackendTags(rawTitle) || rawTitle;
   if (!title) return null;
   const sources = [text(r['真相']), text(r['幕后真相'])].filter(Boolean);
   if (!sources.length) return null;
 
   let leadType = '';
   let afterMarker = '';
-  for (const src of sources) {
-    const m = src.match(/余震引信\s*[：:]\s*([\s\S]*)/);
-    if (m) {
-      leadType = '假象余震';
-      afterMarker = m[1];
-      break;
+  if (!failedOrCanceled) {
+    for (const src of sources) {
+      const m = src.match(/余震引信\s*[：:]\s*([\s\S]*)/);
+      if (m) {
+        leadType = '假象余震';
+        afterMarker = m[1];
+        break;
+      }
     }
   }
   if (!leadType) {
@@ -806,17 +820,18 @@ function extractDirectorLead(entry, id, stat, board, currentCount, current = {})
   const curDay = worldDay(stat);
   const triggerDay = curDay ? (addWorldDays(curDay, 1) || curDay) : '';
 
+  // 按偶数 AI 尾 +3（至少隔过一个完整问答周期再到下次用户发言后的 plot 阶段）计算触发窗口
   const lead = {
     id: id || title,
     标题: title,
     类型: leadType,
     引信: fuse,
     区域: area,
-    触发后消息数: currentCount !== null ? String(currentCount + 2) : '',
+    触发后消息数: currentCount !== null ? String(currentCount + 3) : '',
     触发日: triggerDay,
   };
   if (currentCount !== null) {
-    lead['过期消息数'] = String(currentCount + 12);
+    lead['过期消息数'] = String(currentCount + 13);
   }
   return lead;
 }
@@ -825,10 +840,10 @@ function isAftershockQuestEntry(entry, lead = null) {
   if (lead && lead['类型'] === '假象余震') return true;
   const r = obj(entry);
   if (r['余震'] === true || r['来自余震'] === true) return true;
-  const tagText = [r['来源'], r['标签'], r['类型'], r['真相'], r['幕后真相']]
+  const tagText = [r['来源'], r['标签'], r['类型'], r['标题'], r['真相'], r['幕后真相']]
     .map((v) => text(v))
     .join(' ');
-  return /【?假象余震】?|余震衍生|余震引信\s*[：:]/.test(tagText);
+  return /【假象余震(?!二段)】|余震衍生|余震引信\s*[：:]/.test(tagText);
 }
 
 function updateDirectorAfterSweep(board, stat, removedEntries, currentCount, current = {}) {
@@ -841,23 +856,27 @@ function updateDirectorAfterSweep(board, stat, removedEntries, currentCount, cur
     ? director['待引爆'].filter((x) => x && typeof x === 'object' && !Array.isArray(x)).map((x) => ({ ...x }))
     : [];
   let touched = false;
+  const staged = [];
 
-  for (const { entry, id } of removedEntries) {
-    const lead = extractDirectorLead(entry, id, stat, board, currentCount, current);
-    if (lead) {
-      const dup = queue.some((q) => text(q['标题']).trim() === lead['标题']);
-      const aftershockCount = queue.filter((q) => q['类型'] === '假象余震').length;
-      if (!dup && queue.length < 2 && (lead['类型'] !== '假象余震' || aftershockCount < 1)) {
-        queue.push(lead);
-        if (lead['类型'] === '假象余震' && cooldown < 3) {
-          cooldown = 3;
-        }
-        touched = true;
-      }
-    }
+  for (const { entry, id, failedOrCanceled } of removedEntries) {
+    const lead = extractDirectorLead(entry, id, stat, board, currentCount, current, failedOrCanceled);
     const cat = normalizeQuestCategory(obj(entry)['类别']);
-    if ((cat === '剧情任务' || cat === '本地主线') && !isAftershockQuestEntry(entry, lead) && cooldown > 0) {
+    const isAs = isAftershockQuestEntry(entry, lead);
+    if ((cat === '剧情任务' || cat === '本地主线') && !isAs && cooldown > 0) {
       cooldown -= 1;
+      touched = true;
+    }
+    if (lead) staged.push(lead);
+  }
+
+  for (const lead of staged) {
+    const dup = queue.some((q) => text(q['标题']).trim() === lead['标题']);
+    const aftershockCount = queue.filter((q) => q['类型'] === '假象余震').length;
+    if (!dup && queue.length < 2 && (lead['类型'] !== '假象余震' || aftershockCount < 1)) {
+      queue.push(lead);
+      if (lead['类型'] === '假象余震' && cooldown < 3) {
+        cooldown = 3;
+      }
       touched = true;
     }
   }
@@ -949,6 +968,14 @@ export function sweepClosedQuests(stat, current = {}) {
   const removedNorms = new Set();
   const removedEntries = [];
 
+  const formalList = formalEntriesOf(stat);
+  const isEntryFailedOrCanceled = (entry) => {
+    const title = text(obj(entry)['标题']).trim();
+    if (!title) return false;
+    const formal = matchFormalTask(formalList, title);
+    return !!(formal && FAILED_OR_CANCELED_RE.test(formal.status));
+  };
+
   if (Array.isArray(board['列表'])) {
     board['列表'] = board['列表'].filter((entry, idx) => {
       const closed = isQuestEntryClosed(stat, entry, idx, claimedMap, everSet, everNormSet, historyStats);
@@ -962,7 +989,7 @@ export function sweepClosedQuests(stat, current = {}) {
           const n = stripTaskTitle(title);
           if (n) removedNorms.add(n);
         }
-        removedEntries.push({ entry, id });
+        removedEntries.push({ entry, id, failedOrCanceled: isEntryFailedOrCanceled(entry) });
       }
       return !closed;
     });
@@ -976,7 +1003,7 @@ export function sweepClosedQuests(stat, current = {}) {
           const n = stripTaskTitle(title);
           if (n) removedNorms.add(n);
         }
-        removedEntries.push({ entry: v, id: k });
+        removedEntries.push({ entry: v, id: k, failedOrCanceled: isEntryFailedOrCanceled(v) });
         delete board['列表'][k];
       }
     }

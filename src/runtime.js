@@ -501,11 +501,14 @@ export function start() {
         { core: CORE_NAME, speaker: SPEAKER, redraw: false },
       );
       if (result && !result.error) {
-        const hasPendingRescan = !!host.readStat?.()?.['事件']?.[BOARD_KEY]?.['待重扫'];
-        if (extraFinished || !hasPendingRescan) {
+        const latestBoard = host.readStat?.()?.['事件']?.[BOARD_KEY] || {};
+        const stillHasPendingRescan = !!(latestBoard['待重扫'] && typeof latestBoard['待重扫'] === 'object' && Object.keys(latestBoard['待重扫']).length);
+        const latestFocus = normalizeQuestFocus(latestBoard['关注方向']);
+        const stillHasOnceFocus = latestFocus.mode === 'once' && !!latestFocus.text;
+        if (extraFinished || !stillHasPendingRescan) {
           clearMvuUpdateEnded();
         }
-        if (hasPendingRescan && waitGraceMs > 0) {
+        if ((stillHasPendingRescan || stillHasOnceFocus) && waitGraceMs > 0) {
           clearTimeout(bgTimer);
           bgTimer = setTimeout(() => {
             void runQuestBoardMaintenance();
@@ -557,10 +560,14 @@ export function start() {
     graceRetry = 0;
     clearMvuUpdateEnded();
     syncEntryUnread();
-    // 若重Roll/删楼前已有 待重扫，宽限后补跑一次过期清理，避免遗留孤儿标记
+    // 若删改楼层前存在 待重扫、仅本次关注方向或待引爆导演引信，宽限后补跑一次过期清理
     try {
-      const pending = host.readStat?.()?.['事件']?.[BOARD_KEY]?.['待重扫'];
-      if (pending && typeof pending === 'object' && Object.keys(pending).length) {
+      const b = host.readStat?.()?.['事件']?.[BOARD_KEY] || {};
+      const hasPending = !!(b['待重扫'] && typeof b['待重扫'] === 'object' && Object.keys(b['待重扫']).length);
+      const nf = normalizeQuestFocus(b['关注方向']);
+      const hasOnce = nf.mode === 'once' && !!nf.text;
+      const hasLeads = Array.isArray(b['导演状态']?.['待引爆']) && b['导演状态']['待引爆'].length > 0;
+      if (hasPending || hasOnce || hasLeads) {
         bgTimer = setTimeout(() => {
           void runQuestBoardMaintenance();
         }, 2200);
@@ -569,9 +576,20 @@ export function start() {
       /* 忽略 */
     }
   };
+  const onSwipeRefresh = () => {
+    // swipe 跳过重扫：仅清除旧回合变量结束信号并留出重Roll额外模型宽限期，不误杀待重扫与仅本次方向
+    clearTimeout(bgTimer);
+    graceRetry = 0;
+    clearMvuUpdateEnded();
+    recordMsgReceived(effectiveChatCount(readHostChat()), host.readChatId());
+    syncEntryUnread();
+    bgTimer = setTimeout(() => {
+      void runQuestBoardMaintenance();
+    }, 2200);
+  };
   listen(stEvents && stEvents.MESSAGE_RECEIVED ? stEvents.MESSAGE_RECEIVED : 'message_received', () => scheduleMaintenance(false));
   listen('mag_variable_update_ended', () => scheduleMaintenance(true));
-  listen(stEvents && stEvents.MESSAGE_SWIPED ? stEvents.MESSAGE_SWIPED : 'message_swiped', onPassiveRefresh);
+  listen(stEvents && stEvents.MESSAGE_SWIPED ? stEvents.MESSAGE_SWIPED : 'message_swiped', onSwipeRefresh);
   listen(stEvents && stEvents.MESSAGE_EDITED ? stEvents.MESSAGE_EDITED : 'message_edited', onPassiveRefresh);
   listen(stEvents && stEvents.MESSAGE_DELETED ? stEvents.MESSAGE_DELETED : 'message_deleted', onPassiveRefresh);
 

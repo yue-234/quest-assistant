@@ -449,6 +449,13 @@ export function normalizeQuestFocus(raw) {
   return { text: clean, mode, messageCount };
 }
 
+/** 剥离任务文本或标题中误入的后台骨架与余震标签，避免向玩家 UI 泄露。 */
+export function stripQuestBackendTags(raw) {
+  return text(raw)
+    .replace(/【\s*(?:假象余震(?:二段)?|悬疑反转|多方竞速|灾变探索|护送破局)\s*】\s*/g, '')
+    .trim();
+}
+
 /** 判断「仅本次」关注方向是否已过期（长期模式恒返回 false）。 */
 export function isOnceFocusExpired(board, current = {}) {
   if (current.extraAnalyzing) return false;
@@ -472,7 +479,7 @@ export function isOnceFocusExpired(board, current = {}) {
   }
   if (current.rescanCleared) return true;
   const pending = obj(b['待重扫']);
-  if (!Object.keys(pending).length) return true;
+  if (!Object.keys(pending).length) return false;
   const hasNowFloor = current.floor !== undefined && current.floor !== null && current.floor !== '';
   const canCheckPending = (pending['消息数'] !== undefined && pending['消息数'] !== '' && nowCount !== null && nowCount !== undefined)
     || (pending['楼层'] !== undefined && pending['楼层'] !== '' && hasNowFloor);
@@ -823,6 +830,7 @@ export function questBoardState(stat, current = {}) {
         category,
         rank,
         title,
+        displayTitle: stripQuestBackendTags(title) || title,
         way: wayInfo.way,
         wayKind: wayInfo.wayKind,
         guideLabel: wayInfo.guideLabel,
@@ -873,6 +881,7 @@ export function questBoardState(stat, current = {}) {
         category,
         rank,
         title: f.key,
+        displayTitle: stripQuestBackendTags(f.key) || f.key,
         way: '剧情触发',
         wayKind: 'clue',
         guideLabel: '任务目标',

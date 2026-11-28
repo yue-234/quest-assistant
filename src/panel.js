@@ -234,15 +234,16 @@ async function run(label, action, { redraw = true, after } = {}) {
 // ---------------------------------------------------------------------------
 
 function buildQuestDraft(item) {
+  const title = item.displayTitle || item.title;
   const place = item.guide || item.location || '情报指明的地点';
   if (item.wayKind === 'crisis') {
-    return `根据手头的地区情报，我立刻赶往现场介入「${item.title}」（切入：${place}）。`;
+    return `根据手头的地区情报，我立刻赶往现场介入「${title}」（切入：${place}）。`;
   }
   if (item.wayKind === 'clue') {
-    return `根据手头的地区情报，我顺着线索动身前往「${item.title}」（线索：${place}）。`;
+    return `根据手头的地区情报，我顺着线索动身前往「${title}」（线索：${place}）。`;
   }
   const guide = item.guide ? `（指引：${item.guide}）` : '';
-  return `根据手头的地区情报，我前往打听并接取「${item.title}」${guide}。`;
+  return `根据手头的地区情报，我前往打听并接取「${title}」${guide}。`;
 }
 
 function questCatClass(category) {
