@@ -164,7 +164,7 @@ export function start() {
 
   let openSeq = 0;
 
-  const hide = () => {
+  const hide = (closeOpts = {}) => {
     openSeq += 1;
     if (!frame) return;
     panelOpened = false;
@@ -175,6 +175,10 @@ export function start() {
       frame.contentWindow.questHelperPanel?.hide();
     } catch {
       /* 忽略 */
+    }
+    if (closeOpts?.focusInputBox && host.focusInput?.()) {
+      lastFocus = null;
+      return;
     }
     if (lastFocus && typeof lastFocus.focus === 'function') {
       try {
@@ -215,7 +219,6 @@ export function start() {
         return switchSelfRef(nextRef, { reopen: true });
       };
       panelOpened = true;
-      panel.open();
       el.style.display = 'block';
       entryControl?.setHidden(true);
       try {
@@ -224,18 +227,21 @@ export function start() {
       } catch {
         /* 忽略 */
       }
+      panel.open();
     } catch (error) {
+      if (!stopped && frame === el && !panelOpened) {
+        el.remove();
+        frame = null;
+        ready = null;
+        entryControl?.setHidden(false);
+      }
       if (stopped || mySeq !== openSeq) return;
       panelOpened = false;
-      el.remove();
-      frame = null;
-      ready = null;
-      entryControl?.setHidden(false);
       toast(`任务情报板打不开：${error && error.message ? error.message : error}`);
     }
   };
 
-  const close = () => hide();
+  const close = (closeOpts) => hide(closeOpts);
 
   const getScriptMeta = () => {
     const loader = win.__QuestHelperRemoteLoader;
@@ -396,12 +402,12 @@ export function start() {
 
   const runQuestBoardMaintenance = async () => {
     if (generating()) {
-      if (graceRetry < 20) {
+      if (graceRetry < 60) {
         graceRetry += 1;
         clearTimeout(bgTimer);
         bgTimer = setTimeout(() => {
           void runQuestBoardMaintenance();
-        }, 1500);
+        }, graceRetry <= 20 ? 1500 : 5000);
       }
       return;
     }
@@ -498,8 +504,19 @@ export function start() {
             allowGrace: liveGrace,
           });
         },
-        { core: CORE_NAME, speaker: SPEAKER, redraw: false },
+        { core: CORE_NAME, speaker: SPEAKER, redraw: false, expectedChatId: curChatId },
       );
+      if (stopped || (curChatId && host.readChatId() !== curChatId)) return;
+      if (result && result.error && result.error.includes('生成')) {
+        if (graceRetry < 60) {
+          graceRetry += 1;
+          clearTimeout(bgTimer);
+          bgTimer = setTimeout(() => {
+            void runQuestBoardMaintenance();
+          }, 2000);
+        }
+        return;
+      }
       if (result && !result.error) {
         const latestBoard = host.readStat?.()?.['事件']?.[BOARD_KEY] || {};
         const stillHasPendingRescan = !!(latestBoard['待重扫'] && typeof latestBoard['待重扫'] === 'object' && Object.keys(latestBoard['待重扫']).length);
@@ -550,15 +567,26 @@ export function start() {
       clearMsgReceived();
       graceRetry = 0;
       clearMvuUpdateEnded();
+      try {
+        frame?.contentWindow?.questHelperPanel?.resetForChatChange?.();
+      } catch {
+        /* 忽略 */
+      }
       close();
       syncEntryUnread();
     });
   }
   const onPassiveRefresh = () => {
     clearTimeout(bgTimer);
-    clearMsgReceived();
     graceRetry = 0;
-    clearMvuUpdateEnded();
+    const snap = readHostChat();
+    const curCount = effectiveChatCount(snap);
+    const curChatId = host.readChatId();
+    const keepGrace = isMsgRecvWithinGrace({ chatCount: curCount, chatId: curChatId });
+    if (!keepGrace) {
+      clearMsgReceived();
+      clearMvuUpdateEnded();
+    }
     syncEntryUnread();
     // 若删改楼层前存在 待重扫、仅本次关注方向或待引爆导演引信，宽限后补跑一次过期清理
     try {
@@ -567,7 +595,7 @@ export function start() {
       const nf = normalizeQuestFocus(b['关注方向']);
       const hasOnce = nf.mode === 'once' && !!nf.text;
       const hasLeads = Array.isArray(b['导演状态']?.['待引爆']) && b['导演状态']['待引爆'].length > 0;
-      if (hasPending || hasOnce || hasLeads) {
+      if (hasPending || hasOnce || hasLeads || keepGrace) {
         bgTimer = setTimeout(() => {
           void runQuestBoardMaintenance();
         }, 2200);
@@ -648,19 +676,24 @@ export function start() {
     })
       .then((result) => {
         if (stopped || win.__QuestHelperRemoteLoader) return;
-        const wasOpen = panelOpened;
+        if (generating() || panelOpened) {
+          toast(`已就绪固定版本 ${result.ref}，刷新或关闭面板再重进即可接管`);
+          return;
+        }
         win.__QuestHelperSelfBoot = { ref: result.ref, origin: result.origin };
         stop();
         (0, eval)(result.code);
-        if (wasOpen && win.QuestHelperApp && typeof win.QuestHelperApp.open === 'function') {
-          void win.QuestHelperApp.open();
-        }
       })
-      .catch(() => {
-        /* 拉取失败时保持当前脚本运行，并清除失效覆盖避免下次继续失败 */
-        if (readScriptRef(host.readStorage) === overrideRef) {
-          writeScriptRef(host.writeStorage, '');
+      .catch((err) => {
+        const msg = err && err.message ? err.message : String(err || '');
+        if (/404|未找到|无效|格式/.test(msg)) {
+          if (readScriptRef(host.readStorage) === overrideRef) {
+            writeScriptRef(host.writeStorage, '');
+          }
+          toast(`固定版本 ${overrideRef} 无效，已退回当前脚本运行`);
+          return;
         }
+        toast(`加载固定版本 ${overrideRef} 失败，暂用当前版本运行`);
       });
   }
 

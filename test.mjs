@@ -4311,10 +4311,11 @@ test('审计回归：EJS 全审计修复（update零泄漏、all盲演与推进�
     },
   }, { chat: Array.from({ length: 5 }, (_, i) => ({ is_user: i % 2 === 0, is_system: false, mes: 'x' })), lastUserMessageId: 4, source: updateSrc });
   assert.match(multiLeadUpdateOut, /多条带引信任务同轮结案留种时合并写入同一个 `待引爆` 数组/);
+  assert.match(multiLeadUpdateOut, /只要同轮包含一阶段 `假象余震` 留种，`余震冷却` 统一置 `3`/);
   assert.match(multiLeadUpdateOut, /非余震主线正常结案同步降冷却：.*"value":1/);
   assert.match(multiLeadUpdateOut, /本轮另有待引爆因果线，按下方「因果引爆」追加追查任务并清理引信/);
-  assert.doesNotMatch(multiLeadUpdateOut, /没有变动（含本轮刚跨城）时跳过写板/);
-  assert.match(multiLeadUpdateOut, /因果引爆: 原在「旧港城」结案的「旧港旧案」通过旧物、来信或跨区传闻露出物理裂痕/);
+  assert.doesNotMatch(multiLeadUpdateOut, /没有变动时跳过写板/);
+  assert.match(multiLeadUpdateOut, /因果引爆: 原在「旧港城」结案的「旧港旧案」通过旧物、来信或跨区传闻露出物理裂痕（来信印泥发黑）/);
   assert.match(multiLeadUpdateOut, /类别视格局定为 `本地主线`（5 栏）或 `剧情任务`（跨区用，10 栏）/);
   assert.match(multiLeadUpdateOut, /"path": "\/事件\/任务情报板\/导演状态\/待引爆\/0"/);
 
@@ -4398,4 +4399,259 @@ test('审计回归：EJS 全审计修复（update零泄漏、all盲演与推进�
       .filter(Boolean),
   );
   assert.ok(recLines.size >= 2);
+});
+
+test('二轮终审回归：多前缀映射、余震二段降冷、僵尸导演状态、边界与全语体收口', async () => {
+  // 1) stripTaskTitle 剥离串联多前缀标签，恢复 接取 / 留种 / 完结清扫 全链路闭合
+  assert.equal(stripTaskTitle('【假象余震】【护送破局】调查古井（团队）'), '调查古井');
+  const multiTagStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-10日' },
+    任务列表: { '调查古井': { 状态: '进行中', 进展: '[6月-10日] 勘查古井井台' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        列表: [
+          {
+            id: 'q_井',
+            类别: '本地主线',
+            等级: 'C',
+            标题: '【假象余震】【护送破局】调查古井（团队）',
+            方式: '调查',
+            真相: '【假象余震】【护送破局】水面无波｜余震引信：井底刻痕比城史更古老',
+            预期收益: ['金币 ×120'],
+          },
+        ],
+      },
+    },
+  };
+  const multiState = questBoardState(multiTagStat);
+  assert.equal(multiState.items.length, 1);
+  assert.equal(multiState.items[0].accepted, true);
+  assert.equal(multiState.items[0].displayTitle, '调查古井（团队）');
+
+  const dual = buildWorldbookJson(ejsSource, SCRIPT_VERSION);
+  const plotSrc = dual.entries['0'].content;
+  const updateSrc = dual.entries['1'].content;
+  const chat2 = [{ is_user: true, mes: '查看古井' }, { is_user: false, mes: '井水平静' }];
+  const multiPlotOut = renderEjs(multiTagStat, { chat: chat2, lastUserMessageId: 1, source: plotSrc });
+  assert.match(multiPlotOut, /已接取:调查古井/);
+  assert.doesNotMatch(multiPlotOut, /假象余震|余震引信/);
+
+  // 结案后 sweepClosedQuests 必须准确清扫并抽取引信
+  const multiDoneStat = JSON.parse(JSON.stringify(multiTagStat));
+  multiDoneStat['任务列表']['调查古井'].状态 = '已完成';
+  const multiSwept = sweepClosedQuests(multiDoneStat, { chatCount: 10 }).stat;
+  assert.equal(multiSwept['事件']['任务情报板']['列表'].length, 0);
+  assert.equal(multiSwept['事件']['任务情报板']['导演状态']['余震冷却'], 3);
+  assert.equal(multiSwept['事件']['任务情报板']['导演状态']['待引爆'][0]['引信'], '井底刻痕比城史更古老');
+
+  // 2) isAftershockQuestEntry 对同时含 来源:'余震衍生' 与 【假象余震二段】 正常递减冷却；toggleQuestIntent/ignoreQuest Toast 去标签
+  const stage2DerivSwept = sweepClosedQuests({
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { '二段深挖': { 状态: '已完成' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        导演状态: { 余震冷却: 2 },
+        列表: [
+          {
+            id: 'q_d2',
+            类别: '本地主线',
+            等级: 'B',
+            来源: '余震衍生',
+            标题: '【假象余震二段】二段深挖',
+            真相: '【假象余震二段】追踪旧印来源',
+            预期收益: ['史诗印戒 ×1'],
+          },
+        ],
+      },
+    },
+  }, { chatCount: 12 }).stat;
+  assert.equal(stage2DerivSwept['事件']['任务情报板']['导演状态']['余震冷却'], 1);
+
+  const intentRes = toggleQuestIntent(multiTagStat, 'q_井', '【假象余震】【护送破局】调查古井（团队）');
+  assert.doesNotMatch(intentRes.done, /假象余震|护送破局/);
+  assert.match(intentRes.done, /调查古井（团队）/);
+  const ignoreSpaced = ignoreQuest({
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-10日' },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        列表: { ' spaced ': { 类别: '支线任务', 等级: 'D', 标题: '【 悬疑反转 】空白键委托' } },
+      },
+    },
+  }, ' spaced ', '【 悬疑反转 】空白键委托');
+  assert.equal(Object.keys(ignoreSpaced.stat['事件']['任务情报板']['列表']).length, 0);
+  assert.doesNotMatch(ignoreSpaced.done, /悬疑反转/);
+
+  // 3) 僵尸/畸形 导演状态 自愈清理
+  for (const zombieDir of [
+    { 待引爆: [] },
+    { 余震冷却: 0 },
+    { 待引爆: 'bad_str', 余震冷却: 'bad' },
+    { 待引爆: [null, { 引信: '' }], 余震冷却: 0 },
+    'corrupted',
+  ]) {
+    const zStat = {
+      世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+      事件: { 任务情报板: { 区域键: '雾晶港', 区域: '雾晶港', 导演状态: zombieDir, 列表: [] } },
+    };
+    assert.equal(hasExpiredDirectorLeads(zStat, { chatCount: 10 }), true);
+    const cleaned = sweepExpiredDirectorLeads(zStat, { chatCount: 10 }).stat;
+    assert.equal(cleaned['事件']['任务情报板']['导演状态'], undefined);
+  }
+
+  // 4) 空 消息数 once 关注方向：带 楼层 回退 + 伴随已过期 待重扫 时前后端一致判定过期；relocate 消费清理 Patch
+  const floorOnceStat = setQuestFocus({
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-10日' },
+    事件: { 任务情报板: { 区域键: '雾晶港', 区域: '雾晶港', 列表: [] } },
+  }, '楼层兜底测试', { mode: 'once', floor: 2 }).stat;
+  assert.equal(floorOnceStat['事件']['任务情报板']['关注方向']['楼层'], '2');
+  assert.equal(isOnceFocusExpired(floorOnceStat['事件']['任务情报板'], { floor: 5 }), true);
+
+  const emptyOnceExpiredRescan = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: {},
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        关注方向: { 文本: '遗留单次关注', 模式: 'once', 消息数: '' },
+        待重扫: { 楼层: '1', 消息数: '2' },
+        列表: [],
+      },
+    },
+  };
+  assert.equal(questBoardState(emptyOnceExpiredRescan, { chatCount: 10, floor: 9 }).focus.active, false);
+  const expEmptyOnceUpdate = renderEjs(
+    emptyOnceExpiredRescan,
+    { chat: Array.from({ length: 10 }, (_, i) => ({ is_user: i % 2 === 0, is_system: false, mes: 'x' })), lastUserMessageId: 9, source: updateSrc },
+  );
+  assert.doesNotMatch(expEmptyOnceUpdate, /关注方向（遗留单次关注）/);
+
+  const relocateEmptyOnce = renderEjs({
+    世界: { 地点: '铁炉堡', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: {},
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        关注方向: { 文本: '锻造委托', 模式: 'once', 消息数: '' },
+        列表: [{ id: 'q1', 类别: '剧情任务', 等级: 'B', 标题: '主线', 预期收益: ['史诗剑 ×1'] }],
+      },
+    },
+  }, { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+  assert.match(relocateEmptyOnce, /关注方向（锻造委托）:.*remove.*"path": "\/事件\/任务情报板\/关注方向"/);
+
+  // 5) commit.js 跨聊天 chatId / swipe_id 写锁保护
+  const { commit } = await import('./src/commit.js');
+  const savedGlobals = {
+    Mvu: globalThis.Mvu,
+    TavernHelper: globalThis.TavernHelper,
+    SillyTavern: globalThis.SillyTavern,
+  };
+  try {
+    let curChatId = 'chat-A';
+    let curSwipeId = 0;
+    let replacedCount = 0;
+    globalThis.TavernHelper = { getLastMessageId: () => 5, refreshOneMessage: async () => {} };
+    globalThis.SillyTavern = {
+      getContext: () => ({
+        chatId: curChatId,
+        chat: Array.from({ length: 6 }, (_, i) => ({ is_user: i % 2 === 0, swipe_id: curSwipeId, mes: 'm' })),
+        saveChat: async () => {},
+      }),
+    };
+    globalThis.Mvu = {
+      getMvuData: () => ({ stat_data: { 主角: {}, 事件: { 任务情报板: { 列表: [] } } } }),
+      replaceMvuData: async () => { replacedCount += 1; },
+      isDuringExtraAnalysis: () => false,
+    };
+    const swipeAbort = await commit((s) => {
+      curSwipeId = 1;
+      return { stat: s, done: 'ok' };
+    }, { redraw: false, expectedChatId: 'chat-A' });
+    assert.match(swipeAbort.error || '', /已变化/);
+    const chatAbort = await commit((s) => ({ stat: s, done: 'ok' }), { redraw: false, expectedChatId: 'chat-B' });
+    assert.match(chatAbort.error || '', /聊天已切换/);
+    assert.equal(replacedCount, 0);
+  } finally {
+    globalThis.Mvu = savedGlobals.Mvu;
+    globalThis.TavernHelper = savedGlobals.TavernHelper;
+    globalThis.SillyTavern = savedGlobals.SillyTavern;
+  }
+
+  // 6) panel.js 使用 displayTitle 渲染卡片标题且含 IME isComposing 守卫
+  const panelCode = fs.readFileSync(path.join(__dirname, 'src', 'panel.js'), 'utf8');
+  assert.match(panelCode, /el\('h3', 'qh-quest-title', item\.displayTitle \|\| item\.title\)/);
+  assert.equal((panelCode.match(/isComposing/g) || []).length >= 2, true);
+
+  // 7) 语体去古风与同轮去重终检（初段 主线 0~1 栏、因果后续区分、待引爆>=2禁止追加、无明牌/抢跑/断链/正直自洽/软倾斜/抓走）
+  const seqDueOut = renderEjs({
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-14日' },
+    任务列表: {},
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        导演状态: {
+          余震冷却: 2,
+          待引爆: [
+            { 标题: '普通后续案', 区域: '旧港城', 类型: '因果后续', 引信: '商队暗纹箱去向王都', 触发后消息数: '4', 过期消息数: '14' },
+            { 标题: '另一条引信', 类型: '因果后续', 引信: '尚未到期', 触发后消息数: '99', 过期消息数: '120' },
+          ],
+        },
+        列表: [
+          { id: 'q1', 类别: '支线任务', 等级: 'D', 标题: '支线A', 预期收益: ['金币 ×40'] },
+          { id: 'q2', 类别: '支线任务', 等级: 'D', 标题: '支线B', 预期收益: ['金币 ×40'] },
+          { id: 'q3', 类别: '支线任务', 等级: 'D', 标题: '支线C', 预期收益: ['金币 ×40'] },
+          { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '支线D', 预期收益: ['金币 ×40'] },
+        ],
+      },
+    },
+  }, { chat: Array.from({ length: 5 }, (_, i) => ({ is_user: i % 2 === 0, is_system: false, mes: 'x' })), lastUserMessageId: 4, source: plotSrc });
+  assert.match(seqDueOut, /显露后续异动（商队暗纹箱去向王都）/);
+  assert.doesNotMatch(seqDueOut, /露出物理裂痕|假象余震/);
+
+  const seqDueUpdate = renderEjs({
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-14日' },
+    任务列表: { '已满队列测试': { 状态: '进行中' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        导演状态: {
+          余震冷却: 2,
+          待引爆: [
+            { 标题: '待引爆A', 类型: '因果后续', 引信: '线索A', 触发后消息数: '99', 过期消息数: '120' },
+            { 标题: '待引爆B', 类型: '假象余震', 引信: '线索B', 触发后消息数: '99', 过期消息数: '120' },
+          ],
+        },
+        列表: [
+          { id: 'q_full', 类别: '本地主线', 等级: 'C', 标题: '已满队列测试', 真相: '【假象余震】一阶段｜余震引信：满2条时不应再留种', 预期收益: ['金币 ×100'] },
+        ],
+      },
+    },
+  }, { chat: chat2, lastUserMessageId: 1, source: updateSrc });
+  assert.doesNotMatch(seqDueUpdate, /若本轮结案留种：/);
+
+  const allAllOut = renderEjs({
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { '护送线': { 状态: '进行中' } },
+    事件: {
+      任务情报板: {
+        区域键: '铁炉堡',
+        区域: '铁炉堡',
+        列表: [
+          { id: 'q1', 类别: '本地主线', 等级: 'C', 标题: '护送线', 真相: '【护送破局】车队过境', 预期收益: ['史诗甲 ×1'] },
+        ],
+      },
+    },
+  }, { chat: chat2, lastUserMessageId: 1 });
+  assert.match(allAllOut, /初段 0~2 栏或主线 0~1 栏/);
+  assert.equal((allAllOut.match(/实际发放某栏收益时/g) || []).length, 1);
+  assert.doesNotMatch(allAllOut, /明牌|抢跑|断链变数|正派立场|完全正直自洽|软倾斜|抓走|多方竞价|危机倒计时/);
 });

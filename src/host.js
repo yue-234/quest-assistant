@@ -114,6 +114,18 @@ export function writeInput(text, pattern) {
   return true;
 }
 
+/** 将焦点移回聊天输入框（若存在）。 */
+export function focusInput() {
+  const box = inputBox();
+  if (!box || typeof box.focus !== 'function') return false;
+  try {
+    box.focus();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function toast(message, kind = 'info') {
   const toastr = globalThis.toastr ?? parentWindow.toastr;
   toastr?.[kind]?.(message);

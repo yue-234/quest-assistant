@@ -383,19 +383,20 @@ export function effectiveChatCount(chat, fallbackCount = null) {
   return explicitNum;
 }
 
+const toNum = (v) => {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
 /** 一次重扫请求是否仍然新鲜（尚未经过下一回合消费；额外模型解析期间仍保持锁定）。 */
 export function rescanFresh(pending, current = {}) {
   if (!pending || !Object.keys(pending).length) return false;
-  const num = (v) => {
-    if (v === undefined || v === null || v === '') return null;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  };
   const isAssistantTail = typeof current.lastIsAssistant === 'boolean'
     ? current.lastIsAssistant
     : lastNonSystemIsAssistant(current.chat);
-  const atCount = num(pending['消息数']);
-  const nowCount = num(effectiveChatCount(current.chat, current.chatCount));
+  const atCount = toNum(pending['消息数']);
+  const nowCount = toNum(effectiveChatCount(current.chat, current.chatCount));
   if (atCount !== null && nowCount !== null) {
     if (nowCount <= atCount) return true;
     if (nowCount === atCount + 1) {
@@ -404,8 +405,8 @@ export function rescanFresh(pending, current = {}) {
     if (nowCount === atCount + 2) return !!current.extraAnalyzing;
     return false;
   }
-  const atFloor = num(pending['楼层']);
-  const nowFloor = num(current.floor);
+  const atFloor = toNum(pending['楼层']);
+  const nowFloor = toNum(current.floor);
   if (atFloor !== null && nowFloor !== null) {
     if (nowFloor <= atFloor) return true;
     if (nowFloor === atFloor + 1) {
@@ -423,6 +424,7 @@ function cleanFocusText(raw) {
   return text(raw)
     .replace(/[\r\n\t]+/g, ' ')
     .replace(/\s{2,}/g, ' ')
+    .replace(/\*{2,}/g, '')
     .trim()
     .slice(0, FOCUS_MAX_LEN)
     .trim();
@@ -462,20 +464,26 @@ export function isOnceFocusExpired(board, current = {}) {
   const b = obj(board);
   const focus = normalizeQuestFocus(b['关注方向']);
   if (!focus.text || focus.mode !== 'once') return false;
+  const inGrace = (atVal, nowVal) => (
+    current.allowGrace === false
+    && !current.extraFinished
+    && (nowVal === atVal + 2
+      || (nowVal === atVal + 1 && lastNonSystemIsAssistant(current.chat) === true))
+  );
   const nowCount = effectiveChatCount(current.chat, current.chatCount);
   if (focus.messageCount) {
-    if (nowCount === null || nowCount === undefined) return false;
-    const atCount = Number(focus.messageCount);
-    if (
-      Number.isFinite(atCount)
-      && current.allowGrace === false
-      && !current.extraFinished
-      && (nowCount === atCount + 2
-        || (nowCount === atCount + 1 && lastNonSystemIsAssistant(current.chat) === true))
-    ) {
-      return false;
-    }
+    const nowCountNum = toNum(nowCount);
+    if (nowCountNum === null) return false;
+    const atCount = toNum(focus.messageCount);
+    if (atCount !== null && inGrace(atCount, nowCountNum)) return false;
     return !rescanFresh({ 消息数: focus.messageCount }, current);
+  }
+  const rawFocus = obj(b['关注方向']);
+  const focusFloor = toNum(rawFocus['楼层'] ?? rawFocus.floor);
+  const nowFloor = toNum(current.floor);
+  if (focusFloor !== null && nowFloor !== null) {
+    if (inGrace(focusFloor, nowFloor)) return false;
+    return !rescanFresh({ 楼层: focusFloor }, current);
   }
   if (current.rescanCleared) return true;
   const pending = obj(b['待重扫']);
@@ -487,11 +495,11 @@ export function isOnceFocusExpired(board, current = {}) {
   return !rescanFresh(pending, current);
 }
 
-const CLOSED_TASK_RE = /(?:已完成|完成|已失败|失败|已结束|已取消|放弃)/;
+export const CLOSED_TASK_RE = /(?:已完成|完成|已失败|失败|已结束|已取消|放弃)/;
 
 export function stripTaskTitle(s) {
   return text(s)
-    .replace(/^\s*(?:[\[【][^\]】]*[\]】])\s*/g, '')
+    .replace(/^\s*(?:[\[【][^\]】]*[\]】]\s*)+/, '')
     .replace(/(?:\s*(?:[（(][^）)]*[）)]|[\[【][^\]】]*[\]】]))+\s*$/g, '')
     .replace(/[\s·•・:：—\-－,，、。!！?？「」『』《》“”‘’"']+/g, '')
     .trim()
@@ -713,7 +721,7 @@ export function questBoardState(stat, current = {}) {
 
   const rawList = Array.isArray(board['列表'])
     ? board['列表'].map((entry, idx) => ({ entry, rawKey: '', idx }))
-    : Object.entries(obj(board['列表'])).map(([k, v], idx) => ({ entry: v, rawKey: text(k).trim(), idx }));
+    : Object.entries(obj(board['列表'])).map(([k, v], idx) => ({ entry: v, rawKey: text(k), idx }));
 
   const regionChanged = !sameRegion(region, boardRegionKey, boardRegionName, current.geoData || null);
 

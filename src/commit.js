@@ -1,5 +1,5 @@
 // 将 actions.js 的结果写回酒馆最新楼层的 MVU 变量并存档。
-import { parentWindow } from './host.js';
+import { parentWindow, readChatId } from './host.js';
 
 const QUEUE_KEY = '__questHelperCommitQueue';
 const MVU_END_KEY = '__questHelperMvuEnd';
@@ -108,20 +108,40 @@ export function generating() {
   }
 }
 
+function latestSwipeId() {
+  try {
+    const ctx = parentWindow.SillyTavern?.getContext?.();
+    const chat = ctx?.chat || parentWindow.SillyTavern?.chat;
+    if (Array.isArray(chat) && chat.length > 0) {
+      const last = chat[chat.length - 1];
+      return last ? (last.swipe_id ?? 0) : null;
+    }
+  } catch {
+    /* 忽略 */
+  }
+  return null;
+}
+
 /**
  * 串行化提交操作：队列挂载在宿主窗口上，确保 runtime.js 与 panel.js 共享同一把写锁，
  * 每次真正轮到自己执行时才调用 mvu.getMvuData 读取最新状态。
  * @param {(stat: object) => ({stat: object, done: string} | {skip: true} | {error: string})} action
- * @param {{core?: string, speaker?: string, redraw?: boolean}} [options]
+ * @param {{core?: string, speaker?: string, redraw?: boolean, expectedChatId?: string}} [options]
  * @returns {Promise<{done?: string, skipped?: boolean, error?: string}>}
  */
-export function commit(action, { core = '任务助手', speaker = '任务助手', redraw = true } = {}) {
+export function commit(action, { core = '任务助手', speaker = '任务助手', redraw = true, expectedChatId = '' } = {}) {
+  const enqueueChatId = expectedChatId ? String(expectedChatId).trim() : readChatId();
   const exec = async () => {
     const mvu = parentWindow.Mvu;
     if (!mvu?.getMvuData || !mvu?.replaceMvuData) return { error: '没有找到 MVU，变量写不进去' };
     if (generating()) return { error: '回复还在生成，等它写完再操作' };
+    const chatIdBefore = readChatId();
+    if (enqueueChatId && chatIdBefore && chatIdBefore !== enqueueChatId) {
+      return { error: '操作期间聊天已切换，请重试' };
+    }
     const option = { type: 'message', message_id: 'latest' };
     const msgIdBefore = parentWindow.TavernHelper?.getLastMessageId?.();
+    const swipeIdBefore = latestSwipeId();
     let data;
     try {
       data = JSON.parse(JSON.stringify(mvu.getMvuData(option) ?? {}));
@@ -135,9 +155,15 @@ export function commit(action, { core = '任务助手', speaker = '任务助手'
     const result = action(data.stat_data);
     if (!result || result.skip) return { skipped: true };
     if (result.error) return result;
+    const chatIdNow = readChatId();
     const msgIdNow = parentWindow.TavernHelper?.getLastMessageId?.();
-    if (typeof msgIdBefore === 'number' && typeof msgIdNow === 'number' && msgIdNow !== msgIdBefore) {
-      return { error: '操作期间最新楼层已变化，请重试' };
+    const swipeIdNow = latestSwipeId();
+    if (
+      (chatIdBefore && chatIdNow && chatIdNow !== chatIdBefore)
+      || (typeof msgIdBefore === 'number' && typeof msgIdNow === 'number' && msgIdNow !== msgIdBefore)
+      || (swipeIdBefore !== null && swipeIdNow !== null && swipeIdNow !== swipeIdBefore)
+    ) {
+      return { error: '操作期间聊天或最新楼层已变化，请重试' };
     }
     data.stat_data = result.stat;
     try {

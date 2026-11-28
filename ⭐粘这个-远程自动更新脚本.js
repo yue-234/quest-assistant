@@ -107,50 +107,63 @@
   }
 
   let loadedCode = '';
+  let switchingPromise = null;
   const remoteState = {
     defaultRef: DEFAULT_REF,
     loadedRef: DEFAULT_REF,
     loadedOrigin: '',
-    async switchRef(nextRef, { reopen = false } = {}) {
-      const normalized = normalizeRef(nextRef);
-      const targetRef = normalized || DEFAULT_REF;
-      const prevOverride = readStorage(REF_STORAGE_KEY);
-      const prevLoadedRef = remoteState.loadedRef;
-      const prevLoadedOrigin = remoteState.loadedOrigin;
-      const prevLoadedCode = loadedCode;
-      const result = await fetchByRef(targetRef);
-      writeStorage(REF_STORAGE_KEY, normalized === DEFAULT_REF ? '' : normalized);
-      remoteState.loadedRef = result.ref;
-      remoteState.loadedOrigin = result.origin;
-      const win = parentWindow();
-      try {
-        if (win?.QuestHelperApp && typeof win.QuestHelperApp.stop === 'function') {
-          win.QuestHelperApp.stop();
-        }
-        (0, eval)(result.code);
-        loadedCode = result.code;
-        if (reopen && win?.QuestHelperApp && typeof win.QuestHelperApp.open === 'function') {
-          void win.QuestHelperApp.open();
-        }
-        return { ref: result.ref, origin: result.origin };
-      } catch (err) {
-        writeStorage(REF_STORAGE_KEY, prevOverride);
-        remoteState.loadedRef = prevLoadedRef;
-        remoteState.loadedOrigin = prevLoadedOrigin;
-        if (prevLoadedCode) {
-          try {
-            (0, eval)(prevLoadedCode);
-            loadedCode = prevLoadedCode;
-            if (reopen && win?.QuestHelperApp && typeof win.QuestHelperApp.open === 'function') {
-              void win.QuestHelperApp.open();
-            }
-          } catch {
-            /* 旧版重装异常忽略 */
-          }
-        }
-        notifyError(`切换脚本版本 ${result.ref} 失败，已回退 ${prevLoadedRef}：${err && err.message ? err.message : err}`);
-        throw err;
+    switchRef(nextRef, { reopen = false } = {}) {
+      if (switchingPromise) {
+        return Promise.reject(new Error('正在切换脚本版本，请稍等片刻'));
       }
+      const runSwitch = (async () => {
+        const normalized = normalizeRef(nextRef);
+        const targetRef = normalized || DEFAULT_REF;
+        const prevOverride = readStorage(REF_STORAGE_KEY);
+        const prevLoadedRef = remoteState.loadedRef;
+        const prevLoadedOrigin = remoteState.loadedOrigin;
+        const prevLoadedCode = loadedCode;
+        const result = await fetchByRef(targetRef);
+        writeStorage(REF_STORAGE_KEY, normalized === DEFAULT_REF ? '' : normalized);
+        remoteState.loadedRef = result.ref;
+        remoteState.loadedOrigin = result.origin;
+        const win = parentWindow();
+        try {
+          if (win?.QuestHelperApp && typeof win.QuestHelperApp.stop === 'function') {
+            win.QuestHelperApp.stop();
+          }
+          (0, eval)(result.code);
+          loadedCode = result.code;
+          if (reopen && win?.QuestHelperApp && typeof win.QuestHelperApp.open === 'function') {
+            void win.QuestHelperApp.open();
+          }
+          return { ref: result.ref, origin: result.origin };
+        } catch (err) {
+          writeStorage(REF_STORAGE_KEY, prevOverride);
+          remoteState.loadedRef = prevLoadedRef;
+          remoteState.loadedOrigin = prevLoadedOrigin;
+          if (prevLoadedCode) {
+            try {
+              if (win?.QuestHelperApp && typeof win.QuestHelperApp.stop === 'function') {
+                win.QuestHelperApp.stop();
+              }
+              (0, eval)(prevLoadedCode);
+              loadedCode = prevLoadedCode;
+              if (reopen && win?.QuestHelperApp && typeof win.QuestHelperApp.open === 'function') {
+                void win.QuestHelperApp.open();
+              }
+            } catch {
+              /* 旧版重装异常忽略 */
+            }
+          }
+          notifyError(`切换脚本版本 ${result.ref} 失败，已回退 ${prevLoadedRef}：${err && err.message ? err.message : err}`);
+          throw err;
+        }
+      })();
+      switchingPromise = runSwitch.finally(() => {
+        switchingPromise = null;
+      });
+      return switchingPromise;
     },
   };
 

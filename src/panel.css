@@ -12,7 +12,7 @@
   --qh-line: #232e44;
   --qh-text: #f4f7fb;
   --qh-muted: #a3b2c8;
-  --qh-faint: #6b7c96;
+  --qh-faint: #8a9bb5;
   --qh-gold: #f0a92c;
   --qh-gold-soft: #ffc757;
   --qh-red: #e8544a;
@@ -24,6 +24,7 @@
   inset: 0;
   display: none;
   z-index: 1000;
+  overscroll-behavior: contain;
 }
 
 .qh.qh-open {
@@ -36,6 +37,7 @@
   position: absolute;
   inset: 0;
   background: rgba(4, 6, 10, 0.58);
+  touch-action: none;
 }
 
 .qh-room {
@@ -696,6 +698,7 @@
   padding: 20px 26px 26px;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--qh-raised2) transparent;
@@ -764,6 +767,7 @@
   line-height: 1.15;
   letter-spacing: 0.04em;
   color: var(--qh-gold);
+  overflow-wrap: anywhere;
 }
 
 .qh-stat-foot {
@@ -1454,7 +1458,8 @@
 }
 
 .qh-quest-card.is-stale {
-  opacity: 0.82;
+  border-color: rgba(107, 124, 150, 0.34);
+  background: rgba(12, 18, 30, 0.86);
 }
 
 .qh-quest-head {
@@ -1551,6 +1556,7 @@
   font-weight: 700;
   color: #f0f6ff;
   line-height: 1.38;
+  overflow-wrap: anywhere;
 }
 
 .qh-quest-summary {
@@ -1558,6 +1564,7 @@
   font-size: 13px;
   line-height: 1.62;
   color: #c7d6ec;
+  overflow-wrap: anywhere;
 }
 
 .qh-quest-progress {
@@ -1594,6 +1601,7 @@
   font-size: 12.5px;
   line-height: 1.55;
   color: #ffedd5;
+  overflow-wrap: anywhere;
 }
 
 .qh-quest-guide {
@@ -1615,7 +1623,10 @@
 }
 
 .qh-quest-guide-text {
+  flex: 1;
+  min-width: 0;
   color: #e4eefc;
+  overflow-wrap: anywhere;
 }
 
 .qh-quest-rewards {
@@ -1825,6 +1836,8 @@
 /* Toast */
 
 .qh-toast {
+  position: absolute;
+  pointer-events: none;
   left: 50%;
   bottom: 24px;
   transform: translateX(-50%) translateY(10px);
@@ -1876,20 +1889,34 @@
   }
 
   .qh-topbar {
-    padding: 12px 14px;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .qh-top-title {
+    white-space: nowrap;
+    font-size: 16px;
   }
 
   .qh-top-sub {
     display: none;
   }
 
+  .qh-top-fp {
+    padding: 4px 8px;
+  }
+
   .qh-top-fp-label {
     display: none;
   }
 
+  .qh-top-right {
+    gap: 6px;
+  }
+
   .qh-top-settings,
   .qh-top-close {
-    padding: 5px 9px;
+    padding: 5px 8px;
   }
 
   .qh-settings-card {
@@ -1897,6 +1924,7 @@
     right: 14px;
     left: 14px;
     width: auto;
+    overscroll-behavior: contain;
   }
 
   .qh-body {
@@ -1917,7 +1945,7 @@
   }
 
   .qh-quest-rescan .qh-btn--primary {
-    flex: 1 1 200px;
+    flex: 1 1 230px;
   }
 
   .qh-focus-bar {

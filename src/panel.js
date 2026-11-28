@@ -57,15 +57,32 @@ const ui = {
 
 let tagFetchPromise = null;
 let worldbookFetchPromise = null;
+let worldbookFetchSeq = 0;
 
 let root = null;
 let app = null;
 let mounted = false;
 let busy = false;
 let busySince = 0;
+let busyToken = 0;
 let sweeping = false;
+let focusComposing = false;
+let pendingDeferredRefresh = false;
 let closeTimer = null;
 let closeCleanup = null;
+
+function resetTransientFocusUi({ focusToggle = false, collapse = true } = {}) {
+  if (collapse) ui.focusExpanded = false;
+  ui.focusDraftText = null;
+  ui.focusDraftMode = null;
+  focusComposing = false;
+  pendingDeferredRefresh = false;
+  render({ force: true, skipInputRestore: true });
+  if (focusToggle && root) {
+    const toggleBtn = root.querySelector('.qh-focus-toggle');
+    if (toggleBtn && typeof toggleBtn.focus === 'function') toggleBtn.focus();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 宿主读取
@@ -213,8 +230,10 @@ async function run(label, action, { redraw = true, after } = {}) {
   }
   busy = true;
   busySince = Date.now();
+  const myToken = ++busyToken;
+  const expectedChatId = host.readChatId?.() || '';
   try {
-    const result = await commit(action, { core: CORE_NAME, speaker: SPEAKER, redraw });
+    const result = await commit(action, { core: CORE_NAME, speaker: SPEAKER, redraw, expectedChatId });
     if (result && result.error) {
       toast(result.error, 'err');
     } else {
@@ -225,7 +244,7 @@ async function run(label, action, { redraw = true, after } = {}) {
   } catch (error) {
     toast(`操作失败：${error && error.message ? error.message : error}`, 'err');
   } finally {
-    busy = false;
+    if (busyToken === myToken) busy = false;
   }
 }
 
@@ -321,26 +340,30 @@ function renderContent(state) {
 
   const triggerRescan = (isNullCore) => {
     ui.confirmDeleteTrait = '';
-    const opts = {
-      nullCore: isNullCore,
-      chat: chatArray(),
-      extraAnalyzing: extraAnalysisActive(),
-    };
-    if (ui.focusExpanded) {
-      const inputEl = root && root.querySelector('.qh-focus-input');
-      opts.focusText = inputEl ? inputEl.value : (ui.focusDraftText ?? focus.text ?? '');
-      opts.focusMode = ui.focusDraftMode || (focus.active && focus.mode === 'once' ? 'once' : 'long');
-    }
+    const hasFocusChoice = ui.focusExpanded;
+    const inputEl = hasFocusChoice && root ? root.querySelector('.qh-focus-input') : null;
+    const pickedFocusText = hasFocusChoice
+      ? (inputEl ? inputEl.value : (ui.focusDraftText ?? focus.text ?? ''))
+      : undefined;
+    const pickedFocusMode = hasFocusChoice
+      ? (ui.focusDraftMode || (focus.active && focus.mode === 'once' ? 'once' : 'long'))
+      : undefined;
     return run(
       '已预约重扫',
-      (s) => requestQuestRescan(s, lastFloor(), chatCount(), opts),
+      (s) => requestQuestRescan(s, lastFloor(), chatCount(), {
+        nullCore: isNullCore,
+        chat: chatArray(),
+        extraAnalyzing: extraAnalysisActive(),
+        ...(hasFocusChoice ? { focusText: pickedFocusText, focusMode: pickedFocusMode } : {}),
+      }),
       {
         redraw: true,
         after: () => {
-          if (ui.focusExpanded) {
+          if (hasFocusChoice) {
             ui.focusDraftText = null;
             ui.focusDraftMode = null;
             ui.focusExpanded = false;
+            focusComposing = false;
           }
         },
       },
@@ -367,7 +390,19 @@ function renderContent(state) {
             ui.focusDraftMode = focus.active && focus.mode === 'once' ? 'once' : 'long';
           }
           ui.focusExpanded = !ui.focusExpanded;
+          if (!ui.focusExpanded) {
+            ui.focusDraftText = null;
+            ui.focusDraftMode = null;
+            focusComposing = false;
+          }
           render();
+          if (ui.focusExpanded && root) {
+            const inp = root.querySelector('.qh-focus-input');
+            if (inp && typeof inp.focus === 'function') {
+              inp.focus();
+              try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch { /* 忽略 */ }
+            }
+          }
         },
       },
     ),
@@ -413,6 +448,7 @@ function renderContent(state) {
         mode: modeVal,
         chatCount: chatCount(),
         chat: chatArray(),
+        floor: lastFloor(),
       }),
       {
         redraw: true,
@@ -420,6 +456,7 @@ function renderContent(state) {
           ui.focusDraftText = null;
           ui.focusDraftMode = null;
           ui.focusExpanded = false;
+          focusComposing = false;
         },
       },
     );
@@ -437,6 +474,20 @@ function renderContent(state) {
         'aria-label': '关注方向输入',
       },
       {
+        compositionstart: () => {
+          focusComposing = true;
+        },
+        compositionend: (ev) => {
+          focusComposing = false;
+          ui.focusDraftText = ev.target.value;
+          if (clearBtn) {
+            clearBtn.hidden = !(ev.target.value.trim() || focus.active);
+          }
+          if (pendingDeferredRefresh) {
+            pendingDeferredRefresh = false;
+            render();
+          }
+        },
         input: (ev) => {
           ui.focusDraftText = ev.target.value;
           if (clearBtn) {
@@ -444,13 +495,13 @@ function renderContent(state) {
           }
         },
         keydown: (ev) => {
+          if (ev.isComposing || ev.keyCode === 229) return;
           if (ev.key === 'Enter') {
             ev.preventDefault();
             void submitFocus(focusInput.value, draftMode);
           } else if (ev.key === 'Escape') {
             ev.stopPropagation();
-            ui.focusExpanded = false;
-            render();
+            resetTransientFocusUi({ focusToggle: true });
           }
         },
       },
@@ -491,7 +542,7 @@ function renderContent(state) {
         click: () => {
           if (!focus.text && !focus.active) {
             focusInput.value = '';
-            ui.focusDraftText = '';
+            ui.focusDraftText = null;
             clearBtn.hidden = true;
             focusInput.focus();
             return;
@@ -502,8 +553,9 @@ function renderContent(state) {
             {
               redraw: true,
               after: () => {
-                ui.focusDraftText = '';
-                ui.focusDraftMode = 'long';
+                ui.focusDraftText = null;
+                ui.focusDraftMode = null;
+                focusComposing = false;
               },
             },
           );
@@ -831,8 +883,8 @@ function renderContent(state) {
     if (metaParts.length) head.append(el('span', 'qh-quest-meta', metaParts.join(' · ')));
     card.append(head);
 
-    // 标题与摘要
-    card.append(el('h3', 'qh-quest-title', item.title));
+    // 标题与摘要（展示防泄密 displayTitle，操作与键匹配仍使用原 title）
+    card.append(el('h3', 'qh-quest-title', item.displayTitle || item.title));
     if (item.summary) card.append(el('p', 'qh-quest-summary', item.summary));
 
     // 最新进展条
@@ -960,8 +1012,8 @@ function renderContent(state) {
               click: () => {
                 const draftText = buildQuestDraft(item);
                 if (host.writeInput(draftText)) {
-                  toast('行动草稿已填入输入框，可微调后发送', 'ok');
-                  app.close();
+                  host.toast('行动草稿已填入输入框，可微调后发送', 'ok');
+                  app.close({ focusInputBox: true });
                 } else {
                   toast('未能写入输入框，请在聊天框手动输入行动', 'err');
                 }
@@ -1005,8 +1057,16 @@ function renderContent(state) {
 // 渲染与静默清理
 // ---------------------------------------------------------------------------
 
-function render() {
+function render(options = {}) {
   if (!root) return;
+  const doc = root.ownerDocument;
+  const activeEl = doc?.activeElement;
+  const activeIsFocusInput = !!(activeEl && activeEl.classList?.contains('qh-focus-input'));
+  if (!options.force && focusComposing && root.classList.contains('qh-open') && activeIsFocusInput) {
+    pendingDeferredRefresh = true;
+    return;
+  }
+
   const stat = currentStat();
   const curFloor = lastFloor();
   const curCount = chatCount();
@@ -1073,7 +1133,7 @@ function render() {
           allowGrace: liveAllowGrace,
         });
       },
-      { core: CORE_NAME, speaker: SPEAKER, redraw: false },
+      { core: CORE_NAME, speaker: SPEAKER, redraw: false, expectedChatId: curChatId },
     )
       .then((result) => {
         sweeping = false;
@@ -1082,6 +1142,18 @@ function render() {
       .catch(() => {
         sweeping = false;
       });
+  }
+
+  let selStart = null;
+  let selEnd = null;
+  if (activeIsFocusInput && !options.skipInputRestore) {
+    try {
+      selStart = activeEl.selectionStart;
+      selEnd = activeEl.selectionEnd;
+      ui.focusDraftText = activeEl.value;
+    } catch {
+      /* 忽略 */
+    }
   }
 
   const body = root.querySelector('.qh-body');
@@ -1098,6 +1170,8 @@ function render() {
       chat: chatSnapshot,
       nullCore: host.isNullCore(),
       extraAnalyzing,
+      extraFinished,
+      allowGrace,
     });
     view = renderContent(stateNow);
   } catch (error) {
@@ -1109,6 +1183,16 @@ function render() {
 
   body.append(view);
   body.scrollTop = scroll;
+
+  if (activeIsFocusInput && !options.skipInputRestore) {
+    const nextInp = root.querySelector('.qh-focus-input');
+    if (nextInp && typeof nextInp.focus === 'function') {
+      nextInp.focus();
+      if (typeof selStart === 'number' && typeof selEnd === 'number') {
+        try { nextInp.setSelectionRange(selStart, selEnd); } catch { /* 忽略 */ }
+      }
+    }
+  }
 
   // 更新顶栏 FP 与日期显示
   const fpEl = root.querySelector('.qh-top-fp-val');
@@ -1276,18 +1360,25 @@ function syncVersionControls() {
 
 async function refreshWorldbookStatus() {
   if (worldbookFetchPromise) return worldbookFetchPromise;
+  const reqSeq = ++worldbookFetchSeq;
+  const startChatId = host.readChatId?.() || '';
   ui.worldbookState = 'loading';
   syncVersionControls();
   worldbookFetchPromise = (async () => {
     try {
-      ui.worldbookInfo = await host.readActiveWorldbookInfo();
+      const info = await host.readActiveWorldbookInfo();
+      if (reqSeq !== worldbookFetchSeq || (startChatId && (host.readChatId?.() || '') !== startChatId)) return;
+      ui.worldbookInfo = info;
       ui.worldbookState = 'ready';
     } catch {
+      if (reqSeq !== worldbookFetchSeq) return;
       ui.worldbookInfo = { supported: false, found: false, enabled: false, version: '', title: '', bookName: '' };
       ui.worldbookState = 'ready';
     } finally {
-      worldbookFetchPromise = null;
-      syncVersionControls();
+      if (reqSeq === worldbookFetchSeq) {
+        worldbookFetchPromise = null;
+        syncVersionControls();
+      }
     }
   })();
   return worldbookFetchPromise;
@@ -1340,7 +1431,7 @@ async function applyScriptRef(rawRef) {
   syncVersionControls();
   try {
     await app.onScriptRefChange(normalized);
-    toast(`已切换至版本 ${targetRef}`, 'ok');
+    host.toast(`已切换至版本 ${targetRef}`, 'ok');
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
     toast(`切换版本 ${targetRef} 失败：${msg}`, 'err');
@@ -1478,6 +1569,7 @@ function buildSettingsLayer() {
     { type: 'text', placeholder: `${DEFAULT_SCRIPT_REF} 或 v1.4.1`, 'aria-label': '输入脚本版本号' },
     {
       keydown: (e) => {
+        if (e.isComposing || e.keyCode === 229) return;
         if (e.key === 'Enter') {
           e.preventDefault();
           void applyScriptRef(verInput.value);
@@ -1577,8 +1669,6 @@ function buildShell() {
   room.append(topbar, body, settingsLayer, holoCorners, holoVeil);
 
   const toastNode = el('div', 'qh-toast');
-  toastNode.style.position = 'absolute';
-  toastNode.style.pointerEvents = 'none';
 
   shell.append(backdrop, room, toastNode);
   return shell;
@@ -1636,7 +1726,7 @@ app = {
     if (closeBtn && closeBtn.focus) closeBtn.focus();
   },
 
-  close() {
+  close(closeOpts = {}) {
     if (!root || !root.classList.contains('qh-open') || root.classList.contains('qh-closing')) return;
     ui.confirmDeleteTrait = '';
     setSettingsOpen(false);
@@ -1644,9 +1734,14 @@ app = {
       cancelClose();
       ui.questEditRewards = false;
       ui.confirmDeleteTrait = '';
+      ui.focusExpanded = false;
+      ui.focusDraftText = null;
+      ui.focusDraftMode = null;
+      focusComposing = false;
+      pendingDeferredRefresh = false;
       setSettingsOpen(false);
       root.classList.remove('qh-open');
-      if (typeof app.onClose === 'function') app.onClose();
+      if (typeof app.onClose === 'function') app.onClose(closeOpts);
     };
     if (!shouldAnimateClose()) {
       finish();
@@ -1680,8 +1775,35 @@ app = {
     cancelClose();
     ui.questEditRewards = false;
     ui.confirmDeleteTrait = '';
+    ui.focusExpanded = false;
+    ui.focusDraftText = null;
+    ui.focusDraftMode = null;
+    focusComposing = false;
+    pendingDeferredRefresh = false;
     setSettingsOpen(false);
     root.classList.remove('qh-open');
+  },
+
+  resetForChatChange() {
+    ui.questCategory = '全部';
+    ui.questEditRewards = false;
+    ui.confirmDeleteTrait = '';
+    ui.traitsExpanded = { local: false, world: false };
+    ui.focusExpanded = false;
+    ui.focusDraftText = null;
+    ui.focusDraftMode = null;
+    focusComposing = false;
+    pendingDeferredRefresh = false;
+    ui.worldbookInfo = null;
+    ui.worldbookState = 'idle';
+    worldbookFetchPromise = null;
+    worldbookFetchSeq += 1;
+    clearTimeout(toast.timer);
+    if (root) {
+      const toastEl = root.querySelector('.qh-toast');
+      if (toastEl) toastEl.className = 'qh-toast';
+    }
+    setSettingsOpen(false);
   },
 };
 
@@ -1705,6 +1827,10 @@ export function mount(options = {}) {
           setSettingsOpen(false);
           const settingsBtn = root.querySelector('.qh-top-settings');
           if (settingsBtn && settingsBtn.focus) settingsBtn.focus();
+          return;
+        }
+        if (ui.focusExpanded) {
+          resetTransientFocusUi({ focusToggle: true });
           return;
         }
         app.close();

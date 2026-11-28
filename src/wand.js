@@ -131,14 +131,21 @@ export function mountWand(doc, win, { onOpen } = {}) {
 
   attach();
 
-  // 若宿主扩展菜单尚未创建或后续被重建，自动补挂菜单项
+  // 若宿主扩展菜单尚未创建或后续被重建，自动补挂菜单项（带轻量节流避免流式高频回调）
+  let observeTimer = null;
   const ObserverCtor = win?.MutationObserver || globalThis.MutationObserver;
   if (typeof ObserverCtor === 'function') {
     observer = new ObserverCtor(() => {
-      if (destroyed) return;
+      if (destroyed || observeTimer) return;
       const existing = doc.getElementById(WAND_ITEM_ID);
       if (existing && existing.isConnected) return;
-      attach();
+      observeTimer = setTimeout(() => {
+        observeTimer = null;
+        if (destroyed) return;
+        const cur = doc.getElementById(WAND_ITEM_ID);
+        if (cur && cur.isConnected) return;
+        attach();
+      }, 60);
     });
     observer.observe(doc.body, { childList: true, subtree: true });
   }

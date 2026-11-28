@@ -5,7 +5,7 @@ import { DATA } from './data.js';
 import {
   BOARD_KEY, CORE_NAME, SPEAKER, fpOf, boardNode, effectiveChatCount, rescanFresh, lastNonSystemIsAssistant,
   normalizeDay, worldDay, addWorldDays, resolveRegion, resolveRegionText, normalizeQuestCategory,
-  normalizeQuestFocus, isOnceFocusExpired, stripQuestBackendTags,
+  normalizeQuestFocus, isOnceFocusExpired, stripQuestBackendTags, CLOSED_TASK_RE,
   cleanRewardText, parseClaimedSet, parseLostSet,
   mergeRewardMapEntries, normalizeQuestRewards,
   CLAIMED_MARK_RE, LOST_MARK_RE,
@@ -48,13 +48,14 @@ export function toggleQuestIntent(stat, questId, questTitle = '') {
   const current = Array.isArray(board['意向'])
     ? board['意向'].map((x) => text(x).trim()).filter(Boolean)
     : [];
-  const has = current.includes(id) || (title && current.includes(title));
+  const shownTitle = stripQuestBackendTags(title) || title || id;
+  const has = current.some((x) => (id && x === id) || (title && x === title));
   if (has) {
     board['意向'] = current.filter((x) => x !== id && (!title || x !== title));
-    return { stat: next, done: `已取消锁定「${title || id}」` };
+    return { stat: next, done: `已取消锁定「${shownTitle}」` };
   }
   board['意向'] = [...current, id || title];
-  return { stat: next, done: `已锁定「${title || id}」，只会因时限到期自动清除` };
+  return { stat: next, done: `已锁定「${shownTitle}」，只会因时限到期自动清除` };
 }
 
 /** 划掉不感兴趣的任务情报，下一回合自动补入新任务。 */
@@ -80,7 +81,7 @@ export function ignoreQuest(stat, questId, questTitle = '') {
     for (const [k, v] of Object.entries(board['列表'])) {
       const r = obj(v);
       const itemTitle = text(r['标题']).trim();
-      if ((id && k === id) || (title && itemTitle === title)) {
+      if ((id && (k === id || text(k).trim() === id)) || (title && itemTitle === title)) {
         if (itemTitle) removedTitle = itemTitle;
         delete board['列表'][k];
       }
@@ -118,7 +119,8 @@ export function ignoreQuest(stat, questId, questTitle = '') {
   if (removedTitle && !ignored.includes(removedTitle)) ignored.push(removedTitle);
   board['忽略'] = ignored.slice(-DATA.questBoard.maxIgnored);
 
-  return { stat: next, done: `已忽略「${removedTitle || id}」，下一回合自动补入新情报` };
+  const shownRemoved = stripQuestBackendTags(removedTitle) || removedTitle || id;
+  return { stat: next, done: `已忽略「${shownRemoved}」，下一回合自动补入新情报` };
 }
 
 function findBoardEntry(board, id, title) {
@@ -134,7 +136,7 @@ function findBoardEntry(board, id, title) {
     for (const [k, v] of Object.entries(board['列表'])) {
       const r = obj(v);
       const itemTitle = text(r['标题']).trim();
-      if ((id && text(k).trim() === id) || (title && itemTitle === title)) return v;
+      if ((id && (k === id || text(k).trim() === id)) || (title && itemTitle === title)) return v;
     }
   }
   return null;
@@ -397,7 +399,7 @@ export function sweepExpiredAftermath(stat) {
   return { stat: next, done: '已清理过期词条' };
 }
 
-function writeFocusToBoard(board, rawText, mode, effCountStr) {
+function writeFocusToBoard(board, rawText, mode, effCountStr, effFloorStr = '') {
   const reqMode = mode === 'once' ? 'once' : 'long';
   const norm = normalizeQuestFocus({ 文本: rawText, 模式: reqMode });
   if (!norm.text) {
@@ -410,6 +412,9 @@ function writeFocusToBoard(board, rawText, mode, effCountStr) {
       模式: 'once',
       消息数: effCountStr,
     };
+    if (!effCountStr && effFloorStr) {
+      board['关注方向']['楼层'] = effFloorStr;
+    }
   } else {
     board['关注方向'] = {
       文本: norm.text,
@@ -420,12 +425,13 @@ function writeFocusToBoard(board, rawText, mode, effCountStr) {
 }
 
 /** 设定或清空任务情报板「关注方向」（软倾斜生成偏好）。 */
-export function setQuestFocus(stat, rawText, { mode = 'long', chatCount, chat } = {}) {
+export function setQuestFocus(stat, rawText, { mode = 'long', chatCount, chat, floor } = {}) {
   const eff = effectiveChatCount(chat, chatCount);
   const effStr = eff !== undefined && eff !== null ? String(eff) : '';
+  const effFloorStr = !effStr && floor !== undefined && floor !== null && floor !== '' ? String(floor) : '';
   const next = draft(stat);
   const board = ensureBoard(next);
-  const written = writeFocusToBoard(board, rawText, mode, effStr);
+  const written = writeFocusToBoard(board, rawText, mode, effStr, effFloorStr);
   if (!written) {
     return { stat: next, done: '已清空关注方向，恢复通用情报生成' };
   }
@@ -572,8 +578,6 @@ export function clearQuestRescan(stat) {
   delete board['待重扫'];
   return { stat: next, done: '地区重扫标记已清空' };
 }
-
-const CLOSED_TASK_RE = /(?:已完成|完成|已失败|失败|已结束|已取消|放弃)/;
 
 function formalEntriesOf(stat) {
   return Object.entries(obj(obj(stat)['任务列表']))
@@ -756,9 +760,11 @@ export function hasClosedQuestLeftovers(stat, current = {}) {
     return hasOrphanRewardMapKeys(board);
   }
   if (board['列表'] && typeof board['列表'] === 'object') {
-    if (Object.entries(board['列表']).some(([k, v], idx) =>
-      isQuestEntryClosed(stat, v, idx, claimedMap, everSet, everNormSet, historyStats, k),
-    )) return true;
+    let idx = 0;
+    for (const [k, v] of Object.entries(board['列表'])) {
+      if (isQuestEntryClosed(stat, v, idx, claimedMap, everSet, everNormSet, historyStats, k)) return true;
+      idx += 1;
+    }
     return hasOrphanRewardMapKeys(board);
   }
   return false;
@@ -843,7 +849,9 @@ function isAftershockQuestEntry(entry, lead = null) {
   const tagText = [r['来源'], r['标签'], r['类型'], r['标题'], r['真相'], r['幕后真相']]
     .map((v) => text(v))
     .join(' ');
-  return /【假象余震(?!二段)】|余震衍生|余震引信\s*[：:]/.test(tagText);
+  if (/余震引信\s*[：:]/.test(tagText)) return true;
+  if (/【\s*假象余震二段\s*】/.test(tagText)) return false;
+  return /【\s*假象余震\s*】|余震衍生/.test(tagText);
 }
 
 function updateDirectorAfterSweep(board, stat, removedEntries, currentCount, current = {}) {
@@ -910,32 +918,46 @@ function isDirectorLeadExpired(lead, curCount) {
   return Number.isFinite(expNum) && curCount > expNum;
 }
 
-/** 导演状态队列里是否存在已超过过期消息数窗口的待引爆引信。 */
+function isValidDirectorLead(lead) {
+  if (!lead || typeof lead !== 'object' || Array.isArray(lead)) return false;
+  return !!text(lead['引信'] || lead['内容'] || lead['矛盾'] || lead['异常']).trim();
+}
+
+/** 导演状态队列里是否存在已超过过期消息数窗口或空壳/畸形待清理的节点。 */
 export function hasExpiredDirectorLeads(stat, current = {}) {
+  const board = boardNode(stat);
+  if (!Object.prototype.hasOwnProperty.call(board, '导演状态')) return false;
+  const director = board['导演状态'];
+  if (!director || typeof director !== 'object' || Array.isArray(director)) return true;
+  const cooldown = Math.max(0, Math.floor(Number(director['余震冷却']) || 0));
+  const hasPendingKey = Object.prototype.hasOwnProperty.call(director, '待引爆');
+  if (hasPendingKey && !Array.isArray(director['待引爆'])) return true;
+  const queue = Array.isArray(director['待引爆']) ? director['待引爆'] : [];
+  if (hasPendingKey && queue.length === 0) return true;
+  if (queue.some((lead) => !isValidDirectorLead(lead))) return true;
+  if (queue.length === 0 && cooldown <= 0) return true;
   const eff = effectiveChatCount(current.chat, current.chatCount);
   const curCount = eff !== undefined && eff !== null ? eff : null;
   if (curCount === null) return false;
-  const director = boardNode(stat)['导演状态'];
-  if (!director || typeof director !== 'object' || Array.isArray(director)) return false;
-  const queue = Array.isArray(director['待引爆']) ? director['待引爆'] : [];
   return queue.some((lead) => isDirectorLeadExpired(lead, curCount));
 }
 
-/** 静默清理导演状态中已过期的待引爆引信；队列清空且无冷却时移除导演状态节点。 */
+/** 静默清理导演状态中已过期或畸形待引爆引信；队列清空且无冷却时移除导演状态节点。 */
 export function sweepExpiredDirectorLeads(stat, current = {}) {
   const next = draft(stat);
   const board = ensureBoard(next);
+  if (!Object.prototype.hasOwnProperty.call(board, '导演状态')) {
+    return { stat: next, done: '无需清理导演状态' };
+  }
   const director = board['导演状态'];
   if (!director || typeof director !== 'object' || Array.isArray(director)) {
-    return { stat: next, done: '无需清理导演状态' };
+    delete board['导演状态'];
+    return { stat: next, done: '已清理畸形导演状态节点' };
   }
   const eff = effectiveChatCount(current.chat, current.chatCount);
   const curCount = eff !== undefined && eff !== null ? eff : null;
-  if (curCount === null) {
-    return { stat: next, done: '无需清理导演状态' };
-  }
   const queue = Array.isArray(director['待引爆']) ? director['待引爆'] : [];
-  const kept = queue.filter((lead) => !isDirectorLeadExpired(lead, curCount));
+  const kept = queue.filter((lead) => isValidDirectorLead(lead) && (curCount === null || !isDirectorLeadExpired(lead, curCount)));
   const cooldown = Math.max(0, Math.floor(Number(director['余震冷却']) || 0));
 
   if (kept.length > 0) {
@@ -994,8 +1016,9 @@ export function sweepClosedQuests(stat, current = {}) {
       return !closed;
     });
   } else if (board['列表'] && typeof board['列表'] === 'object') {
+    let idx = 0;
     for (const [k, v] of Object.entries(board['列表'])) {
-      if (isQuestEntryClosed(stat, v, 0, claimedMap, everSet, everNormSet, historyStats, k)) {
+      if (isQuestEntryClosed(stat, v, idx, claimedMap, everSet, everNormSet, historyStats, k)) {
         const title = text(obj(v)['标题']).trim();
         removedIds.add(k);
         if (title) {
@@ -1006,6 +1029,7 @@ export function sweepClosedQuests(stat, current = {}) {
         removedEntries.push({ entry: v, id: k, failedOrCanceled: isEntryFailedOrCanceled(v) });
         delete board['列表'][k];
       }
+      idx += 1;
     }
   }
 
