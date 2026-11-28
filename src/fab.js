@@ -1,4 +1,4 @@
-// 独立任务助手悬浮本（48×58 微缩立式牛皮冒险手账）
+// 独立任务助手悬浮本（48×58 微缩立式牛皮冒险手记）
 // 纯内联 SVG + CSS 绘制缝线书脊、暖米书页厚度、黄铜指南针星芒扣与可指示未读的绯红丝带书签。
 // 支持自由拖拽、弱磁吸（SNAP_DISTANCE = 28）、按 xRatio/yRatio 记忆位置、visualViewport 安全边界与省电休眠。
 
@@ -328,8 +328,8 @@ export function mountFab(doc, win, { onOpen } = {}) {
   const btn = doc.createElement('button');
   btn.id = FAB_ID;
   btn.type = 'button';
-  btn.setAttribute('aria-label', '打开冒险手账与任务情报板');
-  btn.setAttribute('title', '冒险手账 · 任务情报（点击打开，按住可拖动）');
+  btn.setAttribute('aria-label', '打开冒险手记与任务情报板');
+  btn.setAttribute('title', '冒险手记 · 任务情报（点击打开，按住可拖动）');
   btn.innerHTML = FAB_INNER_HTML;
 
   let saved = loadSavedPos(win);

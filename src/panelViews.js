@@ -1,4 +1,4 @@
-// 冒险手账辅助视图模块：公共 DOM 构建、待阅结案回执条、风物志（本区风物 + 世界余波剪报）与第一视角冒险日记。
+// 冒险手记辅助视图模块：公共 DOM 构建、待阅结案回执条、风物志（本区风物 + 世界余波剪报）与第一视角冒险日记。
 
 export function el(tag, className, children, attrs, events) {
   const node = document.createElement(tag);
@@ -166,7 +166,7 @@ export function renderReceiptsStrip(receipts, { onDismiss, onJumpDiary } = {}) {
         el(
           'button',
           'qh-link-btn qh-receipt-diary-btn',
-          '翻阅手账日记 ↗',
+          '翻阅手记日记 ↗',
           { type: 'button' },
           { click: () => onJumpDiary(r.diaryIndex) },
         ),
@@ -458,7 +458,7 @@ export function renderDiaryView(
       el(
         'p',
         'qh-diary-preface-p',
-        '• 已归档的历史手账仅保存在本地楼层状态中，供手账界面随时翻阅，不会占用后续对话上下文。',
+        '• 已归档的历史手记仅保存在本地楼层状态中，供手记界面随时翻阅，不会占用后续对话上下文。',
       ),
     ]);
     if (compact) {
@@ -638,7 +638,7 @@ export function renderDiaryView(
     el('section', 'qh-page-sheet qh-page-left', [
       el('div', 'qh-sheet-head', [
         el('div', 'qh-sheet-head-main', [
-          el('div', 'qh-sheet-kicker', 'HAND-JOURNAL INDEX · 手账目录'),
+          el('div', 'qh-sheet-kicker', 'HAND-JOURNAL INDEX · 手记目录'),
           el('h2', 'qh-sheet-title', '冒险日记归档'),
         ]),
         el('span', 'qh-sheet-badge', `${total} 篇`),

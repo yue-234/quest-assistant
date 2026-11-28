@@ -5033,7 +5033,7 @@ test('先词条后任务生成顺序与假象余震/悬疑反转互斥强约束'
   assert.doesNotMatch(refillHasTraitOut, /本轮先写出本区 `余波` 词条|先于任务列表/);
 });
 
-test('前端手账配置与牛皮书悬浮入口：motionPref、mountFab 丝带未读态、动效开关与样式红线', () => {
+test('前端手记配置与牛皮书悬浮入口：motionPref、mountFab 丝带未读态、动效开关与样式红线', () => {
   const mem = new Map();
   const read = (k) => (mem.has(k) ? mem.get(k) : null);
   const write = (k, v) => mem.set(k, String(v));

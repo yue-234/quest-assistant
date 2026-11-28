@@ -1,4 +1,4 @@
-// 独立任务助手「冒险手账」主界面。运行在同源 iframe 中，通过 host.js 读写酒馆数据，
+// 独立任务助手「冒险手记」主界面。运行在同源 iframe 中，通过 host.js 读写酒馆数据，
 // 点击操作经 commit.js 写回最新楼层 /事件/任务情报板。
 
 import { DATA, SCRIPT_VERSION } from './data.js';
@@ -864,7 +864,7 @@ function renderQuestDossier(item, { canEditMode = false, inPocket = false } = {}
   return dossier;
 }
 
-/** 渲染「委托板」视图（PC 双页手账 / Mobile 随身便签本）。 */
+/** 渲染「委托板」视图（PC 双页手记 / Mobile 随身便签本）。 */
 function renderBoardView(state, qb, { regionDisplay, canEditMode, compact }) {
   const activeCategory = ['全部', '剧情任务', '本地主线', '支线任务'].includes(ui.questCategory)
     ? ui.questCategory
@@ -966,7 +966,7 @@ function renderBoardView(state, qb, { regionDisplay, canEditMode, compact }) {
       'qh-parchment-empty-desc',
       qb.counts.total > 0
         ? '当前筛选分类下没有任务情报，可切回「全部」查看其余委托。'
-        : `推进下一回合后，手账会根据当前驻地与剧情自动收录剧情任务、本地主线与支线委托；${rescanTip}`,
+        : `推进下一回合后，手记会根据当前驻地与剧情自动收录剧情任务、本地主线与支线委托；${rescanTip}`,
     ),
   ]);
 
@@ -1028,7 +1028,7 @@ function renderBoardView(state, qb, { regionDisplay, canEditMode, compact }) {
     ]);
   }
 
-  // PC 双页手账布局：左页目录 + 右页卷宗
+  // PC 双页手记布局：左页目录 + 右页卷宗
   const indexList = el('div', 'qh-quest-index');
   if (filtered.length === 0) {
     indexList.append(buildEmptyQuestNote());
@@ -1341,7 +1341,7 @@ async function applyScriptRef(rawRef) {
   }
   const normalized = normalizeScriptRef(rawRef);
   if (!normalized) {
-    toast('请输入有效的版本号（如 v1.4.13 或 main）', 'err');
+    toast('请输入有效的版本号（如 v2.0.0 或 main）', 'err');
     return;
   }
   const defaultRef = meta.defaultRef || DEFAULT_SCRIPT_REF;
@@ -1381,7 +1381,7 @@ function switchEntryMode(nextMode) {
     toast(
       normalized === ENTRY_MODES.WAND
         ? '已切换为「魔法棒（扩展程序）」入口，可在左下角魔法棒菜单中打开'
-        : '已切换为「牛皮手账悬浮本」入口',
+        : '已切换为「牛皮手记悬浮本」入口',
       'ok',
     );
   }
@@ -1397,7 +1397,7 @@ function switchMotionPref(enabled) {
   }
   render();
   if (changed) {
-    toast(next ? '已开启手账开合动画' : '已关闭手账开合动画（瞬时切换）', 'ok');
+    toast(next ? '已开启手记开合动画' : '已关闭手记开合动画（瞬时切换）', 'ok');
   }
 }
 
@@ -1417,10 +1417,10 @@ function renderSettingsView({ compact }) {
         'qh-setting-choice' + (ui.entryMode === ENTRY_MODES.FAB ? ' is-active' : ''),
         [
           el('div', 'qh-setting-choice-top', [
-            el('span', 'qh-setting-choice-name', '牛皮手账悬浮本'),
+            el('span', 'qh-setting-choice-name', '牛皮手记悬浮本'),
             el('span', 'qh-setting-choice-badge', '默认'),
           ]),
-          el('div', 'qh-setting-choice-desc', '在屏幕边缘显示可拖动的微缩牛皮手账图标'),
+          el('div', 'qh-setting-choice-desc', '在屏幕边缘显示可拖动的微缩牛皮手记图标'),
         ],
         {
           type: 'button',
@@ -1451,10 +1451,10 @@ function renderSettingsView({ compact }) {
     el(
       'div',
       'qh-setting-hint',
-      '切换为「魔法棒」后不再显示悬浮本；点击聊天输入框左下角魔法棒图标中的「任务情报」即可重新打开手账。',
+      '切换为「魔法棒」后不再显示悬浮本；点击聊天输入框左下角魔法棒图标中的「任务情报」即可重新打开手记。',
     ),
     el('div', 'qh-setting-divider'),
-    el('div', 'qh-setting-label', '手账开合动画'),
+    el('div', 'qh-setting-label', '手记开合动画'),
     el('div', 'qh-setting-choices', [
       el(
         'button',
@@ -1481,7 +1481,7 @@ function renderSettingsView({ compact }) {
           el('div', 'qh-setting-choice-top', [
             el('span', 'qh-setting-choice-name', '关闭动画'),
           ]),
-          el('div', 'qh-setting-choice-desc', '瞬时展开与关闭手账，零动效开销'),
+          el('div', 'qh-setting-choice-desc', '瞬时展开与关闭手记，零动效开销'),
         ],
         {
           type: 'button',
@@ -1840,7 +1840,7 @@ function render(options = {}) {
   if (fpEl && stateNow) fpEl.textContent = String(stateNow.fp);
   const subEl = root.querySelector('.qh-top-sub');
   if (subEl && stateNow) {
-    subEl.textContent = stateNow.day ? `世界日 · ${stateNow.day}` : '冒险手账';
+    subEl.textContent = stateNow.day ? `世界日 · ${stateNow.day}` : '冒险手记';
   }
 
   // 同步书签徽标与设置版本控件
@@ -1939,14 +1939,14 @@ function render(options = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// 冒险手账外壳与开合动效
+// 冒险手记外壳与开合动效
 // ---------------------------------------------------------------------------
 
 function buildShell() {
   const shell = el('div', 'qh');
   const backdrop = el('div', 'qh-backdrop', null, null, { click: () => app.close() });
 
-  const room = el('div', 'qh-room', null, { role: 'dialog', 'aria-modal': 'true', 'aria-label': '冒险手账与任务情报' });
+  const room = el('div', 'qh-room', null, { role: 'dialog', 'aria-modal': 'true', 'aria-label': '冒险手记与任务情报' });
 
   // 黄铜包角装饰
   const corners = el('div', 'qh-brass-corners', [
@@ -1957,7 +1957,7 @@ function buildShell() {
   ], { 'aria-hidden': 'true' });
 
   // 顶部紧凑书眉 + 书签导航栏（<= 44px）
-  const nav = el('nav', 'qh-tabs', null, { role: 'tablist', 'aria-label': '冒险手账分页' });
+  const nav = el('nav', 'qh-tabs', null, { role: 'tablist', 'aria-label': '冒险手记分页' });
   TABS.forEach((tab) => {
     const btn = el(
       'button',
@@ -1986,7 +1986,7 @@ function buildShell() {
     el('div', 'qh-top-left', [
       createCrestIcon(),
       el('div', 'qh-top-titles', [
-        el('h1', 'qh-top-title', '冒险手账'),
+        el('h1', 'qh-top-title', '冒险手记'),
         el('span', 'qh-top-sub', '世界日'),
       ]),
     ]),
@@ -2003,7 +2003,7 @@ function buildShell() {
           el('span', 'qh-top-close-icon', '✕'),
           el('span', 'qh-top-close-text', '合上'),
         ],
-        { type: 'button', title: '合上冒险手账 (Esc)', 'aria-label': '合上冒险手账' },
+        { type: 'button', title: '合上冒险手记 (Esc)', 'aria-label': '合上冒险手记' },
         { click: () => app.close() },
       ),
     ]),

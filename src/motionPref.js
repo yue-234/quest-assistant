@@ -1,4 +1,4 @@
-// 冒险手账开合动效配置：默认开启（'on'），可切换为关闭（'off'）。
+// 冒险手记开合动效配置：默认开启（'on'），可切换为关闭（'off'）。
 
 export const MOTION_PREF_KEY = 'quest_helper_motion_v1';
 
