@@ -16,14 +16,70 @@ function helper(name) {
   const own = globalThis[name];
   if (typeof own === 'function') return own;
   const shared = parentWindow.TavernHelper?.[name];
-  return typeof shared === 'function' ? shared : null;
+  if (typeof shared === 'function') return shared;
+  try {
+    const bridged = parentWindow.__qhSandboxHelper?.(name);
+    if (typeof bridged === 'function') return bridged;
+  } catch {
+    /* 忽略跨作用域桥接异常 */
+  }
+  return null;
 }
 
 function stContext() {
   try {
-    return parentWindow.SillyTavern?.getContext?.() ?? null;
+    const ctx = parentWindow.SillyTavern?.getContext?.();
+    if (ctx) return ctx;
+    if (Array.isArray(parentWindow.SillyTavern?.chat)) {
+      return {
+        chat: parentWindow.SillyTavern.chat,
+        chatMetadata: parentWindow.SillyTavern.chatMetadata,
+      };
+    }
+    return null;
   } catch {
     return null;
+  }
+}
+
+function readLastMessageIdNum() {
+  const getLastMessageId = helper('getLastMessageId');
+  if (getLastMessageId) {
+    try {
+      const last = getLastMessageId();
+      if (typeof last === 'number' && Number.isFinite(last) && last >= 0) return last;
+    } catch {
+      /* 回退 chat 数组 */
+    }
+  }
+  const chat = stContext()?.chat;
+  return Array.isArray(chat) && chat.length > 0 ? chat.length - 1 : -1;
+}
+
+/** 判断当前主操作设备是否为纯触屏粗指针（手机/平板等），避免关窗时意外拉起软键盘。 */
+export function isCoarsePointer() {
+  try {
+    if (typeof parentWindow.matchMedia !== 'function') return false;
+    return parentWindow.matchMedia('(pointer: coarse)').matches
+      && !parentWindow.matchMedia('(any-pointer: fine)').matches;
+  } catch {
+    return false;
+  }
+}
+
+/** 安全移动焦点（默认禁用自动滚动，兼容不支持 FocusOptions 的旧浏览器）。 */
+export function safeFocus(target) {
+  if (!target || typeof target.focus !== 'function') return false;
+  try {
+    target.focus({ preventScroll: true });
+    return true;
+  } catch {
+    try {
+      target.focus();
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -52,7 +108,7 @@ export function readMessages(limit = Infinity) {
     const last = getLastMessageId();
     if (typeof last !== 'number' || last < 0) return [];
     return getChatMessages(`${Math.max(0, last - limit + 1)}-${last}`)
-      .filter((m) => m.role !== 'system')
+      .filter((m) => m && m.role !== 'system' && !m.is_hidden && !m.is_system)
       .map((m) => ({ id: m.message_id, role: m.role, text: m.message ?? '', stat: m.data?.stat_data }));
   } catch {
     return [];
@@ -61,16 +117,26 @@ export function readMessages(limit = Infinity) {
 
 /** 读取最新楼层的 stat_data。 */
 export function readStat() {
+  const chat = stContext()?.chat;
+  const lastId = readLastMessageIdNum();
   const getVariables = helper('getVariables');
   if (getVariables) {
-    try {
-      const vars = getVariables({ type: 'message', message_id: 'latest' });
-      if (vars?.stat_data) return vars.stat_data;
-    } catch {
-      /* 退回 chat 扫描 */
+    if (lastId >= 0) {
+      try {
+        const vars = getVariables({ type: 'message', message_id: lastId });
+        if (vars?.stat_data) return vars.stat_data;
+      } catch {
+        /* 退回 chat 扫描或 latest */
+      }
+    } else if (!Array.isArray(chat)) {
+      try {
+        const vars = getVariables({ type: 'message', message_id: 'latest' });
+        if (vars?.stat_data) return vars.stat_data;
+      } catch {
+        /* 退回 chat 扫描 */
+      }
     }
   }
-  const chat = stContext()?.chat;
   if (Array.isArray(chat)) {
     for (let i = chat.length - 1; i >= 0; i -= 1) {
       const message = chat[i];
@@ -114,21 +180,31 @@ export function writeInput(text, pattern) {
   return true;
 }
 
-/** 将焦点移回聊天输入框（若存在）。 */
+/** 将焦点移回聊天输入框（桌面端生效且不引起页面跳动，触屏端避免误弹软键盘）。 */
 export function focusInput() {
+  if (isCoarsePointer()) return false;
   const box = inputBox();
-  if (!box || typeof box.focus !== 'function') return false;
-  try {
-    box.focus();
-    return true;
-  } catch {
-    return false;
-  }
+  return safeFocus(box);
 }
+
+const TOAST_KIND_MAP = {
+  ok: 'success',
+  err: 'error',
+  warn: 'warning',
+};
 
 export function toast(message, kind = 'info') {
   const toastr = globalThis.toastr ?? parentWindow.toastr;
-  toastr?.[kind]?.(message);
+  const method = TOAST_KIND_MAP[kind] || kind;
+  if (typeof toastr?.[method] === 'function') {
+    toastr[method](message);
+    return true;
+  }
+  if (typeof toastr?.info === 'function') {
+    toastr.info(message);
+    return true;
+  }
+  return false;
 }
 
 /** 只读检测当前聊天是否启用了 null核心。 */

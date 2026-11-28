@@ -53,10 +53,10 @@ function hostWindow() {
 }
 
 function panelDocument() {
-  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">` +
+  return `<!DOCTYPE html><html lang="zh-CN" style="overscroll-behavior:none;overflow:hidden"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">` +
     `<title>任务情报</title><style>${PANEL_CSS}</style></head>` +
-    `<body style="margin:0;padding:0;background:transparent"><script>${PANEL_JS}</script></body></html>`;
+    `<body style="margin:0;padding:0;background:transparent;overflow:hidden;overscroll-behavior:none"><script>${PANEL_JS}</script></body></html>`;
 }
 
 let stops = [];
@@ -67,6 +67,16 @@ export function start() {
 
   const win = hostWindow();
   const doc = win.document;
+  try {
+    Object.defineProperty(win, '__qhSandboxHelper', {
+      value: (name) => (typeof globalThis[name] === 'function' ? globalThis[name] : null),
+      configurable: true,
+      enumerable: false,
+      writable: true,
+    });
+  } catch {
+    /* 忽略受限宿主 */
+  }
 
   if (win.QuestHelperApp) {
     try {
@@ -176,15 +186,16 @@ export function start() {
     } catch {
       /* 忽略 */
     }
-    if (closeOpts?.focusInputBox && host.focusInput?.()) {
+    if (closeOpts?.focusInputBox) {
+      host.focusInput?.();
       lastFocus = null;
       return;
     }
-    if (lastFocus && typeof lastFocus.focus === 'function') {
-      try {
-        lastFocus.focus();
-      } catch {
-        /* 忽略 */
+    if (lastFocus) {
+      const tag = String(lastFocus.tagName || '').toUpperCase();
+      const isTextControl = tag === 'INPUT' || tag === 'TEXTAREA' || !!lastFocus.isContentEditable;
+      if (!(isTextControl && host.isCoarsePointer?.())) {
+        host.safeFocus?.(lastFocus);
       }
     }
     lastFocus = null;
@@ -287,7 +298,9 @@ export function start() {
       if (prevBootstrappedRef !== undefined) win.__QuestHelperBootstrappedRef = prevBootstrappedRef;
       else delete win.__QuestHelperBootstrappedRef;
       start();
-      if (reopen) void open();
+      if (reopen && win.QuestHelperApp && typeof win.QuestHelperApp.open === 'function') {
+        void win.QuestHelperApp.open();
+      }
       toast(`脚本版本切换失败，已回退原版本：${error && error.message ? error.message : error}`);
       throw error;
     }
@@ -358,6 +371,12 @@ export function start() {
         const handle = eventOn(name, handler);
         if (typeof handle === 'function') stops.push(handle);
         else if (handle && typeof handle.stop === 'function') stops.push(() => handle.stop());
+        else {
+          const removeListener = typeof globalThis.eventRemoveListener === 'function'
+            ? globalThis.eventRemoveListener
+            : (typeof win.eventRemoveListener === 'function' ? win.eventRemoveListener : null);
+          if (removeListener) stops.push(() => removeListener(name, handler));
+        }
       } catch {
         /* 忽略不存在的事件 */
       }
@@ -561,21 +580,19 @@ export function start() {
     }, delay);
   };
 
-  if (stEvents && stEvents.CHAT_CHANGED) {
-    listen(stEvents.CHAT_CHANGED, () => {
-      clearTimeout(bgTimer);
-      clearMsgReceived();
-      graceRetry = 0;
-      clearMvuUpdateEnded();
-      try {
-        frame?.contentWindow?.questHelperPanel?.resetForChatChange?.();
-      } catch {
-        /* 忽略 */
-      }
-      close();
-      syncEntryUnread();
-    });
-  }
+  listen(stEvents && stEvents.CHAT_CHANGED ? stEvents.CHAT_CHANGED : 'chat_id_changed', () => {
+    clearTimeout(bgTimer);
+    clearMsgReceived();
+    graceRetry = 0;
+    clearMvuUpdateEnded();
+    try {
+      frame?.contentWindow?.questHelperPanel?.resetForChatChange?.();
+    } catch {
+      /* 忽略 */
+    }
+    close();
+    syncEntryUnread();
+  });
   const onPassiveRefresh = () => {
     clearTimeout(bgTimer);
     graceRetry = 0;
@@ -647,7 +664,14 @@ export function start() {
     }
     ready = null;
     api = null;
-    if (win.QuestHelperApp === surface) delete win.QuestHelperApp;
+    if (win.QuestHelperApp === surface) {
+      delete win.QuestHelperApp;
+      try {
+        delete win.__qhSandboxHelper;
+      } catch {
+        /* 忽略 */
+      }
+    }
   };
 
   const surface = {

@@ -495,7 +495,10 @@ function renderContent(state) {
           }
         },
         keydown: (ev) => {
-          if (ev.isComposing || ev.keyCode === 229) return;
+          if (ev.isComposing || ev.keyCode === 229) {
+            if (ev.key === 'Escape') ev.stopPropagation();
+            return;
+          }
           if (ev.key === 'Enter') {
             ev.preventDefault();
             void submitFocus(focusInput.value, draftMode);
@@ -1510,7 +1513,19 @@ function buildSettingsLayer() {
       'qh-settings-close',
       '✕',
       { type: 'button', title: '关闭设置', 'aria-label': '关闭设置' },
-      { click: () => setSettingsOpen(false) },
+      {
+        click: () => {
+          setSettingsOpen(false);
+          const settingsBtn = root && root.querySelector('.qh-top-settings');
+          if (settingsBtn && settingsBtn.focus) {
+            try {
+              settingsBtn.focus({ preventScroll: true });
+            } catch {
+              settingsBtn.focus();
+            }
+          }
+        },
+      },
     ),
   ]);
 
@@ -1569,7 +1584,10 @@ function buildSettingsLayer() {
     { type: 'text', placeholder: `${DEFAULT_SCRIPT_REF} 或 v1.4.1`, 'aria-label': '输入脚本版本号' },
     {
       keydown: (e) => {
-        if (e.isComposing || e.keyCode === 229) return;
+        if (e.isComposing || e.keyCode === 229) {
+          if (e.key === 'Escape') e.stopPropagation();
+          return;
+        }
         if (e.key === 'Enter') {
           e.preventDefault();
           void applyScriptRef(verInput.value);
@@ -1692,6 +1710,7 @@ function cancelClose() {
 
 function shouldAnimateClose() {
   if (typeof window === 'undefined' || !window.matchMedia) return false;
+  if (window.matchMedia('(max-height: 540px) and (orientation: landscape)').matches) return false;
   return (
     window.matchMedia('(min-width: 769px)').matches &&
     !window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -1723,7 +1742,13 @@ app = {
     void refreshWorldbookStatus();
     void refreshLatestTag();
     const closeBtn = root.querySelector('.qh-top-close');
-    if (closeBtn && closeBtn.focus) closeBtn.focus();
+    if (closeBtn && closeBtn.focus) {
+      try {
+        closeBtn.focus({ preventScroll: true });
+      } catch {
+        closeBtn.focus();
+      }
+    }
   },
 
   close(closeOpts = {}) {
@@ -1773,6 +1798,9 @@ app = {
   hide() {
     if (!root) return;
     cancelClose();
+    clearTimeout(toast.timer);
+    const toastEl = root.querySelector('.qh-toast');
+    if (toastEl) toastEl.className = 'qh-toast';
     ui.questEditRewards = false;
     ui.confirmDeleteTrait = '';
     ui.focusExpanded = false;
@@ -1822,11 +1850,18 @@ export function mount(options = {}) {
   container.append(root);
   if (!mounted) {
     document.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'Escape' && root && root.classList.contains('qh-open')) {
         if (ui.settingsOpen) {
           setSettingsOpen(false);
           const settingsBtn = root.querySelector('.qh-top-settings');
-          if (settingsBtn && settingsBtn.focus) settingsBtn.focus();
+          if (settingsBtn && settingsBtn.focus) {
+            try {
+              settingsBtn.focus({ preventScroll: true });
+            } catch {
+              settingsBtn.focus();
+            }
+          }
           return;
         }
         if (ui.focusExpanded) {

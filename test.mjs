@@ -4655,3 +4655,195 @@ test('二轮终审回归：多前缀映射、余震二段降冷、僵尸导演�
   assert.equal((allAllOut.match(/实际发放某栏收益时/g) || []).length, 1);
   assert.doesNotMatch(allAllOut, /明牌|抢跑|断链变数|正派立场|完全正直自洽|软倾斜|抓走|多方竞价|危机倒计时/);
 });
+
+test('三轮收口回归：toastr.ok映射、入队队列级swipe锁、额外键导演不死循环、空格键贯通与EJS分支同步', async () => {
+  const { commit } = await import('./src/commit.js');
+  const hostMod = await import('./src/host.js');
+
+  // 1) host.toast 映射 ok -> success / err -> error；focusInput 在桌面带 preventScroll、触屏不弹键盘
+  const saved = {
+    toastr: globalThis.toastr,
+    window: globalThis.window,
+    Mvu: globalThis.Mvu,
+    TavernHelper: globalThis.TavernHelper,
+    SillyTavern: globalThis.SillyTavern,
+  };
+  try {
+    const calls = [];
+    let focusOpts = null;
+    let coarse = false;
+    const fakeBox = { focus: (opts) => { focusOpts = opts; } };
+    globalThis.toastr = {
+      success: (m) => calls.push(['success', m]),
+      error: (m) => calls.push(['error', m]),
+      info: (m) => calls.push(['info', m]),
+    };
+    assert.equal(hostMod.toast('填入成功', 'ok'), true);
+    assert.equal(hostMod.toast('出错了', 'err'), true);
+    assert.deepEqual(calls, [['success', '填入成功'], ['error', '出错了']]);
+
+    if (typeof globalThis.window === 'undefined') {
+      globalThis.window = {
+        document: { querySelector: () => fakeBox },
+        matchMedia: (q) => ({
+          matches: q === '(pointer: coarse)' ? coarse : false,
+        }),
+      };
+    }
+    if (hostMod.parentWindow === globalThis.window) {
+      globalThis.window.document = { querySelector: () => fakeBox };
+      globalThis.window.matchMedia = (q) => ({
+        matches: q === '(pointer: coarse)' ? coarse : false,
+      });
+      assert.equal(hostMod.focusInput(), true);
+      assert.deepEqual(focusOpts, { preventScroll: true });
+      coarse = true;
+      assert.equal(hostMod.focusInput(), false);
+    }
+
+    // 2) commit.js 入队排队期间发生的 swipe_id 切换也必须被拦截
+    let curSwipe = 0;
+    let replaceCount = 0;
+    let gateResolve;
+    const gate = new Promise((res) => { gateResolve = res; });
+    globalThis.TavernHelper = { getLastMessageId: () => 5, refreshOneMessage: async () => {} };
+    globalThis.SillyTavern = {
+      getContext: () => ({
+        chatId: 'chat-queue',
+        chat: Array.from({ length: 6 }, (_, i) => ({ is_user: i % 2 === 0, swipe_id: curSwipe, mes: 'm' })),
+        saveChat: async () => {},
+      }),
+    };
+    globalThis.Mvu = {
+      getMvuData: () => ({ stat_data: { 主角: {}, 事件: { 任务情报板: { 列表: [] } } } }),
+      replaceMvuData: async () => {
+        replaceCount += 1;
+        await gate;
+      },
+      isDuringExtraAnalysis: () => false,
+    };
+    const p1 = commit((s) => ({ stat: s, done: 'first' }), { redraw: false });
+    const p2 = commit((s) => ({ stat: s, done: 'second' }), { redraw: false });
+    await new Promise((r) => setTimeout(r, 15));
+    curSwipe = 1; // 在 p1 持锁等待写入期间用户切了 swipe
+    gateResolve();
+    const [r1, r2] = await Promise.all([p1, p2]);
+    assert.equal(r1.done, 'first');
+    assert.match(r2.error || '', /已变化/);
+    assert.equal(replaceCount, 1);
+  } finally {
+    globalThis.toastr = saved.toastr;
+    if (saved.window === undefined) delete globalThis.window;
+    else globalThis.window = saved.window;
+    globalThis.Mvu = saved.Mvu;
+    globalThis.TavernHelper = saved.TavernHelper;
+    globalThis.SillyTavern = saved.SillyTavern;
+  }
+
+  // 3) 导演状态含额外未知键时彻底删除节点，二次 maintainQuestBoard 返回 skip 绝不死循环
+  const extraKeyDirStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        导演状态: { 余震冷却: 0, 异常备注: 'legacy' },
+        列表: [],
+      },
+    },
+  };
+  assert.equal(hasExpiredDirectorLeads(extraKeyDirStat, { chatCount: 10 }), true);
+  const firstMaint = maintainQuestBoard(extraKeyDirStat, { chatCount: 10 });
+  assert.equal(firstMaint.stat['事件']['任务情报板']['导演状态'], undefined);
+  const secondMaint = maintainQuestBoard(firstMaint.stat, { chatCount: 10 });
+  assert.equal(secondMaint.skip, true);
+
+  // 4) requestQuestRescan 保留并透传 once 关注方向的 楼层 兜底锚点
+  const rescanFloorFocus = requestQuestRescan({
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    命运点数: 200,
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        关注方向: { 文本: '旧关注', 模式: 'once', 消息数: '', 楼层: '2' },
+        列表: [],
+      },
+    },
+  }, 5, null, { focusText: '新矿脉', focusMode: 'once' });
+  assert.equal(rescanFloorFocus.stat['事件']['任务情报板']['关注方向']['楼层'], '5');
+
+  // 5) 对象型 列表 带空格键名贯通：read + 已兑现[' spaced '] + 锁定/取消 + EJS 完结移出路径
+  const spacedObjStat = {
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { '带空格任务': { 状态: '进行中' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        已兑现: { ' spaced ': [1] },
+        列表: {
+          ' spaced ': { 类别: '本地主线', 等级: 'C', 标题: '【护送破局】带空格任务', 预期收益: ['金币 ×100'] },
+        },
+      },
+    },
+  };
+  const spacedState = questBoardState(spacedObjStat);
+  assert.equal(spacedState.items[0].id, 'spaced');
+  assert.equal(spacedState.items[0].rewardItems[0].claimed, true);
+  const lockedSpaced = toggleQuestIntent(spacedObjStat, spacedState.items[0].id, spacedState.items[0].title);
+  assert.equal(questBoardState(lockedSpaced.stat).items[0].intent, true);
+  const unlockedSpaced = toggleQuestIntent(lockedSpaced.stat, spacedState.items[0].id, spacedState.items[0].title);
+  assert.equal(questBoardState(unlockedSpaced.stat).items[0].intent, false);
+
+  const ejsSource = fs.readFileSync(path.join(__dirname, '任务助手-世界书.ejs'), 'utf8');
+  const dual = buildWorldbookJson(ejsSource, SCRIPT_VERSION);
+  const updateSrc = dual.entries['1'].content;
+  const spacedUpdateOut = renderEjs(spacedObjStat, { chat: [{ is_user: true, mes: 'hi' }], lastUserMessageId: 0, source: updateSrc });
+  assert.match(spacedUpdateOut, /\[1✓\]金币 ×100/);
+  assert.match(spacedUpdateOut, /\/事件\/任务情报板\/列表\/ spaced /);
+
+  // 6) 纯支线 refill 不误发 失效Patch；因果后续引爆 update/all 口径同步；引爆+降冷却合并；5处语体收口
+  const sideRefillOut = renderEjs({
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-12日' },
+    任务列表: { '找猫': { 状态: '进行中' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        列表: [
+          { id: 'q_cat', 类别: '支线任务', 等级: 'D', 标题: '找猫', 预期收益: ['金币 ×20'] },
+        ],
+      },
+    },
+  }, { chat: [{ is_user: true, mes: 'hi' }], lastUserMessageId: 0 });
+  assert.doesNotMatch(sideRefillOut, /因失败或局势恶化折损未兑现栏位时/);
+
+  const causalDueAll = renderEjs({
+    世界: { 地点: '雾晶港', 时间: '复兴纪元488年-6月-14日' },
+    任务列表: { '普通线': { 状态: '进行中' } },
+    事件: {
+      任务情报板: {
+        区域键: '雾晶港',
+        区域: '雾晶港',
+        导演状态: {
+          余震冷却: 1,
+          待引爆: [
+            { 标题: '走私案', 区域: '旧港城', 类型: '因果后续', 引信: '水手持有南境通行牌', 触发后消息数: '4', 过期消息数: '14' },
+          ],
+        },
+        列表: [
+          { id: 'q1', 类别: '本地主线', 等级: 'C', 标题: '普通线', 真相: '【灾变探索】常规治理', 预期收益: ['金币 ×100'] },
+          { id: 'q2', 类别: '支线任务', 等级: 'D', 标题: '支A', 预期收益: ['金币 ×30'] },
+          { id: 'q3', 类别: '支线任务', 等级: 'D', 标题: '支B', 预期收益: ['金币 ×30'] },
+          { id: 'q4', 类别: '支线任务', 等级: 'D', 标题: '支C', 预期收益: ['金币 ×30'] },
+          { id: 'q5', 类别: '支线任务', 等级: 'D', 标题: '支D', 预期收益: ['金币 ×30'] },
+        ],
+      },
+    },
+  }, { chat: Array.from({ length: 5 }, (_, i) => ({ is_user: i % 2 === 0, is_system: false, mes: 'x' })), lastUserMessageId: 4 });
+  assert.match(causalDueAll, /因果引爆:.*显露后续异动（水手持有南境通行牌）.*后续线索/);
+  assert.doesNotMatch(causalDueAll, /露出物理裂痕/);
+  assert.match(causalDueAll, /同轮多处涉及「导演状态」变更时合并处理/);
+  assert.doesNotMatch(causalDueAll, /拿满核心奖励|属 `OTHER SPECIFIC REQUIREMENTS`|改写替换|另含多地脉络|全额发齐/);
+});

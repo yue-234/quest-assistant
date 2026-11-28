@@ -299,17 +299,23 @@ function toRewardRawArray(raw) {
   return [];
 }
 
-/** 合并奖励状态 map 中同一任务通过 id 与 title 双键保存的条目，避免双键并存时丢数据。 */
-export function mergeRewardMapEntries(map, id, title = '') {
+/** 合并奖励状态 map 中同一任务通过 id、rawKey 与 title 保存的条目，兼容对象带空格键名。 */
+export function mergeRewardMapEntries(map, id, title = '', rawKey = '') {
   if (!map || typeof map !== 'object' || Array.isArray(map)) return [];
   const k1 = text(id).trim();
   const k2 = text(title).trim();
+  const seen = new Set();
   const out = [];
-  if (k1 && Object.prototype.hasOwnProperty.call(map, k1)) {
-    out.push(...toRewardRawArray(map[k1]));
-  }
-  if (k2 && k2 !== k1 && Object.prototype.hasOwnProperty.call(map, k2)) {
-    out.push(...toRewardRawArray(map[k2]));
+  const collectKey = (k) => {
+    if (!k || seen.has(k) || !Object.prototype.hasOwnProperty.call(map, k)) return;
+    seen.add(k);
+    out.push(...toRewardRawArray(map[k]));
+  };
+  for (const k of [k1, text(id), k2, text(rawKey)]) collectKey(k);
+  if (k1) {
+    for (const k of Object.keys(map)) {
+      if (text(k).trim() === k1) collectKey(k);
+    }
   }
   return out;
 }
@@ -785,7 +791,7 @@ export function questBoardState(stat, current = {}) {
       if (formal) matchedFormalKeys.add(formal.key);
       if (formal && CLOSED_TASK_RE.test(formal.status)) return null;
       const accepted = !!formal;
-      const id = rawKey || text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
+      const id = text(rawKey).trim() || text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
       const category = normalizeQuestCategory(r['类别']);
       const rankRaw = text(r['等级']).trim().toUpperCase().match(/[SABCD]/);
       const rank = rankRaw ? rankRaw[0] : 'C';
@@ -802,8 +808,8 @@ export function questBoardState(stat, current = {}) {
       const progress = accepted ? (formal.progress || boardProgress) : '';
       const itemUpdatedDay = normalizeDay(r['更新日']);
       const rawRewards = normalizeQuestRewards(r['预期收益']);
-      const claimedInfo = parseClaimedSet(mergeRewardMapEntries(claimedMap, id, title));
-      const lostInfo = parseLostSet(mergeRewardMapEntries(lostMap, id, title));
+      const claimedInfo = parseClaimedSet(mergeRewardMapEntries(claimedMap, id, title, rawKey));
+      const lostInfo = parseLostSet(mergeRewardMapEntries(lostMap, id, title, rawKey));
       const rewardItems = rawRewards.map((rawRw, rwIdx) => {
         const slot = rwIdx + 1;
         const cleanText = cleanRewardText(rawRw) || rawRw;
@@ -825,13 +831,14 @@ export function questBoardState(stat, current = {}) {
       const normTitle = stripTaskTitle(title);
       const everAccepted = everAcceptedSet.has(id)
         || everAcceptedSet.has(title)
+        || (!!rawKey && everAcceptedSet.has(rawKey))
         || (!!normTitle && everAcceptedNormSet.has(normTitle));
       // 三合一完结判定：不在正式任务列表，且曾有兑现 / 曾接取 / 历史楼层曾在正式任务列表出现 → 已完结隐藏
       if (!accepted && (claimedCount > 0 || everAccepted || wasInHistoryFormalTasks(historyStats, id, title))) {
         return null;
       }
       const cfg = DATA.questBoard.categories[category] || DATA.questBoard.categories['支线任务'];
-      const intent = intentSet.has(id) || intentSet.has(title);
+      const intent = intentSet.has(id) || intentSet.has(title) || (!!rawKey && intentSet.has(rawKey));
       const staleRegion = !accepted && !cfg.crossRegion && regionChanged;
       return {
         id,

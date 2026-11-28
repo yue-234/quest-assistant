@@ -49,9 +49,10 @@ export function toggleQuestIntent(stat, questId, questTitle = '') {
     ? board['意向'].map((x) => text(x).trim()).filter(Boolean)
     : [];
   const shownTitle = stripQuestBackendTags(title) || title || id;
-  const has = current.some((x) => (id && x === id) || (title && x === title));
+  const sameKey = (x, target) => !!target && (x === target || text(x).trim() === target);
+  const has = current.some((x) => sameKey(x, id) || sameKey(x, title));
   if (has) {
-    board['意向'] = current.filter((x) => x !== id && (!title || x !== title));
+    board['意向'] = current.filter((x) => !sameKey(x, id) && !sameKey(x, title));
     return { stat: next, done: `已取消锁定「${shownTitle}」` };
   }
   board['意向'] = [...current, id || title];
@@ -67,6 +68,8 @@ export function ignoreQuest(stat, questId, questTitle = '') {
   const next = draft(stat);
   const board = ensureBoard(next);
   let removedTitle = title;
+  const removedKeys = new Set();
+  if (id) removedKeys.add(id);
 
   if (Array.isArray(board['列表'])) {
     board['列表'] = board['列表'].filter((item, idx) => {
@@ -74,7 +77,10 @@ export function ignoreQuest(stat, questId, questTitle = '') {
       const itemId = text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
       const itemTitle = text(r['标题']).trim();
       const hit = (id && itemId === id) || (title && itemTitle === title);
-      if (hit && itemTitle) removedTitle = itemTitle;
+      if (hit) {
+        if (itemTitle) removedTitle = itemTitle;
+        if (itemId) removedKeys.add(itemId);
+      }
       return !hit;
     });
   } else if (board['列表'] && typeof board['列表'] === 'object') {
@@ -83,29 +89,36 @@ export function ignoreQuest(stat, questId, questTitle = '') {
       const itemTitle = text(r['标题']).trim();
       if ((id && (k === id || text(k).trim() === id)) || (title && itemTitle === title)) {
         if (itemTitle) removedTitle = itemTitle;
+        removedKeys.add(k);
+        if (text(k).trim()) removedKeys.add(text(k).trim());
         delete board['列表'][k];
       }
     }
   }
+  if (removedTitle) removedKeys.add(removedTitle);
 
   if (Array.isArray(board['意向'])) {
-    board['意向'] = board['意向'].filter((x) => x !== id && (!removedTitle || x !== removedTitle));
+    board['意向'] = board['意向'].filter((x) => {
+      const sx = text(x);
+      const tx = sx.trim();
+      return !removedKeys.has(sx) && !removedKeys.has(tx);
+    });
   }
-  if (board['已兑现'] && typeof board['已兑现'] === 'object') {
-    if (id) delete board['已兑现'][id];
-    if (removedTitle) delete board['已兑现'][removedTitle];
-  }
-  if (board['已失效'] && typeof board['已失效'] === 'object') {
-    if (id) delete board['已失效'][id];
-    if (removedTitle) delete board['已失效'][removedTitle];
+  for (const mapField of ['已兑现', '已失效']) {
+    const map = board[mapField];
+    if (!map || typeof map !== 'object' || Array.isArray(map)) continue;
+    for (const mk of Object.keys(map)) {
+      if (removedKeys.has(mk) || (mk.trim() && removedKeys.has(mk.trim()))) {
+        delete map[mk];
+      }
+    }
   }
   if (Array.isArray(board['曾接取'])) {
     const removedNorm = stripTaskTitle(removedTitle);
     const nextEver = board['曾接取'].filter((x) => {
       const s = text(x).trim();
       if (!s) return false;
-      if (id && s === id) return false;
-      if (removedTitle && s === removedTitle) return false;
+      if (removedKeys.has(s) || removedKeys.has(text(x))) return false;
       if (removedNorm && stripTaskTitle(s) === removedNorm) return false;
       return true;
     });
@@ -167,6 +180,15 @@ function normalizeRewardSlotList(arr) {
   return [...uniqueNums, ...others];
 }
 
+function pruneMapKeyAliases(map, key, title) {
+  for (const mk of Object.keys(map)) {
+    const trimmed = text(mk).trim();
+    if (mk !== key && ((key && trimmed === key) || (title && (mk === title || trimmed === title)))) {
+      delete map[mk];
+    }
+  }
+}
+
 function removeSlotFromRewardMap(board, field, key, title, slot, cleanSlotText) {
   const map = board[field];
   if (!map || typeof map !== 'object' || Array.isArray(map)) return;
@@ -181,7 +203,7 @@ function removeSlotFromRewardMap(board, field, key, title, slot, cleanSlotText) 
   const normalized = normalizeRewardSlotList(filtered);
   if (normalized.length > 0) map[key] = normalized;
   else delete map[key];
-  if (title && title !== key) delete map[title];
+  pruneMapKeyAliases(map, key, title);
 }
 
 function addSlotToRewardMap(board, field, key, title, slot, cleanSlotText) {
@@ -197,7 +219,7 @@ function addSlotToRewardMap(board, field, key, title, slot, cleanSlotText) {
     return true;
   });
   map[key] = normalizeRewardSlotList([...curArr, slot]);
-  if (title && title !== key) delete map[title];
+  pruneMapKeyAliases(map, key, title);
 }
 
 function stripInlineSlotMark(targetEntry, rawRewards, slot) {
@@ -462,9 +484,9 @@ export function clearExpiredOnceFocus(stat, current) {
   return { stat: next, done: '已清理过期的仅本次关注方向' };
 }
 
-function applyRescanFocus(board, effCountStr, focusText, focusMode, current = {}) {
+function applyRescanFocus(board, effCountStr, effFloorStr, focusText, focusMode, current = {}) {
   if (focusText !== undefined) {
-    writeFocusToBoard(board, focusText, focusMode || 'long', effCountStr);
+    writeFocusToBoard(board, focusText, focusMode || 'long', effCountStr, effFloorStr);
     return;
   }
   const existing = normalizeQuestFocus(board['关注方向']);
@@ -472,11 +494,15 @@ function applyRescanFocus(board, effCountStr, focusText, focusMode, current = {}
     if (isOnceFocusExpired(board, current)) {
       delete board['关注方向'];
     } else {
-      board['关注方向'] = {
+      const nextFocus = {
         文本: existing.text,
         模式: 'once',
         消息数: effCountStr,
       };
+      if (!effCountStr && effFloorStr) {
+        nextFocus['楼层'] = effFloorStr;
+      }
+      board['关注方向'] = nextFocus;
     }
   }
 }
@@ -490,6 +516,7 @@ export function requestQuestRescan(
 ) {
   const effectiveCount = effectiveChatCount(chat, chatCount);
   const effCountStr = effectiveCount !== undefined && effectiveCount !== null ? String(effectiveCount) : '';
+  const effFloorStr = !effCountStr && floor !== undefined && floor !== null && floor !== '' ? String(floor) : '';
   const boardNow = boardNode(stat);
   if (rescanFresh(obj(boardNow['待重扫']), { floor, chatCount: effectiveCount, chat, lastIsAssistant, extraAnalyzing })) {
     return { error: '本回合已经预约过地区重扫了，等下一回合刷新' };
@@ -518,7 +545,7 @@ export function requestQuestRescan(
     楼层: floor === undefined || floor === null ? '' : String(floor),
     消息数: effCountStr,
   };
-  applyRescanFocus(board, effCountStr, focusText, focusMode, {
+  applyRescanFocus(board, effCountStr, effFloorStr, focusText, focusMode, {
     floor,
     chatCount: effectiveCount,
     chat,
@@ -601,11 +628,11 @@ function boardEntriesOf(board) {
     });
   }
   if (board['列表'] && typeof board['列表'] === 'object') {
-    return Object.entries(board['列表']).map(([k, v]) => {
+    return Object.entries(board['列表']).map(([k, v], idx) => {
       const r = obj(v);
-      const rawKey = text(k).trim();
+      const rawKey = text(k);
       return {
-        id: rawKey,
+        id: rawKey.trim() || text(r['id'] || r['编号']).trim() || `q${idx + 1}`,
         rawKey,
         title: text(r['标题']).trim(),
         raw: r,
@@ -902,12 +929,7 @@ function updateDirectorAfterSweep(board, stat, removedEntries, currentCount, cur
     board['导演状态'] = director;
     return;
   }
-  delete director['余震冷却'];
-  if (Object.keys(director).length > 0) {
-    board['导演状态'] = director;
-  } else {
-    delete board['导演状态'];
-  }
+  delete board['导演状态'];
 }
 
 function isDirectorLeadExpired(lead, curCount) {
@@ -965,11 +987,10 @@ export function sweepExpiredDirectorLeads(stat, current = {}) {
     return { stat: next, done: '已清理过期导演状态引信' };
   }
   delete director['待引爆'];
-  if (cooldown <= 0) {
-    delete director['余震冷却'];
-    if (Object.keys(director).length === 0) {
-      delete board['导演状态'];
-    }
+  if (cooldown > 0) {
+    director['余震冷却'] = cooldown;
+  } else {
+    delete board['导演状态'];
   }
   return { stat: next, done: '已清理过期导演状态引信' };
 }
@@ -1019,14 +1040,18 @@ export function sweepClosedQuests(stat, current = {}) {
     let idx = 0;
     for (const [k, v] of Object.entries(board['列表'])) {
       if (isQuestEntryClosed(stat, v, idx, claimedMap, everSet, everNormSet, historyStats, k)) {
-        const title = text(obj(v)['标题']).trim();
-        removedIds.add(k);
+        const r = obj(v);
+        const trimmedK = text(k).trim();
+        const itemId = trimmedK || text(r['id'] || r['编号']).trim() || `q${idx + 1}`;
+        const title = text(r['标题']).trim();
+        if (k) removedIds.add(k);
+        if (itemId) removedIds.add(itemId);
         if (title) {
           removedTitles.add(title);
           const n = stripTaskTitle(title);
           if (n) removedNorms.add(n);
         }
-        removedEntries.push({ entry: v, id: k, failedOrCanceled: isEntryFailedOrCanceled(v) });
+        removedEntries.push({ entry: v, id: itemId, failedOrCanceled: isEntryFailedOrCanceled(v) });
         delete board['列表'][k];
       }
       idx += 1;
@@ -1036,7 +1061,11 @@ export function sweepClosedQuests(stat, current = {}) {
   updateDirectorAfterSweep(board, stat, removedEntries, currentCount, current);
 
   if (Array.isArray(board['意向'])) {
-    board['意向'] = board['意向'].filter((x) => !removedIds.has(x) && !removedTitles.has(x));
+    board['意向'] = board['意向'].filter((x) => {
+      const sx = text(x);
+      const tx = sx.trim();
+      return !removedIds.has(sx) && !removedIds.has(tx) && !removedTitles.has(sx) && !removedTitles.has(tx);
+    });
   }
   const activeRewardKeys = activeBoardRewardKeySet(board);
   for (const mapField of ['已兑现', '已失效']) {
